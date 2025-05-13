@@ -1,45 +1,7 @@
 use crate::core::TurboSetting;
+use crate::util::error::ControlError;
 use core::str;
 use std::{fs, io, path::Path, string::ToString};
-
-#[derive(Debug)]
-pub enum ControlError {
-    Io(io::Error),
-    WriteError(String),
-    InvalidValueError(String),
-    NotSupported(String),
-    PermissionDenied(String),
-    InvalidProfile(String),
-}
-
-impl From<io::Error> for ControlError {
-    fn from(err: io::Error) -> Self {
-        match err.kind() {
-            io::ErrorKind::PermissionDenied => Self::PermissionDenied(err.to_string()),
-            _ => Self::Io(err),
-        }
-    }
-}
-
-impl std::fmt::Display for ControlError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Io(e) => write!(f, "I/O error: {e}"),
-            Self::WriteError(s) => write!(f, "Failed to write to sysfs path: {s}"),
-            Self::InvalidValueError(s) => write!(f, "Invalid value for setting: {s}"),
-            Self::NotSupported(s) => write!(f, "Control action not supported: {s}"),
-            Self::PermissionDenied(s) => {
-                write!(f, "Permission denied: {s}. Try running with sudo.")
-            }
-            Self::InvalidProfile(s) => {
-                write!(
-                    f,
-                    "Invalid platform control profile {s} supplied, please provide a valid one."
-                )
-            }
-        }
-    }
-}
 
 impl std::error::Error for ControlError {}
 
@@ -264,12 +226,8 @@ pub fn get_platform_profiles() -> Result<Vec<String>> {
         )));
     }
 
-    let buf = fs::read(path)
+    let content = fs::read_to_string(path)
         .map_err(|_| ControlError::PermissionDenied(format!("Cannot read contents of {path}.")))?;
-
-    let content = str::from_utf8(&buf).map_err(|_| {
-        ControlError::NotSupported(format!("No platform profile choices found at {path}."))
-    })?;
 
     Ok(content
         .split_whitespace()
