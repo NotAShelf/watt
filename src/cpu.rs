@@ -264,12 +264,8 @@ pub fn get_platform_profiles() -> Result<Vec<String>> {
         )));
     }
 
-    let buf = fs::read(path)
+    let content = fs::read_to_string(path)
         .map_err(|_| ControlError::PermissionDenied(format!("Cannot read contents of {path}.")))?;
-
-    let content = str::from_utf8(&buf).map_err(|_| {
-        ControlError::NotSupported(format!("No platform profile choices found at {path}."))
-    })?;
 
     Ok(content
         .split_whitespace()
