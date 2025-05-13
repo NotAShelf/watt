@@ -1,6 +1,7 @@
-use crate::core::{SystemReport, OperationalMode, TurboSetting};
 use crate::config::{AppConfig, ProfileConfig};
-use crate::cpu::{self, ControlError};
+use crate::core::{OperationalMode, SystemReport, TurboSetting};
+use crate::cpu::{self};
+use crate::util::error::ControlError;
 
 #[derive(Debug)]
 pub enum EngineError {

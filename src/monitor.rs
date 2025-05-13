@@ -1,5 +1,7 @@
 use crate::config::AppConfig;
 use crate::core::{BatteryInfo, CpuCoreInfo, CpuGlobalInfo, SystemInfo, SystemLoad, SystemReport};
+use crate::util::error::ControlError;
+use crate::util::error::SysMonitorError;
 use std::{
     collections::HashMap,
     fs, io,
@@ -9,35 +11,6 @@ use std::{
     time::Duration,
     time::SystemTime,
 };
-
-#[derive(Debug)]
-pub enum SysMonitorError {
-    Io(io::Error),
-    ReadError(String),
-    ParseError(String),
-    ProcStatParseError(String),
-    NotAvailable(String),
-}
-
-impl From<io::Error> for SysMonitorError {
-    fn from(err: io::Error) -> SysMonitorError {
-        SysMonitorError::Io(err)
-    }
-}
-
-impl std::fmt::Display for SysMonitorError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SysMonitorError::Io(e) => write!(f, "I/O error: {}", e),
-            SysMonitorError::ReadError(s) => write!(f, "Failed to read sysfs path: {}", s),
-            SysMonitorError::ParseError(s) => write!(f, "Failed to parse value: {}", s),
-            SysMonitorError::ProcStatParseError(s) => {
-                write!(f, "Failed to parse /proc/stat: {}", s)
-            }
-            SysMonitorError::NotAvailable(s) => write!(f, "Information not available: {}", s),
-        }
-    }
-}
 
 impl std::error::Error for SysMonitorError {}
 
