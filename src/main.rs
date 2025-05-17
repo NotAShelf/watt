@@ -380,12 +380,11 @@ fn main() -> Result<(), AppError> {
                             profile,
                             available_profiles.join(", ")
                         );
-                        Err(ControlError::InvalidProfile(format!(
+                        Err(AppError::Generic(format!(
                             "Invalid platform profile: '{}'. Available profiles: {}",
                             profile,
                             available_profiles.join(", ")
-                        ))
-                        .into())
+                        )))
                     }
                 }
                 Err(_e) => {
