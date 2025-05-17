@@ -402,9 +402,9 @@ fn main() -> Result<(), AppError> {
                 error!(
                     "Start threshold ({start_threshold}) must be less than stop threshold ({stop_threshold})"
                 );
-                Err(ControlError::InvalidValueError(format!(
+                Err(AppError::Generic(format!(
                     "Start threshold ({start_threshold}) must be less than stop threshold ({stop_threshold})"
-                )).into())
+                )))
             } else {
                 info!(
                     "Setting battery thresholds: start at {start_threshold}%, stop at {stop_threshold}%"
@@ -464,14 +464,15 @@ fn init_logger() {
 fn validate_freq(freq_mhz: u32, label: &str) -> Result<(), AppError> {
     if freq_mhz == 0 {
         error!("{label} frequency cannot be zero");
-        Err(ControlError::InvalidValueError(format!("{label} frequency cannot be zero")).into())
+        let err = ControlError::InvalidValueError(format!("{label} frequency cannot be zero"));
+        Err(err.into())
     } else if freq_mhz > 10000 {
         // Extremely high value unlikely to be valid
         error!("{label} frequency ({freq_mhz} MHz) is unreasonably high");
-        Err(ControlError::InvalidValueError(format!(
+        let err = ControlError::InvalidValueError(format!(
             "{label} frequency ({freq_mhz} MHz) is unreasonably high"
-        ))
-        .into())
+        ));
+        Err(err.into())
     } else {
         Ok(())
     }

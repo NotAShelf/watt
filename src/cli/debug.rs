@@ -219,13 +219,15 @@ fn get_kernel_info() -> Result<String, AppError> {
 
 /// Get system uptime
 fn get_system_uptime() -> Result<Duration, AppError> {
-    let uptime_str = fs::read_to_string("/proc/uptime").map_err(AppError::Io)?;
+    let uptime_str = fs::read_to_string("/proc/uptime").map_err(|e| AppError::Io(e))?;
     let uptime_secs = uptime_str
         .split_whitespace()
         .next()
-        .ok_or_else(|| AppError::Generic("Invalid uptime format".to_string()))?
+        .ok_or_else(|| AppError::Generic("Invalid format in /proc/uptime file".to_string()))?
         .parse::<f64>()
-        .map_err(|e| AppError::Generic(format!("Failed to parse uptime: {e}")))?;
+        .map_err(|e| {
+            AppError::Generic(format!("Failed to parse uptime from /proc/uptime: {}", e))
+        })?;
 
     Ok(Duration::from_secs_f64(uptime_secs))
 }
