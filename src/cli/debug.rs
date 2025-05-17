@@ -219,15 +219,13 @@ fn get_kernel_info() -> Result<String, AppError> {
 
 /// Get system uptime
 fn get_system_uptime() -> Result<Duration, AppError> {
-    let uptime_str = fs::read_to_string("/proc/uptime").map_err(|e| AppError::Io(e))?;
+    let uptime_str = fs::read_to_string("/proc/uptime").map_err(AppError::Io)?;
     let uptime_secs = uptime_str
         .split_whitespace()
         .next()
         .ok_or_else(|| AppError::Generic("Invalid format in /proc/uptime file".to_string()))?
         .parse::<f64>()
-        .map_err(|e| {
-            AppError::Generic(format!("Failed to parse uptime from /proc/uptime: {}", e))
-        })?;
+        .map_err(|e| AppError::Generic(format!("Failed to parse uptime from /proc/uptime: {e}")))?;
 
     Ok(Duration::from_secs_f64(uptime_secs))
 }
@@ -253,7 +251,16 @@ fn is_systemd_service_active(service_name: &str) -> Result<bool, AppError> {
         .output()
         .map_err(AppError::Io)?;
 
+    // Check if the command executed successfully
+    if !output.status.success() {
+        // Command failed - service is either not found or not active
+        return Ok(false);
+    }
+
+    // Command executed successfully, now check the output content
     let status = String::from_utf8(output.stdout)
         .map_err(|e| AppError::Generic(format!("Failed to parse systemctl output: {e}")))?;
+
+    // Explicitly verify the output is "active"
     Ok(status.trim() == "active")
 }

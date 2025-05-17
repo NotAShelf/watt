@@ -464,7 +464,9 @@ fn init_logger() {
 fn validate_freq(freq_mhz: u32, label: &str) -> Result<(), AppError> {
     if freq_mhz == 0 {
         error!("{label} frequency cannot be zero");
-        Err(AppError::Generic(format!("{label} frequency cannot be zero")))
+        Err(AppError::Generic(format!(
+            "{label} frequency cannot be zero"
+        )))
     } else if freq_mhz > 10000 {
         // Extremely high value unlikely to be valid
         error!("{label} frequency ({freq_mhz} MHz) is unreasonably high");
