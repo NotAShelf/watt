@@ -113,3 +113,82 @@ impl std::error::Error for EngineError {
         }
     }
 }
+
+// A unified error type for the entire application
+#[derive(Debug)]
+pub enum AppError {
+    Control(ControlError),
+    Monitor(SysMonitorError),
+    Engine(EngineError),
+    Config(crate::config::ConfigError),
+    Generic(String),
+    Io(io::Error),
+}
+
+impl From<ControlError> for AppError {
+    fn from(err: ControlError) -> Self {
+        Self::Control(err)
+    }
+}
+
+impl From<SysMonitorError> for AppError {
+    fn from(err: SysMonitorError) -> Self {
+        Self::Monitor(err)
+    }
+}
+
+impl From<EngineError> for AppError {
+    fn from(err: EngineError) -> Self {
+        Self::Engine(err)
+    }
+}
+
+impl From<crate::config::ConfigError> for AppError {
+    fn from(err: crate::config::ConfigError) -> Self {
+        Self::Config(err)
+    }
+}
+
+impl From<io::Error> for AppError {
+    fn from(err: io::Error) -> Self {
+        Self::Io(err)
+    }
+}
+
+impl From<String> for AppError {
+    fn from(err: String) -> Self {
+        Self::Generic(err)
+    }
+}
+
+impl From<&str> for AppError {
+    fn from(err: &str) -> Self {
+        Self::Generic(err.to_string())
+    }
+}
+
+impl std::fmt::Display for AppError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Control(e) => write!(f, "{e}"),
+            Self::Monitor(e) => write!(f, "{e}"),
+            Self::Engine(e) => write!(f, "{e}"),
+            Self::Config(e) => write!(f, "{e}"),
+            Self::Generic(s) => write!(f, "{s}"),
+            Self::Io(e) => write!(f, "I/O error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for AppError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Control(e) => Some(e),
+            Self::Monitor(e) => Some(e),
+            Self::Engine(e) => Some(e),
+            Self::Config(e) => Some(e),
+            Self::Generic(_) => None,
+            Self::Io(e) => Some(e),
+        }
+    }
+}

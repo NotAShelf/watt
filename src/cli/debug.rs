@@ -1,13 +1,13 @@
 use crate::config::AppConfig;
 use crate::cpu;
 use crate::monitor;
-use std::error::Error;
+use crate::util::error::AppError;
 use std::fs;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
 /// Prints comprehensive debug information about the system
-pub fn run_debug(config: &AppConfig) -> Result<(), Box<dyn Error>> {
+pub fn run_debug(config: &AppConfig) -> Result<(), AppError> {
     println!("=== SUPERFREQ DEBUG INFORMATION ===");
     println!("Version: {}", env!("CARGO_PKG_VERSION"));
 
@@ -201,26 +201,31 @@ pub fn run_debug(config: &AppConfig) -> Result<(), Box<dyn Error>> {
 
             Ok(())
         }
-        Err(e) => Err(Box::new(e) as Box<dyn Error>),
+        Err(e) => Err(AppError::Monitor(e)),
     }
 }
 
 /// Get kernel version information
-fn get_kernel_info() -> Result<String, Box<dyn Error>> {
-    let output = Command::new("uname").arg("-r").output()?;
+fn get_kernel_info() -> Result<String, AppError> {
+    let output = Command::new("uname")
+        .arg("-r")
+        .output()
+        .map_err(AppError::Io)?;
 
-    let kernel_version = String::from_utf8(output.stdout)?;
+    let kernel_version = String::from_utf8(output.stdout)
+        .map_err(|e| AppError::Generic(format!("Failed to parse kernel version: {e}")))?;
     Ok(kernel_version.trim().to_string())
 }
 
 /// Get system uptime
-fn get_system_uptime() -> Result<Duration, Box<dyn Error>> {
-    let uptime_str = fs::read_to_string("/proc/uptime")?;
+fn get_system_uptime() -> Result<Duration, AppError> {
+    let uptime_str = fs::read_to_string("/proc/uptime").map_err(AppError::Io)?;
     let uptime_secs = uptime_str
         .split_whitespace()
         .next()
-        .ok_or("Invalid uptime format")?
-        .parse::<f64>()?;
+        .ok_or_else(|| AppError::Generic("Invalid uptime format".to_string()))?
+        .parse::<f64>()
+        .map_err(|e| AppError::Generic(format!("Failed to parse uptime: {e}")))?;
 
     Ok(Duration::from_secs_f64(uptime_secs))
 }
@@ -237,14 +242,16 @@ fn check_and_print_sysfs_path(path: &str, description: &str) {
 }
 
 /// Check if a systemd service is active
-fn is_systemd_service_active(service_name: &str) -> Result<bool, Box<dyn Error>> {
+fn is_systemd_service_active(service_name: &str) -> Result<bool, AppError> {
     let output = Command::new("systemctl")
         .arg("is-active")
         .arg(format!("{service_name}.service"))
         .stdout(Stdio::piped()) // capture stdout instead of letting it print
         .stderr(Stdio::null()) // redirect stderr to null
-        .output()?;
+        .output()
+        .map_err(AppError::Io)?;
 
-    let status = String::from_utf8(output.stdout)?;
+    let status = String::from_utf8(output.stdout)
+        .map_err(|e| AppError::Generic(format!("Failed to parse systemctl output: {e}")))?;
     Ok(status.trim() == "active")
 }

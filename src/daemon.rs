@@ -3,6 +3,7 @@ use crate::config::{AppConfig, LogLevel};
 use crate::core::SystemReport;
 use crate::engine;
 use crate::monitor;
+use crate::util::error::AppError;
 use log::{LevelFilter, debug, error, info, warn};
 use std::collections::VecDeque;
 use std::fs::File;
@@ -342,7 +343,7 @@ impl SystemHistory {
 }
 
 /// Run the daemon
-pub fn run_daemon(mut config: AppConfig, verbose: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run_daemon(mut config: AppConfig, verbose: bool) -> Result<(), AppError> {
     // Set effective log level based on config and verbose flag
     let effective_log_level = if verbose {
         LogLevel::Debug
@@ -372,7 +373,7 @@ pub fn run_daemon(mut config: AppConfig, verbose: bool) -> Result<(), Box<dyn st
         info!("Received shutdown signal, exiting...");
         r.store(false, Ordering::SeqCst);
     })
-    .expect("Error setting Ctrl-C handler");
+    .map_err(|e| AppError::Generic(format!("Error setting Ctrl-C handler: {e}")))?;
 
     info!(
         "Daemon initialized with poll interval: {}s",

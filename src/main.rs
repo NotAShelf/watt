@@ -10,10 +10,11 @@ mod util;
 
 use crate::config::AppConfig;
 use crate::core::{GovernorOverrideMode, TurboSetting};
-use crate::util::error::ControlError;
+use crate::util::error::{AppError, ControlError};
 use clap::{Parser, value_parser};
 use env_logger::Builder;
 use log::{debug, error, info};
+use std::error::Error;
 use std::sync::Once;
 
 #[derive(Parser, Debug)]
@@ -88,7 +89,7 @@ enum Commands {
     },
 }
 
-fn main() {
+fn main() -> Result<(), AppError> {
     // Initialize logger once for the entire application
     init_logger();
 
@@ -105,7 +106,7 @@ fn main() {
         }
     };
 
-    let command_result = match cli.command {
+    let command_result: Result<(), AppError> = match cli.command {
         // TODO: This will be moved to a different module in the future.
         Some(Commands::Info) => match monitor::collect_system_report(&config) {
             Ok(report) => {
@@ -341,41 +342,30 @@ fn main() {
                 );
                 Ok(())
             }
-            Err(e) => Err(Box::new(e) as Box<dyn std::error::Error>),
+            Err(e) => Err(AppError::Monitor(e)),
         },
-        Some(Commands::SetGovernor { governor, core_id }) => cpu::set_governor(&governor, core_id)
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error>),
+        Some(Commands::SetGovernor { governor, core_id }) => {
+            cpu::set_governor(&governor, core_id).map_err(AppError::Control)
+        }
         Some(Commands::ForceGovernor { mode }) => {
-            cpu::force_governor(mode).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+            cpu::force_governor(mode).map_err(AppError::Control)
         }
-        Some(Commands::SetTurbo { setting }) => {
-            cpu::set_turbo(setting).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
-        }
+        Some(Commands::SetTurbo { setting }) => cpu::set_turbo(setting).map_err(AppError::Control),
         Some(Commands::SetEpp { epp, core_id }) => {
-            cpu::set_epp(&epp, core_id).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+            cpu::set_epp(&epp, core_id).map_err(AppError::Control)
         }
         Some(Commands::SetEpb { epb, core_id }) => {
-            cpu::set_epb(&epb, core_id).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+            cpu::set_epb(&epb, core_id).map_err(AppError::Control)
         }
         Some(Commands::SetMinFreq { freq_mhz, core_id }) => {
             // Basic validation for reasonable CPU frequency values
-            if let Err(e) = validate_freq(freq_mhz, "Minimum") {
-                error!("{e}");
-                Err(e)
-            } else {
-                cpu::set_min_frequency(freq_mhz, core_id)
-                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
-            }
+            validate_freq(freq_mhz, "Minimum")?;
+            cpu::set_min_frequency(freq_mhz, core_id).map_err(AppError::Control)
         }
         Some(Commands::SetMaxFreq { freq_mhz, core_id }) => {
             // Basic validation for reasonable CPU frequency values
-            if let Err(e) = validate_freq(freq_mhz, "Maximum") {
-                error!("{e}");
-                Err(e)
-            } else {
-                cpu::set_max_frequency(freq_mhz, core_id)
-                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
-            }
+            validate_freq(freq_mhz, "Maximum")?;
+            cpu::set_max_frequency(freq_mhz, core_id).map_err(AppError::Control)
         }
         Some(Commands::SetPlatformProfile { profile }) => {
             // Get available platform profiles and validate early if possible
@@ -383,26 +373,24 @@ fn main() {
                 Ok(available_profiles) => {
                     if available_profiles.contains(&profile) {
                         info!("Setting platform profile to '{profile}'");
-                        cpu::set_platform_profile(&profile)
-                            .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+                        cpu::set_platform_profile(&profile).map_err(AppError::Control)
                     } else {
                         error!(
                             "Invalid platform profile: '{}'. Available profiles: {}",
                             profile,
                             available_profiles.join(", ")
                         );
-                        Err(Box::new(ControlError::InvalidProfile(format!(
+                        Err(ControlError::InvalidProfile(format!(
                             "Invalid platform profile: '{}'. Available profiles: {}",
                             profile,
                             available_profiles.join(", ")
-                        ))) as Box<dyn std::error::Error>)
+                        ))
+                        .into())
                     }
                 }
-                Err(_) => {
+                Err(_e) => {
                     // If we can't get profiles (e.g., feature not supported), pass through to the function
-                    // which will provide appropriate error
-                    cpu::set_platform_profile(&profile)
-                        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+                    cpu::set_platform_profile(&profile).map_err(AppError::Control)
                 }
             }
         }
@@ -415,15 +403,15 @@ fn main() {
                 error!(
                     "Start threshold ({start_threshold}) must be less than stop threshold ({stop_threshold})"
                 );
-                Err(Box::new(ControlError::InvalidValueError(format!(
+                Err(ControlError::InvalidValueError(format!(
                     "Start threshold ({start_threshold}) must be less than stop threshold ({stop_threshold})"
-                ))) as Box<dyn std::error::Error>)
+                )).into())
             } else {
                 info!(
                     "Setting battery thresholds: start at {start_threshold}%, stop at {stop_threshold}%"
                 );
                 battery::set_battery_charge_thresholds(start_threshold, stop_threshold)
-                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+                    .map_err(AppError::Control)
             }
         }
         Some(Commands::Daemon { verbose }) => daemon::run_daemon(config, verbose),
@@ -440,11 +428,9 @@ fn main() {
         if let Some(source) = e.source() {
             error!("Caused by: {source}");
         }
-        // TODO: Consider specific error handling for PermissionDenied from the cpu module here.
-        // For example, check if `e.downcast_ref::<cpu::ControlError>()` matches `PermissionDenied`
-        // and print a more specific message like "Try running with sudo."
-        // We'll revisit this in the future once CPU logic is more stable.
-        if let Some(control_error) = e.downcast_ref::<ControlError>() {
+
+        // Check for permission denied errors
+        if let AppError::Control(control_error) = &e {
             if matches!(control_error, ControlError::PermissionDenied(_)) {
                 error!(
                     "Hint: This operation may require administrator privileges (e.g., run with sudo)."
@@ -454,6 +440,8 @@ fn main() {
 
         std::process::exit(1);
     }
+
+    Ok(())
 }
 
 /// Initialize the logger for the entire application
@@ -474,18 +462,17 @@ fn init_logger() {
 }
 
 /// Validate CPU frequency input values
-fn validate_freq(freq_mhz: u32, label: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn validate_freq(freq_mhz: u32, label: &str) -> Result<(), AppError> {
     if freq_mhz == 0 {
         error!("{label} frequency cannot be zero");
-        Err(Box::new(ControlError::InvalidValueError(format!(
-            "{label} frequency cannot be zero"
-        ))) as Box<dyn std::error::Error>)
+        Err(ControlError::InvalidValueError(format!("{label} frequency cannot be zero")).into())
     } else if freq_mhz > 10000 {
         // Extremely high value unlikely to be valid
         error!("{label} frequency ({freq_mhz} MHz) is unreasonably high");
-        Err(Box::new(ControlError::InvalidValueError(format!(
+        Err(ControlError::InvalidValueError(format!(
             "{label} frequency ({freq_mhz} MHz) is unreasonably high"
-        ))) as Box<dyn std::error::Error>)
+        ))
+        .into())
     } else {
         Ok(())
     }
