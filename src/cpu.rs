@@ -1,479 +1,321 @@
-use crate::core::{GovernorOverrideMode, TurboSetting};
-use crate::util::error::ControlError;
-use core::str;
-use log::debug;
+use anyhow::{Context, bail};
+use derive_more::Display;
+use serde::{Deserialize, Serialize};
+
 use std::{fs, io, path::Path, string::ToString};
 
-pub type Result<T, E = ControlError> = std::result::Result<T, E>;
+// // Valid EPP (Energy Performance Preference) string values.
+// const EPP_FALLBACK_VALUES: &[&str] = &[
+//     "default",
+//     "performance",
+//     "balance-performance",
+//     "balance_performance", // Alternative form with underscore.
+//     "balance-power",
+//     "balance_power", // Alternative form with underscore.
+//     "power",
+// ];
 
-// Valid EPB string values
-const VALID_EPB_STRINGS: &[&str] = &[
-    "performance",
-    "balance-performance",
-    "balance_performance", // alternative form
-    "balance-power",
-    "balance_power", // alternative form
-    "power",
-];
+fn exists(path: impl AsRef<Path>) -> bool {
+    let path = path.as_ref();
 
-// EPP (Energy Performance Preference) string values
-const EPP_FALLBACK_VALUES: &[&str] = &[
-    "default",
-    "performance",
-    "balance-performance",
-    "balance_performance", // alternative form with underscore
-    "balance-power",
-    "balance_power", // alternative form with underscore
-    "power",
-];
+    path.exists()
+}
 
-// Write a value to a sysfs file
-fn write_sysfs_value(path: impl AsRef<Path>, value: &str) -> Result<()> {
-    let p = path.as_ref();
+// Not doing any anyhow stuff here as all the calls of this ignore errors.
+fn read_u64(path: impl AsRef<Path>) -> anyhow::Result<u64> {
+    let path = path.as_ref();
 
-    fs::write(p, value).map_err(|e| {
-        let error_msg = format!("Path: {:?}, Value: '{}', Error: {}", p.display(), value, e);
-        match e.kind() {
-            io::ErrorKind::PermissionDenied => ControlError::PermissionDenied(error_msg),
-            io::ErrorKind::NotFound => {
-                ControlError::PathMissing(format!("Path '{}' does not exist", p.display()))
-            }
-            _ => ControlError::WriteError(error_msg),
-        }
+    let content = fs::read_to_string(path)?;
+
+    Ok(content.trim().parse::<u64>()?)
+}
+
+fn write(path: impl AsRef<Path>, value: &str) -> anyhow::Result<()> {
+    let path = path.as_ref();
+
+    fs::write(path, value).with_context(|| {
+        format!(
+            "failed to write '{value}' to '{path}'",
+            path = path.display(),
+        )
     })
 }
 
-pub fn get_logical_core_count() -> Result<u32> {
-    // Using num_cpus::get() for a reliable count of logical cores accessible.
-    // The monitor module's get_logical_core_count might be more specific to cpufreq-capable cores,
-    // but for applying settings, we might want to iterate over all reported by OS.
-    // However, settings usually apply to cores with cpufreq.
-    // Let's use a similar discovery to monitor's get_logical_core_count
-    let mut num_cores: u32 = 0;
-    let path = Path::new("/sys/devices/system/cpu");
-    if !path.exists() {
-        return Err(ControlError::NotSupported(format!(
-            "No logical cores found at {}.",
-            path.display()
-        )));
-    }
+/// Get real, tunable CPUs.
+pub fn get_real_cpus() -> anyhow::Result<Vec<u32>> {
+    const PATH: &str = "/sys/devices/system/cpu";
 
-    let entries = fs::read_dir(path)
-        .map_err(|_| {
-            ControlError::PermissionDenied(format!("Cannot read contents of {}.", path.display()))
-        })?
-        .flatten();
+    let mut cpus = vec![];
 
-    for entry in entries {
+    for entry in fs::read_dir(PATH)
+        .with_context(|| format!("failed to read contents of '{PATH}'"))?
+        .flatten()
+    {
         let entry_file_name = entry.file_name();
+
         let Some(name) = entry_file_name.to_str() else {
             continue;
         };
 
-        // Skip non-CPU directories (e.g., cpuidle, cpufreq)
-        if !name.starts_with("cpu") || name.len() <= 3 || !name[3..].chars().all(char::is_numeric) {
+        let Some(cpu_prefix_removed) = name.strip_prefix("cpu") else {
             continue;
-        }
+        };
 
+        // Has to match "cpu{N}".
+        let Ok(cpu) = cpu_prefix_removed.parse::<u32>() else {
+            continue;
+        };
+
+        // Has to match "cpu{N}/cpufreq".
         if !entry.path().join("cpufreq").exists() {
             continue;
         }
 
-        if name[3..].parse::<u32>().is_ok() {
-            num_cores += 1;
-        }
-    }
-    if num_cores == 0 {
-        // Fallback if sysfs iteration above fails to find any cpufreq cores
-        num_cores = num_cpus::get() as u32;
+        cpus.push(cpu);
     }
 
-    Ok(num_cores)
+    // Fall back if sysfs iteration above fails to find any cpufreq CPUs.
+    if cpus.is_empty() {
+        cpus = (0..num_cpus::get() as u32).collect();
+    }
+
+    Ok(cpus)
 }
 
-fn for_each_cpu_core<F>(mut action: F) -> Result<()>
-where
-    F: FnMut(u32) -> Result<()>,
-{
-    let num_cores: u32 = get_logical_core_count()?;
+/// Set the governor for a CPU.
+pub fn set_governor(governor: &str, cpu: u32) -> anyhow::Result<()> {
+    let governors = get_available_governors_for(cpu);
 
-    for core_id in 0u32..num_cores {
-        action(core_id)?;
+    if !governors
+        .iter()
+        .any(|avail_governor| avail_governor == governor)
+    {
+        bail!(
+            "governor '{governor}' is not available for CPU {cpu}. valid governors: {governors}",
+            governors = governors.join(", "),
+        );
     }
-    Ok(())
+
+    write(
+        format!("/sys/devices/system/cpu/cpu{cpu}/cpufreq/scaling_governor"),
+        governor,
+    )
+    .with_context(|| {
+        format!(
+            "this probably means that CPU {cpu} doesn't exist or doesn't support changing governors"
+        )
+    })
 }
 
-pub fn set_governor(governor: &str, core_id: Option<u32>) -> Result<()> {
-    // Validate the governor is available on this system
-    // This returns both the validation result and the list of available governors
-    let (is_valid, available_governors) = is_governor_valid(governor)?;
-
-    if !is_valid {
-        return Err(ControlError::InvalidGovernor(format!(
-            "Governor '{}' is not available on this system. Valid governors: {}",
-            governor,
-            available_governors.join(", ")
-        )));
-    }
-
-    let action = |id: u32| {
-        let path = format!("/sys/devices/system/cpu/cpu{id}/cpufreq/scaling_governor");
-        if Path::new(&path).exists() {
-            write_sysfs_value(&path, governor)
-        } else {
-            // Silently ignore if the path doesn't exist for a specific core,
-            // as not all cores might have cpufreq (e.g. offline cores)
-            Ok(())
-        }
+/// Get available CPU governors for a CPU.
+fn get_available_governors_for(cpu: u32) -> Vec<String> {
+    let Ok(content) = fs::read_to_string(format!(
+        "/sys/devices/system/cpu/cpu{cpu}/cpufreq/scaling_available_governors"
+    )) else {
+        return Vec::new();
     };
 
-    core_id.map_or_else(|| for_each_cpu_core(action), action)
+    content
+        .split_whitespace()
+        .map(ToString::to_string)
+        .collect()
 }
 
-/// Check if the provided governor is available in the system
-/// Returns a tuple of (`is_valid`, `available_governors`) to avoid redundant file reads
-fn is_governor_valid(governor: &str) -> Result<(bool, Vec<String>)> {
-    let governors = get_available_governors()?;
-
-    // Convert input governor to lowercase for case-insensitive comparison
-    let governor_lower = governor.to_lowercase();
-
-    // Convert all available governors to lowercase for comparison
-    let governors_lower: Vec<String> = governors.iter().map(|g| g.to_lowercase()).collect();
-
-    // Check if the lowercase governor is in the lowercase list
-    Ok((governors_lower.contains(&governor_lower), governors))
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, clap::ValueEnum)]
+pub enum Turbo {
+    Always,
+    Never,
 }
 
-/// Get available CPU governors from the system
-fn get_available_governors() -> Result<Vec<String>> {
-    let cpu_base_path = Path::new("/sys/devices/system/cpu");
-
-    // First try the traditional path with cpu0. This is the most common case
-    // and will usually catch early, but we should try to keep the code to handle
-    // "edge" cases lightweight, for the (albeit smaller) number of users that
-    // run Superfreq on unusual systems.
-    let cpu0_path = "/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors";
-    if Path::new(cpu0_path).exists() {
-        let content = fs::read_to_string(cpu0_path).map_err(|e| {
-            ControlError::ReadError(format!("Failed to read available governors from cpu0: {e}"))
-        })?;
-
-        let governors: Vec<String> = content
-            .split_whitespace()
-            .map(ToString::to_string)
-            .collect();
-
-        if !governors.is_empty() {
-            return Ok(governors);
-        }
-    }
-
-    // If cpu0 doesn't have the file or it's empty, scan all CPUs
-    // This handles heterogeneous systems where cpu0 might not have cpufreq
-    if let Ok(entries) = fs::read_dir(cpu_base_path) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let file_name = entry.file_name();
-            let name = match file_name.to_str() {
-                Some(name) => name,
-                None => continue,
-            };
-
-            // Skip non-CPU directories
-            if !name.starts_with("cpu")
-                || name.len() <= 3
-                || !name[3..].chars().all(char::is_numeric)
-            {
-                continue;
-            }
-
-            let governor_path = path.join("cpufreq/scaling_available_governors");
-            if governor_path.exists() {
-                match fs::read_to_string(&governor_path) {
-                    Ok(content) => {
-                        let governors: Vec<String> = content
-                            .split_whitespace()
-                            .map(ToString::to_string)
-                            .collect();
-
-                        if !governors.is_empty() {
-                            return Ok(governors);
-                        }
-                    }
-                    Err(_) => continue, // try next CPU if this one fails
-                }
-            }
-        }
-    }
-
-    // If we get here, we couldn't find any valid governors list
-    Err(ControlError::NotSupported(
-        "Could not determine available governors on any CPU".to_string(),
-    ))
-}
-
-pub fn set_turbo(setting: TurboSetting) -> Result<()> {
-    let value_pstate = match setting {
-        TurboSetting::Always => "0", // no_turbo = 0 means turbo is enabled
-        TurboSetting::Never => "1",  // no_turbo = 1 means turbo is disabled
-        // Auto mode is handled at the engine level, not directly at the sysfs level
-        TurboSetting::Auto => {
-            debug!("Turbo Auto mode is managed by engine logic based on system conditions");
-            return Ok(());
-        }
-    };
+pub fn set_turbo(setting: Turbo) -> anyhow::Result<()> {
     let value_boost = match setting {
-        TurboSetting::Always => "1", // boost = 1 means turbo is enabled
-        TurboSetting::Never => "0",  // boost = 0 means turbo is disabled
-        TurboSetting::Auto => {
-            debug!("Turbo Auto mode is managed by engine logic based on system conditions");
-            return Ok(());
-        }
+        Turbo::Always => "1", // boost = 1 means turbo is enabled.
+        Turbo::Never => "0",  // boost = 0 means turbo is disabled.
+    };
+
+    let value_boost_negated = match setting {
+        Turbo::Always => "0", // no_turbo = 0 means turbo is enabled.
+        Turbo::Never => "1",  // no_turbo = 1 means turbo is disabled.
     };
 
     // AMD specific paths
-    let amd_pstate_path = "/sys/devices/system/cpu/amd_pstate/cpufreq/boost";
+    let amd_boost_path = "/sys/devices/system/cpu/amd_pstate/cpufreq/boost";
     let msr_boost_path = "/sys/devices/system/cpu/cpufreq/amd_pstate_enable_boost";
 
     // Path priority (from most to least specific)
-    let pstate_path = "/sys/devices/system/cpu/intel_pstate/no_turbo";
-    let boost_path = "/sys/devices/system/cpu/cpufreq/boost";
+    let intel_boost_path_negated = "/sys/devices/system/cpu/intel_pstate/no_turbo";
+    let generic_boost_path = "/sys/devices/system/cpu/cpufreq/boost";
 
     // Try each boost control path in order of specificity
-    if Path::new(pstate_path).exists() {
-        write_sysfs_value(pstate_path, value_pstate)
-    } else if Path::new(amd_pstate_path).exists() {
-        write_sysfs_value(amd_pstate_path, value_boost)
-    } else if Path::new(msr_boost_path).exists() {
-        write_sysfs_value(msr_boost_path, value_boost)
-    } else if Path::new(boost_path).exists() {
-        write_sysfs_value(boost_path, value_boost)
-    } else {
-        // Also try per-core cpufreq boost for some AMD systems
-        let result = try_set_per_core_boost(value_boost)?;
-        if result {
-            Ok(())
-        } else {
-            Err(ControlError::NotSupported(
-                "No supported CPU boost control mechanism found.".to_string(),
-            ))
-        }
+    if write(intel_boost_path_negated, value_boost_negated).is_ok() {
+        return Ok(());
     }
-}
-
-/// Try to set boost on a per-core basis for systems that support it
-fn try_set_per_core_boost(value: &str) -> Result<bool> {
-    let mut success = false;
-    let num_cores = get_logical_core_count()?;
-
-    for core_id in 0..num_cores {
-        let boost_path = format!("/sys/devices/system/cpu/cpu{core_id}/cpufreq/boost");
-
-        if Path::new(&boost_path).exists() {
-            write_sysfs_value(&boost_path, value)?;
-            success = true;
-        }
+    if write(amd_boost_path, value_boost).is_ok() {
+        return Ok(());
+    }
+    if write(msr_boost_path, value_boost).is_ok() {
+        return Ok(());
+    }
+    if write(generic_boost_path, value_boost).is_ok() {
+        return Ok(());
     }
 
-    Ok(success)
+    // Also try per-core cpufreq boost for some AMD systems.
+    if get_real_cpus()?.iter().any(|cpu| {
+        write(
+            &format!("/sys/devices/system/cpu/cpu{cpu}/cpufreq/boost"),
+            value_boost,
+        )
+        .is_ok()
+    }) {
+        return Ok(());
+    }
+
+    bail!("no supported CPU boost control mechanism found");
 }
 
-pub fn set_epp(epp: &str, core_id: Option<u32>) -> Result<()> {
+pub fn set_epp(epp: &str, cpu: u32) -> anyhow::Result<()> {
     // Validate the EPP value against available options
-    let available_epp = get_available_epp_values()?;
-    if !available_epp.iter().any(|v| v.eq_ignore_ascii_case(epp)) {
-        return Err(ControlError::InvalidValueError(format!(
-            "Invalid EPP value: '{}'. Available values: {}",
-            epp,
-            available_epp.join(", ")
-        )));
+    let epps = get_available_epps(cpu);
+
+    if !epps.iter().any(|avail_epp| avail_epp == epp) {
+        bail!(
+            "epp value '{epp}' is not availabile for CPU {cpu}. valid epp values: {epps}",
+            epps = epps.join(", "),
+        );
     }
 
-    let action = |id: u32| {
-        let path = format!("/sys/devices/system/cpu/cpu{id}/cpufreq/energy_performance_preference");
-        if Path::new(&path).exists() {
-            write_sysfs_value(&path, epp)
-        } else {
-            Ok(())
-        }
-    };
-    core_id.map_or_else(|| for_each_cpu_core(action), action)
+    write(
+        format!("/sys/devices/system/cpu/cpu{cpu}/cpufreq/energy_performance_preference"),
+        epp,
+    )
+    .with_context(|| {
+        format!("this probably means that CPU {cpu} doesn't exist or doesn't support changing EPP")
+    })
 }
 
-/// Get available EPP values from the system
-fn get_available_epp_values() -> Result<Vec<String>> {
-    let path = "/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_available_preferences";
+/// Get available EPP values for a CPU.
+fn get_available_epps(cpu: u32) -> Vec<String> {
+    let Ok(content) = fs::read_to_string(format!(
+        "/sys/devices/system/cpu/cpu{cpu}/cpufreq/energy_performance_available_preferences"
+    )) else {
+        return Vec::new();
+    };
 
-    if !Path::new(path).exists() {
-        // If the file doesn't exist, fall back to a default set of common values
-        // This is safer than failing outright, as some systems may allow these values     │
-        // even without explicitly listing them
-        return Ok(EPP_FALLBACK_VALUES.iter().map(|&s| s.to_string()).collect());
-    }
-
-    let content = fs::read_to_string(path).map_err(|e| {
-        ControlError::ReadError(format!("Failed to read available EPP values: {e}"))
-    })?;
-
-    Ok(content
+    content
         .split_whitespace()
         .map(ToString::to_string)
-        .collect())
+        .collect()
 }
 
-pub fn set_epb(epb: &str, core_id: Option<u32>) -> Result<()> {
-    // Validate EPB value - should be a number 0-15 or a recognized string value
+pub fn set_epb(epb: &str, cpu: u32) -> anyhow::Result<()> {
+    // Validate EPB value - should be a number 0-15 or a recognized string value.
     validate_epb_value(epb)?;
 
-    let action = |id: u32| {
-        let path = format!("/sys/devices/system/cpu/cpu{id}/cpufreq/energy_performance_bias");
-        if Path::new(&path).exists() {
-            write_sysfs_value(&path, epb)
-        } else {
-            Ok(())
-        }
-    };
-    core_id.map_or_else(|| for_each_cpu_core(action), action)
+    write(
+        format!("/sys/devices/system/cpu/cpu{cpu}/cpufreq/energy_performance_bias"),
+        epb,
+    )
+    .with_context(|| {
+        format!("this probably means that CPU {cpu} doesn't exist or doesn't support changing EPB")
+    })
 }
 
-fn validate_epb_value(epb: &str) -> Result<()> {
-    // EPB can be a number from 0-15 or a recognized string
-    // Try parsing as a number first
+fn validate_epb_value(epb: &str) -> anyhow::Result<()> {
+    // EPB can be a number from 0-15 or a recognized string.
+
+    const VALID_EPB_STRINGS: &[&str] = &[
+        "performance",
+        "balance-performance",
+        "balance_performance", // Alternative form with underscore.
+        "balance-power",
+        "balance_power", // Alternative form with underscore.
+        "power",
+    ];
+
+    // Try parsing as a number first.
     if let Ok(value) = epb.parse::<u8>() {
         if value <= 15 {
             return Ok(());
         }
-        return Err(ControlError::InvalidValueError(format!(
-            "EPB numeric value must be between 0 and 15, got {value}"
-        )));
+
+        bail!("EPB numeric value must be between 0 and 15, got {value}");
     }
 
     // If not a number, check if it's a recognized string value.
-    // This is using case-insensitive comparison
-    if VALID_EPB_STRINGS
-        .iter()
-        .any(|valid| valid.eq_ignore_ascii_case(epb))
-    {
-        Ok(())
-    } else {
-        Err(ControlError::InvalidValueError(format!(
-            "Invalid EPB value: '{}'. Must be a number 0-15 or one of: {}",
-            epb,
-            VALID_EPB_STRINGS.join(", ")
-        )))
-    }
-}
-
-pub fn set_min_frequency(freq_mhz: u32, core_id: Option<u32>) -> Result<()> {
-    // Check if the new minimum frequency would be greater than current maximum
-    if let Some(id) = core_id {
-        validate_min_frequency(id, freq_mhz)?;
-    } else {
-        // Check for all cores
-        let num_cores = get_logical_core_count()?;
-        for id in 0..num_cores {
-            validate_min_frequency(id, freq_mhz)?;
-        }
-    }
-
-    // XXX: We use u64 for the intermediate calculation to prevent overflow
-    let freq_khz = u64::from(freq_mhz) * 1000;
-    let freq_khz_str = freq_khz.to_string();
-
-    let action = |id: u32| {
-        let path = format!("/sys/devices/system/cpu/cpu{id}/cpufreq/scaling_min_freq");
-        if Path::new(&path).exists() {
-            write_sysfs_value(&path, &freq_khz_str)
-        } else {
-            Ok(())
-        }
-    };
-    core_id.map_or_else(|| for_each_cpu_core(action), action)
-}
-
-pub fn set_max_frequency(freq_mhz: u32, core_id: Option<u32>) -> Result<()> {
-    // Check if the new maximum frequency would be less than current minimum
-    if let Some(id) = core_id {
-        validate_max_frequency(id, freq_mhz)?;
-    } else {
-        // Check for all cores
-        let num_cores = get_logical_core_count()?;
-        for id in 0..num_cores {
-            validate_max_frequency(id, freq_mhz)?;
-        }
-    }
-
-    // XXX: Use a u64 here as well.
-    let freq_khz = u64::from(freq_mhz) * 1000;
-    let freq_khz_str = freq_khz.to_string();
-
-    let action = |id: u32| {
-        let path = format!("/sys/devices/system/cpu/cpu{id}/cpufreq/scaling_max_freq");
-        if Path::new(&path).exists() {
-            write_sysfs_value(&path, &freq_khz_str)
-        } else {
-            Ok(())
-        }
-    };
-    core_id.map_or_else(|| for_each_cpu_core(action), action)
-}
-
-fn read_sysfs_value_as_u32(path: &str) -> Result<u32> {
-    if !Path::new(path).exists() {
-        return Err(ControlError::NotSupported(format!(
-            "File does not exist: {path}"
-        )));
-    }
-
-    let content = fs::read_to_string(path)
-        .map_err(|e| ControlError::ReadError(format!("Failed to read {path}: {e}")))?;
-
-    content
-        .trim()
-        .parse::<u32>()
-        .map_err(|e| ControlError::ParseError(format!("Failed to parse value from {path}: {e}")))
-}
-
-fn validate_min_frequency(core_id: u32, new_min_freq_mhz: u32) -> Result<()> {
-    let max_freq_path = format!("/sys/devices/system/cpu/cpu{core_id}/cpufreq/scaling_max_freq");
-
-    if !Path::new(&max_freq_path).exists() {
+    if VALID_EPB_STRINGS.contains(&epb) {
         return Ok(());
     }
 
-    let max_freq_khz = read_sysfs_value_as_u32(&max_freq_path)?;
-    let new_min_freq_khz = new_min_freq_mhz * 1000;
+    bail!(
+        "invalid EPB value: '{epb}'. must be a number between 0-15 inclusive or one of: {valid}",
+        valid = VALID_EPB_STRINGS.join(", "),
+    );
+}
 
-    if new_min_freq_khz > max_freq_khz {
-        return Err(ControlError::InvalidValueError(format!(
-            "Minimum frequency ({} MHz) cannot be higher than maximum frequency ({} MHz) for core {}",
-            new_min_freq_mhz,
-            max_freq_khz / 1000,
-            core_id
-        )));
+pub fn set_frequency_minimum(frequency_mhz: u64, cpu: u32) -> anyhow::Result<()> {
+    validate_frequency_minimum(frequency_mhz, cpu)?;
+
+    // We use u64 for the intermediate calculation to prevent overflow
+    let frequency_khz = u64::from(frequency_mhz) * 1000;
+    let frequency_khz = frequency_khz.to_string();
+
+    write(
+        format!("/sys/devices/system/cpu/cpu{cpu}/cpufreq/scaling_min_freq"),
+        &frequency_khz,
+    )
+    .with_context(|| {
+        format!("this probably means that CPU {cpu} doesn't exist or doesn't support changing minimum frequency")
+    })
+}
+
+pub fn set_frequency_maximum(frequency_mhz: u64, cpu: u32) -> anyhow::Result<()> {
+    validate_max_frequency(frequency_mhz, cpu)?;
+
+    // We use u64 for the intermediate calculation to prevent overflow
+    let frequency_khz = u64::from(frequency_mhz) * 1000;
+    let frequency_khz = frequency_khz.to_string();
+
+    write(
+        format!("/sys/devices/system/cpu/cpu{cpu}/cpufreq/scaling_max_freq"),
+        &frequency_khz,
+    )
+    .with_context(|| {
+        format!("this probably means that CPU {cpu} doesn't exist or doesn't support changing maximum frequency")
+    })
+}
+
+fn validate_frequency_minimum(new_frequency_mhz: u64, cpu: u32) -> anyhow::Result<()> {
+    let Ok(minimum_frequency_khz) = read_u64(format!(
+        "/sys/devices/system/cpu/cpu{cpu}/cpufreq/scaling_min_freq"
+    )) else {
+        // Just let it pass if we can't find anything.
+        return Ok(());
+    };
+
+    if new_frequency_mhz as u64 * 1000 < minimum_frequency_khz {
+        bail!(
+            "new minimum frequency ({new_frequency_mhz} MHz) cannot be lower than the minimum frequency ({} MHz) for CPU {cpu}",
+            minimum_frequency_khz / 1000,
+        );
     }
 
     Ok(())
 }
 
-fn validate_max_frequency(core_id: u32, new_max_freq_mhz: u32) -> Result<()> {
-    let min_freq_path = format!("/sys/devices/system/cpu/cpu{core_id}/cpufreq/scaling_min_freq");
-
-    if !Path::new(&min_freq_path).exists() {
+fn validate_max_frequency(new_frequency_mhz: u64, cpu: u32) -> anyhow::Result<()> {
+    let Ok(maximum_frequency_khz) = read_u64(format!(
+        "/sys/devices/system/cpu/cpu{cpu}/cpufreq/scaling_min_freq"
+    )) else {
+        // Just let it pass if we can't find anything.
         return Ok(());
-    }
+    };
 
-    let min_freq_khz = read_sysfs_value_as_u32(&min_freq_path)?;
-    let new_max_freq_khz = new_max_freq_mhz * 1000;
-
-    if new_max_freq_khz < min_freq_khz {
-        return Err(ControlError::InvalidValueError(format!(
-            "Maximum frequency ({} MHz) cannot be lower than minimum frequency ({} MHz) for core {}",
-            new_max_freq_mhz,
-            min_freq_khz / 1000,
-            core_id
-        )));
+    if new_frequency_mhz * 1000 > maximum_frequency_khz {
+        bail!(
+            "new maximum frequency ({new_frequency_mhz} MHz) cannot be higher than the maximum frequency ({} MHz) for CPU {cpu}",
+            maximum_frequency_khz / 1000,
+        );
     }
 
     Ok(())
@@ -485,137 +327,108 @@ fn validate_max_frequency(core_id: u32, new_max_freq_mhz: u32) -> Result<()> {
 /// Also see [`The Kernel docs`] for this.
 ///
 /// [`The Kernel docs`]: <https://docs.kernel.org/userspace-api/sysfs-platform_profile.html>
-///
-/// # Examples
-///
-/// ```
-/// set_platform_profile("balanced");
-/// ```
-///
-pub fn set_platform_profile(profile: &str) -> Result<()> {
-    let path = "/sys/firmware/acpi/platform_profile";
-    if !Path::new(path).exists() {
-        return Err(ControlError::NotSupported(format!(
-            "Platform profile control not found at {path}.",
-        )));
+pub fn set_platform_profile(profile: &str) -> anyhow::Result<()> {
+    let profiles = get_platform_profiles();
+
+    if !profiles
+        .iter()
+        .any(|avail_profile| avail_profile == profile)
+    {
+        bail!(
+            "profile '{profile}' is not available for system. valid profiles: {profiles}",
+            profiles = profiles.join(", "),
+        );
     }
 
-    let available_profiles = get_platform_profiles()?;
-
-    if !available_profiles.contains(&profile.to_string()) {
-        return Err(ControlError::InvalidProfile(format!(
-            "Invalid platform control profile provided.\n\
-             Provided profile: {} \n\
-             Available profiles:\n\
-             {}",
-            profile,
-            available_profiles.join(", ")
-        )));
-    }
-    write_sysfs_value(path, profile)
+    write("/sys/firmware/acpi/platform_profile", profile)
+        .context("this probably means that your system does not support changing ACPI profiles")
 }
 
-/// Returns the list of available platform profiles.
-///
-/// # Errors
-///
-/// # Returns
-///
-/// - [`ControlError::NotSupported`] if:
-///   - The file `/sys/firmware/acpi/platform_profile_choices` does not exist.
-///   - The file `/sys/firmware/acpi/platform_profile_choices` is empty.
-///
-/// - [`ControlError::PermissionDenied`] if the file `/sys/firmware/acpi/platform_profile_choices` cannot be read.
-///
-pub fn get_platform_profiles() -> Result<Vec<String>> {
+/// Get the list of available platform profiles.
+pub fn get_platform_profiles() -> Vec<String> {
     let path = "/sys/firmware/acpi/platform_profile_choices";
 
-    if !Path::new(path).exists() {
-        return Err(ControlError::NotSupported(format!(
-            "Platform profile choices not found at {path}."
-        )));
-    }
+    let Ok(content) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
 
-    let content = fs::read_to_string(path)
-        .map_err(|_| ControlError::PermissionDenied(format!("Cannot read contents of {path}.")))?;
-
-    Ok(content
+    content
         .split_whitespace()
         .map(ToString::to_string)
-        .collect())
+        .collect()
 }
 
-/// Path for storing the governor override state
+/// Path for storing the governor override state.
 const GOVERNOR_OVERRIDE_PATH: &str = "/etc/xdg/superfreq/governor_override";
 
-/// Force a specific CPU governor or reset to automatic mode
-pub fn force_governor(mode: GovernorOverrideMode) -> Result<()> {
-    // Create directory if it doesn't exist
-    let dir_path = Path::new("/etc/xdg/superfreq");
-    if !dir_path.exists() {
-        fs::create_dir_all(dir_path).map_err(|e| {
-            if e.kind() == io::ErrorKind::PermissionDenied {
-                ControlError::PermissionDenied(format!(
-                    "Permission denied creating directory: {}. Try running with sudo.",
-                    dir_path.display()
-                ))
-            } else {
-                ControlError::Io(e)
-            }
+#[derive(Display, Debug, Clone, Copy, clap::ValueEnum)]
+pub enum GovernorOverride {
+    #[display("performance")]
+    Performance,
+    #[display("powersave")]
+    Powersave,
+    #[display("reset")]
+    Reset,
+}
+
+pub fn set_governor_override(mode: GovernorOverride) -> anyhow::Result<()> {
+    let parent = Path::new(GOVERNOR_OVERRIDE_PATH).parent().unwrap();
+    if !parent.exists() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create directory '{path}'",
+                path = parent.display(),
+            )
         })?;
     }
 
     match mode {
-        GovernorOverrideMode::Reset => {
+        GovernorOverride::Reset => {
             // Remove the override file if it exists
-            if Path::new(GOVERNOR_OVERRIDE_PATH).exists() {
-                fs::remove_file(GOVERNOR_OVERRIDE_PATH).map_err(|e| {
-                    if e.kind() == io::ErrorKind::PermissionDenied {
-                        ControlError::PermissionDenied(format!(
-                            "Permission denied removing override file: {GOVERNOR_OVERRIDE_PATH}. Try running with sudo."
-                        ))
-                    } else {
-                        ControlError::Io(e)
-                    }
-                })?;
-                println!(
-                    "Governor override has been reset. Normal profile-based settings will be used."
-                );
-            } else {
-                println!("No governor override was set.");
-            }
-            Ok(())
-        }
-        GovernorOverrideMode::Performance | GovernorOverrideMode::Powersave => {
-            // Create the override file with the selected governor
-            let governor = mode.to_string().to_lowercase();
-            fs::write(GOVERNOR_OVERRIDE_PATH, &governor).map_err(|e| {
-                if e.kind() == io::ErrorKind::PermissionDenied {
-                    ControlError::PermissionDenied(format!(
-                        "Permission denied writing to override file: {GOVERNOR_OVERRIDE_PATH}. Try running with sudo."
-                    ))
-                } else {
-                    ControlError::Io(e)
+            let result = fs::remove_file(GOVERNOR_OVERRIDE_PATH);
+
+            if let Err(error) = result {
+                if error.kind() != io::ErrorKind::NotFound {
+                    return Err(error).with_context(|| {
+                        format!(
+                            "failed to delete governor override file '{GOVERNOR_OVERRIDE_PATH}'"
+                        )
+                    });
                 }
-            })?;
+            }
 
-            // Also apply the governor immediately
-            set_governor(&governor, None)?;
-
-            println!(
-                "Governor override set to '{governor}'. This setting will persist across reboots."
+            log::info!(
+                "governor override has been deleted. normal profile-based settings will be used"
             );
-            println!("To reset, use: superfreq force-governor reset");
-            Ok(())
+        }
+
+        GovernorOverride::Performance | GovernorOverride::Powersave => {
+            let governor = mode.to_string();
+
+            write(GOVERNOR_OVERRIDE_PATH, &governor)
+                .context("failed to write governor override")?;
+
+            // TODO: Apply the setting too.
+
+            log::info!(
+                "governor override set to '{governor}'. this setting will persist across reboots"
+            );
+            log::info!("to reset, run: superfreq set --governor-persist reset");
         }
     }
+
+    Ok(())
 }
 
-/// Get the current governor override if set
-pub fn get_governor_override() -> Option<String> {
-    if Path::new(GOVERNOR_OVERRIDE_PATH).exists() {
-        fs::read_to_string(GOVERNOR_OVERRIDE_PATH).ok()
-    } else {
-        None
+/// Get the current governor override if set.
+pub fn get_governor_override() -> anyhow::Result<Option<String>> {
+    match fs::read_to_string(GOVERNOR_OVERRIDE_PATH) {
+        Ok(governor_override) => Ok(Some(governor_override)),
+
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+
+        Err(error) => Err(error).with_context(|| {
+            format!("failed to read governor override at '{GOVERNOR_OVERRIDE_PATH}'")
+        }),
     }
 }
