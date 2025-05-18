@@ -15,12 +15,12 @@ macro_rules! default_const {
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
-pub struct BatteryChargeThresholds {
+pub struct PowerSupplyChargeThresholds {
     pub start: u8,
     pub stop: u8,
 }
 
-impl BatteryChargeThresholds {
+impl PowerSupplyChargeThresholds {
     pub fn new(start: u8, stop: u8) -> Result<Self, ConfigError> {
         if stop == 0 {
             return Err(ConfigError::Validation(
@@ -42,7 +42,7 @@ impl BatteryChargeThresholds {
     }
 }
 
-impl TryFrom<(u8, u8)> for BatteryChargeThresholds {
+impl TryFrom<(u8, u8)> for PowerSupplyChargeThresholds {
     type Error = ConfigError;
 
     fn try_from(values: (u8, u8)) -> Result<Self, Self::Error> {
@@ -66,7 +66,7 @@ pub struct ProfileConfig {
     #[serde(default)]
     pub enable_auto_turbo: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub battery_charge_thresholds: Option<BatteryChargeThresholds>,
+    pub battery_charge_thresholds: Option<PowerSupplyChargeThresholds>,
 }
 
 impl Default for ProfileConfig {
@@ -124,7 +124,7 @@ pub struct ProfileConfigToml {
     #[serde(default = "default_enable_auto_turbo")]
     pub enable_auto_turbo: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub battery_charge_thresholds: Option<BatteryChargeThresholds>,
+    pub battery_charge_thresholds: Option<PowerSupplyChargeThresholds>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default)]
@@ -134,7 +134,7 @@ pub struct AppConfigToml {
     #[serde(default)]
     pub battery: ProfileConfigToml,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub battery_charge_thresholds: Option<BatteryChargeThresholds>,
+    pub battery_charge_thresholds: Option<PowerSupplyChargeThresholds>,
     pub ignored_power_supplies: Option<Vec<String>>,
     #[serde(default)]
     pub daemon: DaemonConfigToml,

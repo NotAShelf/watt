@@ -1,7 +1,7 @@
-use crate::battery;
 use crate::config::{AppConfig, ProfileConfig, TurboAutoSettings};
 use crate::core::{OperationalMode, SystemReport, TurboSetting};
 use crate::cpu::{self};
+use crate::power_supply;
 use crate::util::error::{ControlError, EngineError};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -277,7 +277,7 @@ pub fn determine_and_apply_settings(
 
         if start_threshold < stop_threshold && stop_threshold <= 100 {
             log::info!("Setting battery charge thresholds: {start_threshold}-{stop_threshold}%");
-            match battery::set_battery_charge_thresholds(start_threshold, stop_threshold) {
+            match power_supply::set_battery_charge_thresholds(start_threshold, stop_threshold) {
                 Ok(()) => log::debug!("Battery charge thresholds set successfully"),
                 Err(e) => log::warn!("Failed to set battery charge thresholds: {e}"),
             }
