@@ -1,4 +1,3 @@
-mod battery;
 mod cli;
 mod config;
 mod core;
@@ -6,6 +5,7 @@ mod cpu;
 mod daemon;
 mod engine;
 mod monitor;
+mod power_supply;
 mod util;
 
 use anyhow::{Context, anyhow, bail};
@@ -148,27 +148,14 @@ fn real_main() -> anyhow::Result<()> {
                 cpu::set_platform_profile(platform_profile)?;
             }
 
-            // TODO: This is like this because [`cpu`] doesn't expose
-            // a way of setting them individually. Will clean this up
-            // after that is cleaned.
-            if charge_threshold_start.is_some() || charge_threshold_end.is_some() {
-                let charge_threshold_start = charge_threshold_start.ok_or_else(|| {
-                    anyhow!("both charge thresholds should be given at the same time")
-                })?;
-                let charge_threshold_end = charge_threshold_end.ok_or_else(|| {
-                    anyhow!("both charge thresholds should be given at the same time")
-                })?;
-
-                if charge_threshold_start >= charge_threshold_end {
-                    bail!(
-                        "charge start threshold (given as {charge_threshold_start}) must be less than stop threshold (given as {charge_threshold_end})"
-                    );
+            for power_supply in power_supply::get_power_supplies()? {
+                if let Some(threshold_start) = charge_threshold_start {
+                    power_supply::set_charge_threshold_start(&power_supply, threshold_start)?;
                 }
 
-                battery::set_battery_charge_thresholds(
-                    charge_threshold_start,
-                    charge_threshold_end,
-                )?;
+                if let Some(threshold_end) = charge_threshold_end {
+                    power_supply::set_charge_threshold_end(&power_supply, threshold_end)?;
+                }
             }
 
             Ok(())
