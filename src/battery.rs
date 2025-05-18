@@ -1,5 +1,4 @@
 use crate::{config::types::BatteryChargeThresholds, util::error::ControlError, util::sysfs};
-use log::{debug, warn};
 use std::{
     fs, io,
     path::{Path, PathBuf},
@@ -118,7 +117,7 @@ fn find_supported_batteries(power_supply_path: &Path) -> Result<Vec<SupportedBat
         let entry = match entry {
             Ok(e) => e,
             Err(e) => {
-                warn!("Failed to read power-supply entry: {e}");
+                log::warn!("Failed to read power-supply entry: {e}");
                 continue;
             }
         };
@@ -131,16 +130,17 @@ fn find_supported_batteries(power_supply_path: &Path) -> Result<Vec<SupportedBat
     }
 
     if supported_batteries.is_empty() {
-        warn!("No batteries with charge threshold support found");
+        log::warn!("No batteries with charge threshold support found");
     } else {
-        debug!(
+        log::debug!(
             "Found {} batteries with threshold support",
             supported_batteries.len()
         );
         for battery in &supported_batteries {
-            debug!(
+            log::debug!(
                 "Battery '{}' supports {} threshold control",
-                battery.name, battery.pattern.description
+                battery.name,
+                battery.pattern.description
             );
         }
     }
@@ -173,9 +173,12 @@ fn apply_thresholds_to_batteries(
 
             match start_result {
                 Ok(()) => {
-                    debug!(
+                    log::debug!(
                         "Set {}-{}% charge thresholds for {} battery '{}'",
-                        start_threshold, stop_threshold, battery.pattern.description, battery.name
+                        start_threshold,
+                        stop_threshold,
+                        battery.pattern.description,
+                        battery.name
                     );
                     success_count += 1;
                 }
@@ -184,14 +187,16 @@ fn apply_thresholds_to_batteries(
                     if let Some(prev_stop) = &current_stop {
                         let restore_result = sysfs::write_sysfs_value(&stop_path, prev_stop);
                         if let Err(re) = restore_result {
-                            warn!(
+                            log::warn!(
                                 "Failed to restore previous stop threshold for battery '{}': {}. Battery may be in an inconsistent state.",
-                                battery.name, re
+                                battery.name,
+                                re
                             );
                         } else {
-                            debug!(
+                            log::debug!(
                                 "Restored previous stop threshold ({}) for battery '{}'",
-                                prev_stop, battery.name
+                                prev_stop,
+                                battery.name
                             );
                         }
                     }
@@ -212,7 +217,7 @@ fn apply_thresholds_to_batteries(
 
     if success_count > 0 {
         if !errors.is_empty() {
-            warn!(
+            log::warn!(
                 "Partial success setting battery thresholds: {}",
                 errors.join("; ")
             );

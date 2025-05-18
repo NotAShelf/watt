@@ -3,7 +3,6 @@ use crate::config::{AppConfig, ProfileConfig, TurboAutoSettings};
 use crate::core::{OperationalMode, SystemReport, TurboSetting};
 use crate::cpu::{self};
 use crate::util::error::{ControlError, EngineError};
-use log::{debug, info, warn};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -128,13 +127,13 @@ fn try_apply_feature<F, T>(
 where
     F: FnOnce() -> Result<T, ControlError>,
 {
-    info!("Setting {feature_name} to '{value_description}'");
+    log::info!("Setting {feature_name} to '{value_description}'");
 
     match apply_fn() {
         Ok(_) => Ok(()),
         Err(e) => {
             if matches!(e, ControlError::NotSupported(_)) {
-                warn!(
+                log::warn!(
                     "{feature_name} setting is not supported on this system. Skipping {feature_name} configuration."
                 );
                 Ok(())
@@ -155,7 +154,7 @@ pub fn determine_and_apply_settings(
 ) -> Result<(), EngineError> {
     // First, check if there's a governor override set
     if let Some(override_governor) = cpu::get_governor_override() {
-        info!(
+        log::info!(
             "Governor override is active: '{}'. Setting governor.",
             override_governor.trim()
         );
@@ -182,35 +181,35 @@ pub fn determine_and_apply_settings(
     if let Some(mode) = force_mode {
         match mode {
             OperationalMode::Powersave => {
-                info!("Forced Powersave mode selected. Applying 'battery' profile.");
+                log::info!("Forced Powersave mode selected. Applying 'battery' profile.");
                 selected_profile_config = &config.battery;
             }
             OperationalMode::Performance => {
-                info!("Forced Performance mode selected. Applying 'charger' profile.");
+                log::info!("Forced Performance mode selected. Applying 'charger' profile.");
                 selected_profile_config = &config.charger;
             }
         }
     } else {
         // Use the previously computed on_ac_power value
         if on_ac_power {
-            info!("On AC power, selecting Charger profile.");
+            log::info!("On AC power, selecting Charger profile.");
             selected_profile_config = &config.charger;
         } else {
-            info!("On Battery power, selecting Battery profile.");
+            log::info!("On Battery power, selecting Battery profile.");
             selected_profile_config = &config.battery;
         }
     }
 
     // Apply settings from selected_profile_config
     if let Some(governor) = &selected_profile_config.governor {
-        info!("Setting governor to '{governor}'");
+        log::info!("Setting governor to '{governor}'");
         // Let set_governor handle the validation
         if let Err(e) = cpu::set_governor(governor, None) {
             // If the governor is not available, log a warning
             if matches!(e, ControlError::InvalidGovernor(_))
                 || matches!(e, ControlError::NotSupported(_))
             {
-                warn!(
+                log::warn!(
                     "Configured governor '{governor}' is not available on this system. Skipping."
                 );
             } else {
@@ -220,14 +219,14 @@ pub fn determine_and_apply_settings(
     }
 
     if let Some(turbo_setting) = selected_profile_config.turbo {
-        info!("Setting turbo to '{turbo_setting:?}'");
+        log::info!("Setting turbo to '{turbo_setting:?}'");
         match turbo_setting {
             TurboSetting::Auto => {
                 if selected_profile_config.enable_auto_turbo {
-                    debug!("Managing turbo in auto mode based on system conditions");
+                    log::debug!("Managing turbo in auto mode based on system conditions");
                     manage_auto_turbo(report, selected_profile_config, on_ac_power)?;
                 } else {
-                    debug!(
+                    log::debug!(
                         "Superfreq's dynamic turbo management is disabled by configuration. Ensuring system uses its default behavior for automatic turbo control."
                     );
                     // Make sure the system is set to its default automatic turbo mode.
@@ -255,13 +254,13 @@ pub fn determine_and_apply_settings(
 
     if let Some(min_freq) = selected_profile_config.min_freq_mhz {
         try_apply_feature("min frequency", &format!("{min_freq} MHz"), || {
-            cpu::set_min_frequency(min_freq, None)
+            cpu::set_frequency_minimum(min_freq, None)
         })?;
     }
 
     if let Some(max_freq) = selected_profile_config.max_freq_mhz {
         try_apply_feature("max frequency", &format!("{max_freq} MHz"), || {
-            cpu::set_max_frequency(max_freq, None)
+            cpu::set_frequency_maximum(max_freq, None)
         })?;
     }
 
@@ -277,19 +276,19 @@ pub fn determine_and_apply_settings(
         let stop_threshold = thresholds.stop;
 
         if start_threshold < stop_threshold && stop_threshold <= 100 {
-            info!("Setting battery charge thresholds: {start_threshold}-{stop_threshold}%");
+            log::info!("Setting battery charge thresholds: {start_threshold}-{stop_threshold}%");
             match battery::set_battery_charge_thresholds(start_threshold, stop_threshold) {
-                Ok(()) => debug!("Battery charge thresholds set successfully"),
-                Err(e) => warn!("Failed to set battery charge thresholds: {e}"),
+                Ok(()) => log::debug!("Battery charge thresholds set successfully"),
+                Err(e) => log::warn!("Failed to set battery charge thresholds: {e}"),
             }
         } else {
-            warn!(
+            log::warn!(
                 "Invalid battery threshold values: start={start_threshold}, stop={stop_threshold}"
             );
         }
     }
 
-    debug!("Profile settings applied successfully.");
+    log::debug!("Profile settings applied successfully.");
 
     Ok(())
 }
@@ -346,27 +345,30 @@ fn manage_auto_turbo(
     let enable_turbo = match (cpu_temp, avg_cpu_usage, previous_turbo_enabled) {
         // If temperature is too high, disable turbo regardless of load
         (Some(temp), _, _) if temp >= turbo_settings.temp_threshold_high => {
-            info!(
+            log::info!(
                 "Auto Turbo: Disabled due to high temperature ({:.1}°C >= {:.1}°C)",
-                temp, turbo_settings.temp_threshold_high
+                temp,
+                turbo_settings.temp_threshold_high
             );
             false
         }
 
         // If load is high enough, enable turbo (unless temp already caused it to disable)
         (_, Some(usage), _) if usage >= turbo_settings.load_threshold_high => {
-            info!(
+            log::info!(
                 "Auto Turbo: Enabled due to high CPU load ({:.1}% >= {:.1}%)",
-                usage, turbo_settings.load_threshold_high
+                usage,
+                turbo_settings.load_threshold_high
             );
             true
         }
 
         // If load is low, disable turbo
         (_, Some(usage), _) if usage <= turbo_settings.load_threshold_low => {
-            info!(
+            log::info!(
                 "Auto Turbo: Disabled due to low CPU load ({:.1}% <= {:.1}%)",
-                usage, turbo_settings.load_threshold_low
+                usage,
+                turbo_settings.load_threshold_low
             );
             false
         }
@@ -376,7 +378,7 @@ fn manage_auto_turbo(
             if usage > turbo_settings.load_threshold_low
                 && usage < turbo_settings.load_threshold_high =>
         {
-            info!(
+            log::info!(
                 "Auto Turbo: Maintaining previous state ({}) due to intermediate load ({:.1}%)",
                 if prev_state { "enabled" } else { "disabled" },
                 usage
@@ -386,7 +388,7 @@ fn manage_auto_turbo(
 
         // When CPU load data is present but temperature is missing, use the same hysteresis logic
         (None, Some(usage), prev_state) => {
-            info!(
+            log::info!(
                 "Auto Turbo: Maintaining previous state ({}) due to missing temperature data (load: {:.1}%)",
                 if prev_state { "enabled" } else { "disabled" },
                 usage
@@ -396,7 +398,7 @@ fn manage_auto_turbo(
 
         // When all metrics are missing, maintain the previous state
         (None, None, prev_state) => {
-            info!(
+            log::info!(
                 "Auto Turbo: Maintaining previous state ({}) due to missing all CPU metrics",
                 if prev_state { "enabled" } else { "disabled" }
             );
@@ -405,7 +407,7 @@ fn manage_auto_turbo(
 
         // Any other cases with partial metrics, maintain previous state for stability
         (_, _, prev_state) => {
-            info!(
+            log::info!(
                 "Auto Turbo: Maintaining previous state ({}) due to incomplete CPU metrics",
                 if prev_state { "enabled" } else { "disabled" }
             );
@@ -429,7 +431,7 @@ fn manage_auto_turbo(
             TurboSetting::Never
         };
 
-        info!(
+        log::info!(
             "Auto Turbo: Applying turbo change from {} to {}",
             if previous_turbo_enabled {
                 "enabled"
@@ -441,7 +443,7 @@ fn manage_auto_turbo(
 
         match cpu::set_turbo(turbo_setting) {
             Ok(()) => {
-                debug!(
+                log::debug!(
                     "Auto Turbo: Successfully set turbo to {}",
                     if enable_turbo { "enabled" } else { "disabled" }
                 );
@@ -450,7 +452,7 @@ fn manage_auto_turbo(
             Err(e) => Err(EngineError::ControlError(e)),
         }
     } else {
-        debug!(
+        log::debug!(
             "Auto Turbo: Maintaining turbo state ({}) - no change needed",
             if enable_turbo { "enabled" } else { "disabled" }
         );

@@ -3,7 +3,6 @@ use crate::core::SystemReport;
 use crate::engine;
 use crate::monitor;
 use crate::util::error::{AppError, ControlError};
-use log::{LevelFilter, debug, error, info, warn};
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::Write;
@@ -99,7 +98,7 @@ fn compute_new(
         if idle_time_seconds > 0 {
             let idle_factor = idle_multiplier(idle_time_seconds);
 
-            debug!(
+            log::debug!(
                 "System idle for {} seconds (approx. {} minutes), applying idle factor: {:.2}x",
                 idle_time_seconds,
                 (idle_time_seconds as f32 / 60.0).round(),
@@ -226,7 +225,7 @@ impl SystemHistory {
                             > 15.0)
                 {
                     self.last_user_activity = Instant::now();
-                    debug!("User activity detected based on CPU usage");
+                    log::debug!("User activity detected based on CPU usage");
                 }
             }
         }
@@ -245,7 +244,7 @@ impl SystemHistory {
                 if temp_change > 5.0 {
                     // 5°C rise in temperature
                     self.last_user_activity = Instant::now();
-                    debug!("User activity detected based on temperature change");
+                    log::debug!("User activity detected based on temperature change");
                 }
             }
         }
@@ -302,7 +301,7 @@ impl SystemHistory {
             // State changes (except to Idle) likely indicate user activity
             if new_state != SystemState::Idle && new_state != SystemState::LowLoad {
                 self.last_user_activity = Instant::now();
-                debug!("User activity detected based on system state change to {new_state:?}");
+                log::debug!("User activity detected based on system state change to {new_state:?}");
             }
 
             // Update state
@@ -313,7 +312,7 @@ impl SystemHistory {
         // Check for significant load changes
         if report.system_load.load_avg_1min > 1.0 {
             self.last_user_activity = Instant::now();
-            debug!("User activity detected based on system load");
+            log::debug!("User activity detected based on system load");
         }
     }
 
@@ -402,26 +401,8 @@ fn validate_poll_intervals(min_interval: u64, max_interval: u64) -> Result<(), C
 }
 
 /// Run the daemon
-pub fn run_daemon(config: AppConfig, verbose: bool) -> Result<(), AppError> {
-    // Set effective log level based on config and verbose flag
-    let effective_log_level = if verbose {
-        LogLevel::Debug
-    } else {
-        config.daemon.log_level
-    };
-
-    // Get the appropriate level filter
-    let level_filter = match effective_log_level {
-        LogLevel::Error => LevelFilter::Error,
-        LogLevel::Warning => LevelFilter::Warn,
-        LogLevel::Info => LevelFilter::Info,
-        LogLevel::Debug => LevelFilter::Debug,
-    };
-
-    // Update the log level filter if needed, without re-initializing the logger
-    log::set_max_level(level_filter);
-
-    info!("Starting superfreq daemon...");
+pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
+    log::info!("Starting superfreq daemon...");
 
     // Validate critical configuration values before proceeding
     if let Err(err) = validate_poll_intervals(
@@ -437,26 +418,28 @@ pub fn run_daemon(config: AppConfig, verbose: bool) -> Result<(), AppError> {
 
     // Set up signal handlers
     ctrlc::set_handler(move || {
-        info!("Received shutdown signal, exiting...");
+        log::info!("Received shutdown signal, exiting...");
         r.store(false, Ordering::SeqCst);
     })
     .map_err(|e| AppError::Generic(format!("Error setting Ctrl-C handler: {e}")))?;
 
-    info!(
+    log::info!(
         "Daemon initialized with poll interval: {}s",
         config.daemon.poll_interval_sec
     );
 
     // Set up stats file if configured
     if let Some(stats_path) = &config.daemon.stats_file_path {
-        info!("Stats will be written to: {stats_path}");
+        log::info!("Stats will be written to: {stats_path}");
     }
 
     // Variables for adaptive polling
     // Make sure that the poll interval is *never* zero to prevent a busy loop
     let mut current_poll_interval = config.daemon.poll_interval_sec.max(1);
     if config.daemon.poll_interval_sec == 0 {
-        warn!("Poll interval is set to zero in config, using 1s minimum to prevent a busy loop");
+        log::warn!(
+            "Poll interval is set to zero in config, using 1s minimum to prevent a busy loop"
+        );
     }
     let mut system_history = SystemHistory::default();
 
@@ -466,7 +449,7 @@ pub fn run_daemon(config: AppConfig, verbose: bool) -> Result<(), AppError> {
 
         match monitor::collect_system_report(&config) {
             Ok(report) => {
-                debug!("Collected system report, applying settings...");
+                log::debug!("Collected system report, applying settings...");
 
                 // Store the current state before updating history
                 let previous_state = system_history.current_state.clone();
@@ -477,24 +460,24 @@ pub fn run_daemon(config: AppConfig, verbose: bool) -> Result<(), AppError> {
                 // Update the stats file if configured
                 if let Some(stats_path) = &config.daemon.stats_file_path {
                     if let Err(e) = write_stats_file(stats_path, &report) {
-                        error!("Failed to write stats file: {e}");
+                        log::error!("Failed to write stats file: {e}");
                     }
                 }
 
                 match engine::determine_and_apply_settings(&report, &config, None) {
                     Ok(()) => {
-                        debug!("Successfully applied system settings");
+                        log::debug!("Successfully applied system settings");
 
                         // If system state changed, log the new state
                         if system_history.current_state != previous_state {
-                            info!(
+                            log::info!(
                                 "System state changed to: {:?}",
                                 system_history.current_state
                             );
                         }
                     }
                     Err(e) => {
-                        error!("Error applying system settings: {e}");
+                        log::error!("Error applying system settings: {e}");
                     }
                 }
 
@@ -509,7 +492,7 @@ pub fn run_daemon(config: AppConfig, verbose: bool) -> Result<(), AppError> {
                             // Store the new interval
                             system_history.last_computed_interval = Some(optimal_interval);
 
-                            debug!("Recalculated optimal interval: {optimal_interval}s");
+                            log::debug!("Recalculated optimal interval: {optimal_interval}s");
 
                             // Don't change the interval too dramatically at once
                             match optimal_interval.cmp(&current_poll_interval) {
@@ -528,7 +511,7 @@ pub fn run_daemon(config: AppConfig, verbose: bool) -> Result<(), AppError> {
                         }
                         Err(e) => {
                             // Log the error and stop the daemon when an invalid configuration is detected
-                            error!("Critical configuration error: {e}");
+                            log::error!("Critical configuration error: {e}");
                             running.store(false, Ordering::SeqCst);
                             break;
                         }
@@ -540,7 +523,7 @@ pub fn run_daemon(config: AppConfig, verbose: bool) -> Result<(), AppError> {
                         config.daemon.max_poll_interval_sec,
                     );
 
-                    debug!("Adaptive polling: set interval to {current_poll_interval}s");
+                    log::debug!("Adaptive polling: set interval to {current_poll_interval}s");
                 } else {
                     // If adaptive polling is disabled, still apply battery-saving adjustment
                     if config.daemon.throttle_on_battery && on_battery {
@@ -552,20 +535,22 @@ pub fn run_daemon(config: AppConfig, verbose: bool) -> Result<(), AppError> {
                         current_poll_interval = (safe_interval * battery_multiplier)
                             .min(config.daemon.max_poll_interval_sec);
 
-                        debug!(
+                        log::debug!(
                             "On battery power, increased poll interval to {current_poll_interval}s"
                         );
                     } else {
                         // Use the configured poll interval
                         current_poll_interval = config.daemon.poll_interval_sec.max(1);
                         if config.daemon.poll_interval_sec == 0 {
-                            debug!("Using minimum poll interval of 1s instead of configured 0s");
+                            log::debug!(
+                                "Using minimum poll interval of 1s instead of configured 0s"
+                            );
                         }
                     }
                 }
             }
             Err(e) => {
-                error!("Error collecting system report: {e}");
+                log::error!("Error collecting system report: {e}");
             }
         }
 
@@ -574,12 +559,12 @@ pub fn run_daemon(config: AppConfig, verbose: bool) -> Result<(), AppError> {
         let poll_duration = Duration::from_secs(current_poll_interval);
         if elapsed < poll_duration {
             let sleep_time = poll_duration - elapsed;
-            debug!("Sleeping for {}s until next cycle", sleep_time.as_secs());
+            log::debug!("Sleeping for {}s until next cycle", sleep_time.as_secs());
             std::thread::sleep(sleep_time);
         }
     }
 
-    info!("Daemon stopped");
+    log::info!("Daemon stopped");
     Ok(())
 }
 

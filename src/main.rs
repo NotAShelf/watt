@@ -8,469 +8,478 @@ mod engine;
 mod monitor;
 mod util;
 
-use crate::config::AppConfig;
-use crate::core::{GovernorOverrideMode, TurboSetting};
-use crate::util::error::{AppError, ControlError};
-use clap::{Parser, value_parser};
-use env_logger::Builder;
-use log::{debug, error, info};
-use std::error::Error;
-use std::sync::Once;
+use anyhow::{Context, anyhow, bail};
+use clap::Parser as _;
+use std::fmt::Write as _;
+use std::io::Write as _;
+use std::{io, process};
+use yansi::Paint as _;
 
-#[derive(Parser, Debug)]
-#[clap(author, version, about, long_about = None)]
+#[derive(clap::Parser, Debug)]
+#[clap(author, version, about)]
 struct Cli {
+    #[command(flatten)]
+    verbosity: clap_verbosity_flag::Verbosity,
+
     #[clap(subcommand)]
-    command: Option<Commands>,
+    command: Command,
 }
 
-#[derive(Parser, Debug)]
-enum Commands {
-    /// Display current system information
+#[derive(clap::Parser, Debug)]
+enum Command {
+    /// Display information.
     Info,
-    /// Run as a daemon in the background
-    Daemon {
-        #[clap(long)]
-        verbose: bool,
-    },
-    /// Set CPU governor
-    SetGovernor {
-        governor: String,
-        #[clap(long)]
-        core_id: Option<u32>,
-    },
-    /// Force a specific governor mode persistently
-    ForceGovernor {
-        /// Mode to force: performance, powersave, or reset
-        #[clap(value_enum)]
-        mode: GovernorOverrideMode,
-    },
-    /// Set turbo boost behavior
-    SetTurbo {
-        #[clap(value_enum)]
-        setting: TurboSetting,
-    },
-    /// Display comprehensive debug information
-    Debug,
-    /// Set Energy Performance Preference (EPP)
-    SetEpp {
-        epp: String,
-        #[clap(long)]
-        core_id: Option<u32>,
-    },
-    /// Set Energy Performance Bias (EPB)
-    SetEpb {
-        epb: String, // Typically 0-15
-        #[clap(long)]
-        core_id: Option<u32>,
-    },
-    /// Set minimum CPU frequency
-    SetMinFreq {
-        freq_mhz: u32,
-        #[clap(long)]
-        core_id: Option<u32>,
-    },
-    /// Set maximum CPU frequency
-    SetMaxFreq {
-        freq_mhz: u32,
-        #[clap(long)]
-        core_id: Option<u32>,
-    },
-    /// Set ACPI platform profile
-    SetPlatformProfile { profile: String },
-    /// Set battery charge thresholds to extend battery lifespan
-    SetBatteryThresholds {
-        /// Percentage at which charging starts (when below this value)
-        #[clap(value_parser = value_parser!(u8).range(0..=99))]
-        start_threshold: u8,
-        /// Percentage at which charging stops (when it reaches this value)
-        #[clap(value_parser = value_parser!(u8).range(1..=100))]
-        stop_threshold: u8,
+
+    /// Start the daemon.
+    Start,
+
+    /// Modify attributes.
+    Set {
+        /// The CPUs to apply the changes to. When unspecified, will be applied to all CPUs.
+        #[arg(short = 'c', long = "for")]
+        for_: Option<Vec<u32>>,
+
+        /// Set the CPU governor.
+        #[arg(long)]
+        governor: Option<String>, // TODO: Validate with clap for available governors.
+
+        /// Set the CPU governor persistently.
+        #[arg(long, conflicts_with = "governor")]
+        governor_persist: Option<String>, // TODO: Validate with clap for available governors.
+
+        /// Set CPU Energy Performance Preference (EPP). Short form: --epp.
+        #[arg(long, alias = "epp")]
+        energy_performance_preference: Option<String>,
+
+        /// Set CPU Energy Performance Bias (EPB). Short form: --epb.
+        #[arg(long, alias = "epb")]
+        energy_performance_bias: Option<String>,
+
+        /// Set minimum CPU frequency in MHz. Short form: --freq-min.
+        #[arg(short = 'f', long, alias = "freq-min", value_parser = clap::value_parser!(u64).range(1..=10_000))]
+        frequency_mhz_minimum: Option<u64>,
+
+        /// Set maximum CPU frequency in MHz. Short form: --freq-max.
+        #[arg(short = 'F', long, alias = "freq-max", value_parser = clap::value_parser!(u64).range(1..=10_000))]
+        frequency_mhz_maximum: Option<u64>,
+
+        /// Set turbo boost behaviour. Has to be for all CPUs.
+        #[arg(long, conflicts_with = "for_")]
+        turbo: Option<cpu::Turbo>,
+
+        /// Set ACPI platform profile. Has to be for all CPUs.
+        #[arg(long, alias = "profile", conflicts_with = "for_")]
+        platform_profile: Option<String>,
+
+        /// Set the percentage that the power supply has to drop under for charging to start. Short form: --charge-start.
+        #[arg(short = 'p', long, alias = "charge-start", value_parser = clap::value_parser!(u8).range(0..=100), conflicts_with = "for_")]
+        charge_threshold_start: Option<u8>,
+
+        /// Set the percentage where charging will stop. Short form: --charge-end.
+        #[arg(short = 'P', long, alias = "charge-end", value_parser = clap::value_parser!(u8).range(0..=100), conflicts_with = "for_")]
+        charge_threshold_end: Option<u8>,
     },
 }
 
-fn main() -> Result<(), AppError> {
-    // Initialize logger once for the entire application
-    init_logger();
-
+fn real_main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    // Load configuration first, as it might be needed by the monitor module
-    // E.g., for ignored power supplies
-    let config = match config::load_config() {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            error!("Error loading configuration: {e}. Using default values.");
-            // Proceed with default config if loading fails
-            AppConfig::default()
+    env_logger::Builder::new()
+        .filter_level(cli.verbosity.log_level_filter())
+        .format_timestamp(None)
+        .format_module_path(false)
+        .init();
+
+    let config = config::load_config().context("failed to load config")?;
+
+    match cli.command {
+        Command::Info => todo!(),
+
+        Command::Start => {
+            daemon::run_daemon(config)?;
+            Ok(())
         }
-    };
 
-    let command_result: Result<(), AppError> = match cli.command {
-        // TODO: This will be moved to a different module in the future.
-        Some(Commands::Info) => match monitor::collect_system_report(&config) {
-            Ok(report) => {
-                // Format section headers with proper centering
-                let format_section = |title: &str| {
-                    let title_len = title.len();
-                    let total_width = title_len + 8; // 8 is for padding (4 on each side)
-                    let separator = "═".repeat(total_width);
+        Command::Set {
+            for_,
+            governor,
+            governor_persist,
+            energy_performance_preference,
+            energy_performance_bias,
+            frequency_mhz_minimum,
+            frequency_mhz_maximum,
+            turbo,
+            platform_profile,
+            charge_threshold_start,
+            charge_threshold_end,
+        } => {
+            let cpus = match for_ {
+                Some(cpus) => cpus,
+                None => cpu::get_real_cpus()?,
+            };
 
-                    println!("\n╔{separator}╗");
+            for cpu in cpus {
+                if let Some(governor) = governor.as_ref() {
+                    cpu::set_governor(governor, cpu)?;
+                }
 
-                    // Calculate centering
-                    println!("║    {title}    ║");
+                if let Some(epp) = energy_performance_preference.as_ref() {
+                    cpu::set_epp(epp, cpu)?;
+                }
 
-                    println!("╚{separator}╝");
-                };
+                if let Some(epb) = energy_performance_bias.as_ref() {
+                    cpu::set_epb(epb, cpu)?;
+                }
 
-                format_section("System Information");
-                println!("CPU Model:          {}", report.system_info.cpu_model);
-                println!("Architecture:       {}", report.system_info.architecture);
-                println!(
-                    "Linux Distribution: {}",
-                    report.system_info.linux_distribution
-                );
+                if let Some(mhz_minimum) = frequency_mhz_minimum {
+                    cpu::set_frequency_minimum(mhz_minimum, cpu)?;
+                }
 
-                // Format timestamp in a readable way
-                println!("Current Time:       {}", jiff::Timestamp::now());
+                if let Some(mhz_maximum) = frequency_mhz_maximum {
+                    cpu::set_frequency_maximum(mhz_maximum, cpu)?;
+                }
+            }
 
-                format_section("CPU Global Info");
-                println!(
-                    "Current Governor:    {}",
-                    report
-                        .cpu_global
-                        .current_governor
-                        .as_deref()
-                        .unwrap_or("N/A")
-                );
-                println!(
-                    "Available Governors: {}", // 21 length baseline
-                    report.cpu_global.available_governors.join(", ")
-                );
-                println!(
-                    "Turbo Status:        {}",
-                    match report.cpu_global.turbo_status {
-                        Some(true) => "Enabled",
-                        Some(false) => "Disabled",
-                        None => "Unknown",
-                    }
-                );
+            if let Some(turbo) = turbo {
+                cpu::set_turbo(turbo)?;
+            }
 
-                println!(
-                    "EPP:                 {}",
-                    report.cpu_global.epp.as_deref().unwrap_or("N/A")
-                );
-                println!(
-                    "EPB:                 {}",
-                    report.cpu_global.epb.as_deref().unwrap_or("N/A")
-                );
-                println!(
-                    "Platform Profile:    {}",
-                    report
-                        .cpu_global
-                        .platform_profile
-                        .as_deref()
-                        .unwrap_or("N/A")
-                );
-                println!(
-                    "CPU Temperature:     {}",
-                    report.cpu_global.average_temperature_celsius.map_or_else(
-                        || "N/A (No sensor detected)".to_string(),
-                        |t| format!("{t:.1}°C")
-                    )
-                );
+            if let Some(platform_profile) = platform_profile.as_ref() {
+                cpu::set_platform_profile(platform_profile)?;
+            }
 
-                format_section("CPU Core Info");
+            // TODO: This is like this because [`cpu`] doesn't expose
+            // a way of setting them individually. Will clean this up
+            // after that is cleaned.
+            if charge_threshold_start.is_some() || charge_threshold_end.is_some() {
+                let charge_threshold_start = charge_threshold_start.ok_or_else(|| {
+                    anyhow!("both charge thresholds should be given at the same time")
+                })?;
+                let charge_threshold_end = charge_threshold_end.ok_or_else(|| {
+                    anyhow!("both charge thresholds should be given at the same time")
+                })?;
 
-                // Get max core ID length for padding
-                let max_core_id_len = report
-                    .cpu_cores
-                    .last()
-                    .map_or(1, |core| core.core_id.to_string().len());
-
-                // Table headers
-                println!(
-                    "  {:>width$}  │ {:^10} │ {:^10} │ {:^10} │ {:^7} │ {:^9}",
-                    "Core",
-                    "Current",
-                    "Min",
-                    "Max",
-                    "Usage",
-                    "Temp",
-                    width = max_core_id_len + 4
-                );
-                println!(
-                    "  {:─>width$}──┼─{:─^10}─┼─{:─^10}─┼─{:─^10}─┼─{:─^7}─┼─{:─^9}",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    width = max_core_id_len + 4
-                );
-
-                for core_info in &report.cpu_cores {
-                    // Format frequencies: if current > max, show in a special way
-                    let current_freq = match core_info.current_frequency_mhz {
-                        Some(freq) => {
-                            let max_freq = core_info.max_frequency_mhz.unwrap_or(0);
-                            if freq > max_freq && max_freq > 0 {
-                                // Special format for boosted frequencies
-                                format!("{freq}*")
-                            } else {
-                                format!("{freq}")
-                            }
-                        }
-                        None => "N/A".to_string(),
-                    };
-
-                    // CPU core display
-                    println!(
-                        "  Core {:<width$} │ {:>10} │ {:>10} │ {:>10} │ {:>7} │ {:>9}",
-                        core_info.core_id,
-                        format!("{} MHz", current_freq),
-                        format!(
-                            "{} MHz",
-                            core_info
-                                .min_frequency_mhz
-                                .map_or_else(|| "N/A".to_string(), |f| f.to_string())
-                        ),
-                        format!(
-                            "{} MHz",
-                            core_info
-                                .max_frequency_mhz
-                                .map_or_else(|| "N/A".to_string(), |f| f.to_string())
-                        ),
-                        format!(
-                            "{}%",
-                            core_info
-                                .usage_percent
-                                .map_or_else(|| "N/A".to_string(), |f| format!("{f:.1}"))
-                        ),
-                        format!(
-                            "{}°C",
-                            core_info
-                                .temperature_celsius
-                                .map_or_else(|| "N/A".to_string(), |f| format!("{f:.1}"))
-                        ),
-                        width = max_core_id_len
+                if charge_threshold_start >= charge_threshold_end {
+                    bail!(
+                        "charge start threshold (given as {charge_threshold_start}) must be less than stop threshold (given as {charge_threshold_end})"
                     );
                 }
 
-                // Only display battery info for systems that have real batteries
-                // Skip this section entirely on desktop systems
-                if !report.batteries.is_empty() {
-                    let has_real_batteries = report.batteries.iter().any(|b| {
-                        // Check if any battery has actual battery data
-                        // (as opposed to peripherals like wireless mice)
-                        b.capacity_percent.is_some() || b.power_rate_watts.is_some()
-                    });
-
-                    if has_real_batteries {
-                        format_section("Battery Info");
-                        for battery_info in &report.batteries {
-                            // Check if this appears to be a real system battery
-                            if battery_info.capacity_percent.is_some()
-                                || battery_info.power_rate_watts.is_some()
-                            {
-                                let power_status = if battery_info.ac_connected {
-                                    "Connected to AC"
-                                } else {
-                                    "Running on Battery"
-                                };
-
-                                println!("Battery {}:", battery_info.name);
-                                println!("  Power Status:     {power_status}");
-                                println!(
-                                    "  State:            {}",
-                                    battery_info.charging_state.as_deref().unwrap_or("Unknown")
-                                );
-
-                                if let Some(capacity) = battery_info.capacity_percent {
-                                    println!("  Capacity:         {capacity}%");
-                                }
-
-                                if let Some(power) = battery_info.power_rate_watts {
-                                    let direction = if power >= 0.0 {
-                                        "charging"
-                                    } else {
-                                        "discharging"
-                                    };
-                                    println!(
-                                        "  Power Rate:       {:.2} W ({})",
-                                        power.abs(),
-                                        direction
-                                    );
-                                }
-
-                                // Display charge thresholds if available
-                                if battery_info.charge_start_threshold.is_some()
-                                    || battery_info.charge_stop_threshold.is_some()
-                                {
-                                    println!(
-                                        "  Charge Thresholds: {}-{}",
-                                        battery_info
-                                            .charge_start_threshold
-                                            .map_or_else(|| "N/A".to_string(), |t| t.to_string()),
-                                        battery_info
-                                            .charge_stop_threshold
-                                            .map_or_else(|| "N/A".to_string(), |t| t.to_string())
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-
-                format_section("System Load");
-                println!(
-                    "Load Average (1m):  {:.2}",
-                    report.system_load.load_avg_1min
-                );
-                println!(
-                    "Load Average (5m):  {:.2}",
-                    report.system_load.load_avg_5min
-                );
-                println!(
-                    "Load Average (15m): {:.2}",
-                    report.system_load.load_avg_15min
-                );
-                Ok(())
+                battery::set_battery_charge_thresholds(
+                    charge_threshold_start,
+                    charge_threshold_end,
+                )?;
             }
-            Err(e) => Err(AppError::Monitor(e)),
-        },
-        Some(Commands::SetGovernor { governor, core_id }) => {
-            cpu::set_governor(&governor, core_id).map_err(AppError::Control)
-        }
-        Some(Commands::ForceGovernor { mode }) => {
-            cpu::force_governor(mode).map_err(AppError::Control)
-        }
-        Some(Commands::SetTurbo { setting }) => cpu::set_turbo(setting).map_err(AppError::Control),
-        Some(Commands::SetEpp { epp, core_id }) => {
-            cpu::set_epp(&epp, core_id).map_err(AppError::Control)
-        }
-        Some(Commands::SetEpb { epb, core_id }) => {
-            cpu::set_epb(&epb, core_id).map_err(AppError::Control)
-        }
-        Some(Commands::SetMinFreq { freq_mhz, core_id }) => {
-            // Basic validation for reasonable CPU frequency values
-            validate_freq(freq_mhz, "Minimum")?;
-            cpu::set_min_frequency(freq_mhz, core_id).map_err(AppError::Control)
-        }
-        Some(Commands::SetMaxFreq { freq_mhz, core_id }) => {
-            // Basic validation for reasonable CPU frequency values
-            validate_freq(freq_mhz, "Maximum")?;
-            cpu::set_max_frequency(freq_mhz, core_id).map_err(AppError::Control)
-        }
-        Some(Commands::SetPlatformProfile { profile }) => {
-            // Get available platform profiles and validate early if possible
-            match cpu::get_platform_profiles() {
-                Ok(available_profiles) => {
-                    if available_profiles.contains(&profile) {
-                        info!("Setting platform profile to '{profile}'");
-                        cpu::set_platform_profile(&profile).map_err(AppError::Control)
-                    } else {
-                        error!(
-                            "Invalid platform profile: '{}'. Available profiles: {}",
-                            profile,
-                            available_profiles.join(", ")
-                        );
-                        Err(AppError::Generic(format!(
-                            "Invalid platform profile: '{}'. Available profiles: {}",
-                            profile,
-                            available_profiles.join(", ")
-                        )))
-                    }
-                }
-                Err(_e) => {
-                    // If we can't get profiles (e.g., feature not supported), pass through to the function
-                    cpu::set_platform_profile(&profile).map_err(AppError::Control)
-                }
-            }
-        }
-        Some(Commands::SetBatteryThresholds {
-            start_threshold,
-            stop_threshold,
-        }) => {
-            // We only need to check if start < stop since the range validation is handled by Clap
-            if start_threshold >= stop_threshold {
-                error!(
-                    "Start threshold ({start_threshold}) must be less than stop threshold ({stop_threshold})"
-                );
-                Err(AppError::Generic(format!(
-                    "Start threshold ({start_threshold}) must be less than stop threshold ({stop_threshold})"
-                )))
-            } else {
-                info!(
-                    "Setting battery thresholds: start at {start_threshold}%, stop at {stop_threshold}%"
-                );
-                battery::set_battery_charge_thresholds(start_threshold, stop_threshold)
-                    .map_err(AppError::Control)
-            }
-        }
-        Some(Commands::Daemon { verbose }) => daemon::run_daemon(config, verbose),
-        Some(Commands::Debug) => cli::debug::run_debug(&config),
-        None => {
-            info!("Welcome to superfreq! Use --help for commands.");
-            debug!("Current effective configuration: {config:?}");
+
             Ok(())
         }
+    }
+
+    // TODO: This will be moved to a different module in the future.
+    // Some(Command::Info) => match monitor::collect_system_report(&config) {
+    //     Ok(report) => {
+    //         // Format section headers with proper centering
+    //         let format_section = |title: &str| {
+    //             let title_len = title.len();
+    //             let total_width = title_len + 8; // 8 is for padding (4 on each side)
+    //             let separator = "═".repeat(total_width);
+
+    //             println!("\n╔{separator}╗");
+
+    //             // Calculate centering
+    //             println!("║  {title}  ║");
+
+    //             println!("╚{separator}╝");
+    //         };
+
+    //         format_section("System Information");
+    //         println!("CPU Model:      {}", report.system_info.cpu_model);
+    //         println!("Architecture:     {}", report.system_info.architecture);
+    //         println!(
+    //             "Linux Distribution: {}",
+    //             report.system_info.linux_distribution
+    //         );
+
+    //         // Format timestamp in a readable way
+    //         println!("Current Time:     {}", jiff::Timestamp::now());
+
+    //         format_section("CPU Global Info");
+    //         println!(
+    //             "Current Governor:  {}",
+    //             report
+    //                 .cpu_global
+    //                 .current_governor
+    //                 .as_deref()
+    //                 .unwrap_or("N/A")
+    //         );
+    //         println!(
+    //             "Available Governors: {}", // 21 length baseline
+    //             report.cpu_global.available_governors.join(", ")
+    //         );
+    //         println!(
+    //             "Turbo Status:    {}",
+    //             match report.cpu_global.turbo_status {
+    //                 Some(true) => "Enabled",
+    //                 Some(false) => "Disabled",
+    //                 None => "Unknown",
+    //             }
+    //         );
+
+    //         println!(
+    //             "EPP:         {}",
+    //             report.cpu_global.epp.as_deref().unwrap_or("N/A")
+    //         );
+    //         println!(
+    //             "EPB:         {}",
+    //             report.cpu_global.epb.as_deref().unwrap_or("N/A")
+    //         );
+    //         println!(
+    //             "Platform Profile:  {}",
+    //             report
+    //                 .cpu_global
+    //                 .platform_profile
+    //                 .as_deref()
+    //                 .unwrap_or("N/A")
+    //         );
+    //         println!(
+    //             "CPU Temperature:   {}",
+    //             report.cpu_global.average_temperature_celsius.map_or_else(
+    //                 || "N/A (No sensor detected)".to_string(),
+    //                 |t| format!("{t:.1}°C")
+    //             )
+    //         );
+
+    //         format_section("CPU Core Info");
+
+    //         // Get max core ID length for padding
+    //         let max_core_id_len = report
+    //             .cpu_cores
+    //             .last()
+    //             .map_or(1, |core| core.core_id.to_string().len());
+
+    //         // Table headers
+    //         println!(
+    //             "  {:>width$}  │ {:^10} │ {:^10} │ {:^10} │ {:^7} │ {:^9}",
+    //             "Core",
+    //             "Current",
+    //             "Min",
+    //             "Max",
+    //             "Usage",
+    //             "Temp",
+    //             width = max_core_id_len + 4
+    //         );
+    //         println!(
+    //             "  {:─>width$}──┼─{:─^10}─┼─{:─^10}─┼─{:─^10}─┼─{:─^7}─┼─{:─^9}",
+    //             "",
+    //             "",
+    //             "",
+    //             "",
+    //             "",
+    //             "",
+    //             width = max_core_id_len + 4
+    //         );
+
+    //         for core_info in &report.cpu_cores {
+    //             // Format frequencies: if current > max, show in a special way
+    //             let current_freq = match core_info.current_frequency_mhz {
+    //                 Some(freq) => {
+    //                     let max_freq = core_info.max_frequency_mhz.unwrap_or(0);
+    //                     if freq > max_freq && max_freq > 0 {
+    //                         // Special format for boosted frequencies
+    //                         format!("{freq}*")
+    //                     } else {
+    //                         format!("{freq}")
+    //                     }
+    //                 }
+    //                 None => "N/A".to_string(),
+    //             };
+
+    //             // CPU core display
+    //             println!(
+    //                 "  Core {:<width$} │ {:>10} │ {:>10} │ {:>10} │ {:>7} │ {:>9}",
+    //                 core_info.core_id,
+    //                 format!("{} MHz", current_freq),
+    //                 format!(
+    //                     "{} MHz",
+    //                     core_info
+    //                         .min_frequency_mhz
+    //                         .map_or_else(|| "N/A".to_string(), |f| f.to_string())
+    //                 ),
+    //                 format!(
+    //                     "{} MHz",
+    //                     core_info
+    //                         .max_frequency_mhz
+    //                         .map_or_else(|| "N/A".to_string(), |f| f.to_string())
+    //                 ),
+    //                 format!(
+    //                     "{}%",
+    //                     core_info
+    //                         .usage_percent
+    //                         .map_or_else(|| "N/A".to_string(), |f| format!("{f:.1}"))
+    //                 ),
+    //                 format!(
+    //                     "{}°C",
+    //                     core_info
+    //                         .temperature_celsius
+    //                         .map_or_else(|| "N/A".to_string(), |f| format!("{f:.1}"))
+    //                 ),
+    //                 width = max_core_id_len
+    //             );
+    //         }
+
+    //         // Only display battery info for systems that have real batteries
+    //         // Skip this section entirely on desktop systems
+    //         if !report.batteries.is_empty() {
+    //             let has_real_batteries = report.batteries.iter().any(|b| {
+    //                 // Check if any battery has actual battery data
+    //                 // (as opposed to peripherals like wireless mice)
+    //                 b.capacity_percent.is_some() || b.power_rate_watts.is_some()
+    //             });
+
+    //             if has_real_batteries {
+    //                 format_section("Battery Info");
+    //                 for battery_info in &report.batteries {
+    //                     // Check if this appears to be a real system battery
+    //                     if battery_info.capacity_percent.is_some()
+    //                         || battery_info.power_rate_watts.is_some()
+    //                     {
+    //                         let power_status = if battery_info.ac_connected {
+    //                             "Connected to AC"
+    //                         } else {
+    //                             "Running on Battery"
+    //                         };
+
+    //                         println!("Battery {}:", battery_info.name);
+    //                         println!("  Power Status:   {power_status}");
+    //                         println!(
+    //                             "  State:      {}",
+    //                             battery_info.charging_state.as_deref().unwrap_or("Unknown")
+    //                         );
+
+    //                         if let Some(capacity) = battery_info.capacity_percent {
+    //                             println!("  Capacity:     {capacity}%");
+    //                         }
+
+    //                         if let Some(power) = battery_info.power_rate_watts {
+    //                             let direction = if power >= 0.0 {
+    //                                 "charging"
+    //                             } else {
+    //                                 "discharging"
+    //                             };
+    //                             println!(
+    //                                 "  Power Rate:     {:.2} W ({})",
+    //                                 power.abs(),
+    //                                 direction
+    //                             );
+    //                         }
+
+    //                         // Display charge thresholds if available
+    //                         if battery_info.charge_start_threshold.is_some()
+    //                             || battery_info.charge_stop_threshold.is_some()
+    //                         {
+    //                             println!(
+    //                                 "  Charge Thresholds: {}-{}",
+    //                                 battery_info
+    //                                     .charge_start_threshold
+    //                                     .map_or_else(|| "N/A".to_string(), |t| t.to_string()),
+    //                                 battery_info
+    //                                     .charge_stop_threshold
+    //                                     .map_or_else(|| "N/A".to_string(), |t| t.to_string())
+    //                             );
+    //                         }
+    //                     }
+    //                 }
+    //             }
+    //         }
+
+    //         format_section("System Load");
+    //         println!(
+    //             "Load Average (1m):  {:.2}",
+    //             report.system_load.load_avg_1min
+    //         );
+    //         println!(
+    //             "Load Average (5m):  {:.2}",
+    //             report.system_load.load_avg_5min
+    //         );
+    //         println!(
+    //             "Load Average (15m): {:.2}",
+    //             report.system_load.load_avg_15min
+    //         );
+    //         Ok(())
+    //     }
+    //     Err(e) => Err(AppError::Monitor(e)),
+    // },
+    // Some(CliCommand::SetPlatformProfile { profile }) => {
+    //   // Get available platform profiles and validate early if possible
+    //   match cpu::get_platform_profiles() {
+    //     Ok(available_profiles) => {
+    //       if available_profiles.contains(&profile) {
+    //         log::info!("Setting platform profile to '{profile}'");
+    //         cpu::set_platform_profile(&profile).map_err(AppError::Control)
+    //       } else {
+    //         log::error!(
+    //           "Invalid platform profile: '{}'. Available profiles: {}",
+    //           profile,
+    //           available_profiles.join(", ")
+    //         );
+    //         Err(AppError::Generic(format!(
+    //           "Invalid platform profile: '{}'. Available profiles: {}",
+    //           profile,
+    //           available_profiles.join(", ")
+    //         )))
+    //       }
+    //     }
+    //     Err(_e) => {
+    //       // If we can't get profiles (e.g., feature not supported), pass through to the function
+    //       cpu::set_platform_profile(&profile).map_err(AppError::Control)
+    //     }
+    //   }
+    // }
+}
+
+fn main() {
+    let Err(error) = real_main() else {
+        return;
     };
 
-    if let Err(e) = command_result {
-        error!("Error executing command: {e}");
-        if let Some(source) = e.source() {
-            error!("Caused by: {source}");
-        }
+    let mut err = io::stderr();
 
-        // Check for permission denied errors
-        if let AppError::Control(control_error) = &e {
-            if matches!(control_error, ControlError::PermissionDenied(_)) {
-                error!(
-                    "Hint: This operation may require administrator privileges (e.g., run with sudo)."
-                );
+    let mut message = String::new();
+    let mut chain = error.chain().rev().peekable();
+
+    while let Some(error) = chain.next() {
+        let _ = write!(
+            err,
+            "{header} ",
+            header = if chain.peek().is_none() {
+                "error:"
+            } else {
+                "cause:"
             }
-        }
+            .red()
+            .bold(),
+        );
 
-        std::process::exit(1);
+        String::clear(&mut message);
+        let _ = write!(message, "{error}");
+
+        let mut chars = message.char_indices();
+
+        let _ = match (chars.next(), chars.next()) {
+            (Some((_, first)), Some((second_start, second))) if second.is_lowercase() => {
+                writeln!(
+                    err,
+                    "{first_lowercase}{rest}",
+                    first_lowercase = first.to_lowercase(),
+                    rest = &message[second_start..],
+                )
+            }
+
+            _ => {
+                writeln!(err, "{message}")
+            }
+        };
     }
 
-    Ok(())
-}
-
-/// Initialize the logger for the entire application
-static LOGGER_INIT: Once = Once::new();
-fn init_logger() {
-    LOGGER_INIT.call_once(|| {
-        // Set default log level based on environment or default to Info
-        let env_log = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
-
-        Builder::new()
-            .parse_filters(&env_log)
-            .format_timestamp(None)
-            .format_module_path(false)
-            .init();
-
-        debug!("Logger initialized with RUST_LOG={env_log}");
-    });
-}
-
-/// Validate CPU frequency input values
-fn validate_freq(freq_mhz: u32, label: &str) -> Result<(), AppError> {
-    if freq_mhz == 0 {
-        error!("{label} frequency cannot be zero");
-        Err(AppError::Generic(format!(
-            "{label} frequency cannot be zero"
-        )))
-    } else if freq_mhz > 10000 {
-        // Extremely high value unlikely to be valid
-        error!("{label} frequency ({freq_mhz} MHz) is unreasonably high");
-        Err(AppError::Generic(format!(
-            "{label} frequency ({freq_mhz} MHz) is unreasonably high"
-        )))
-    } else {
-        Ok(())
-    }
+    process::exit(1);
 }

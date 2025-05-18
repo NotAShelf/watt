@@ -1,31 +1,3 @@
-use clap::ValueEnum;
-use serde::{Deserialize, Serialize};
-use std::fmt;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, ValueEnum)]
-pub enum TurboSetting {
-    Always, // turbo is forced on (if possible)
-    Auto,   // system or driver controls turbo
-    Never,  // turbo is forced off
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum GovernorOverrideMode {
-    Performance,
-    Powersave,
-    Reset,
-}
-
-impl fmt::Display for GovernorOverrideMode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Performance => write!(f, "performance"),
-            Self::Powersave => write!(f, "powersave"),
-            Self::Reset => write!(f, "reset"),
-        }
-    }
-}
-
 pub struct SystemInfo {
     // Overall system details
     pub cpu_model: String,

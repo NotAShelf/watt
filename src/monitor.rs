@@ -1,8 +1,7 @@
 use crate::config::AppConfig;
 use crate::core::{BatteryInfo, CpuCoreInfo, CpuGlobalInfo, SystemInfo, SystemLoad, SystemReport};
-use crate::cpu::get_logical_core_count;
+use crate::cpu::get_real_cpus;
 use crate::util::error::SysMonitorError;
-use log::debug;
 use std::{
     collections::HashMap,
     fs,
@@ -364,7 +363,7 @@ pub fn get_all_cpu_core_info() -> Result<Vec<CpuCoreInfo>> {
     thread::sleep(Duration::from_millis(250)); // interval for CPU usage calculation
     let final_cpu_times = read_all_cpu_times()?;
 
-    let num_cores = get_logical_core_count()
+    let num_cores = get_real_cpus()
         .map_err(|_| SysMonitorError::ReadError("Could not get the number of cores".to_string()))?;
 
     let mut core_infos = Vec::with_capacity(num_cores as usize);
@@ -395,7 +394,7 @@ pub fn get_cpu_global_info(cpu_cores: &[CpuCoreInfo]) -> CpuGlobalInfo {
     let mut cpufreq_base_path_buf = PathBuf::from("/sys/devices/system/cpu/cpu0/cpufreq/");
 
     if !cpufreq_base_path_buf.exists() {
-        let core_count = get_logical_core_count().unwrap_or_else(|e| {
+        let core_count = get_real_cpus().unwrap_or_else(|e| {
             eprintln!("Warning: {e}");
             0
         });
@@ -551,7 +550,7 @@ pub fn get_battery_info(config: &AppConfig) -> Result<Vec<BatteryInfo>> {
             if ps_type == "Battery" {
                 // Skip peripheral batteries that aren't real laptop batteries
                 if is_peripheral_battery(&ps_path, &name) {
-                    debug!("Skipping peripheral battery: {name}");
+                    log::debug!("Skipping peripheral battery: {name}");
                     continue;
                 }
 
@@ -598,7 +597,7 @@ pub fn get_battery_info(config: &AppConfig) -> Result<Vec<BatteryInfo>> {
 
     // If we found no batteries but have power supplies, we're likely on a desktop
     if batteries.is_empty() && overall_ac_connected {
-        debug!("No laptop batteries found, likely a desktop system");
+        log::debug!("No laptop batteries found, likely a desktop system");
     }
 
     Ok(batteries)
