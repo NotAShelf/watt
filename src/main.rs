@@ -8,7 +8,7 @@ mod monitor;
 mod power_supply;
 mod util;
 
-use anyhow::{Context, anyhow, bail};
+use anyhow::Context;
 use clap::Parser as _;
 use std::fmt::Write as _;
 use std::io::Write as _;
@@ -42,10 +42,6 @@ enum Command {
         /// Set the CPU governor.
         #[arg(long)]
         governor: Option<String>, // TODO: Validate with clap for available governors.
-
-        /// Set the CPU governor persistently.
-        #[arg(long, conflicts_with = "governor")]
-        governor_persist: Option<String>, // TODO: Validate with clap for available governors.
 
         /// Set CPU Energy Performance Preference (EPP). Short form: --epp.
         #[arg(long, alias = "epp")]
@@ -103,7 +99,6 @@ fn real_main() -> anyhow::Result<()> {
         Command::Set {
             for_,
             governor,
-            governor_persist,
             energy_performance_preference,
             energy_performance_bias,
             frequency_mhz_minimum,
