@@ -33,22 +33,22 @@ enum Command {
     /// Start the daemon.
     Start,
 
-    /// Modify attributes.
-    Set {
+    /// Modify CPU attributes.
+    CpuSet {
         /// The CPUs to apply the changes to. When unspecified, will be applied to all CPUs.
         #[arg(short = 'c', long = "for")]
         for_: Option<Vec<u32>>,
 
         /// Set the CPU governor.
-        #[arg(long)]
+        #[arg(short = 'g', long)]
         governor: Option<String>, // TODO: Validate with clap for available governors.
 
         /// Set CPU Energy Performance Preference (EPP). Short form: --epp.
-        #[arg(long, alias = "epp")]
+        #[arg(short = 'p', long, alias = "epp")]
         energy_performance_preference: Option<String>,
 
         /// Set CPU Energy Performance Bias (EPB). Short form: --epb.
-        #[arg(long, alias = "epb")]
+        #[arg(short = 'b', long, alias = "epb")]
         energy_performance_bias: Option<String>,
 
         /// Set minimum CPU frequency in MHz. Short form: --freq-min.
@@ -60,20 +60,27 @@ enum Command {
         frequency_mhz_maximum: Option<u64>,
 
         /// Set turbo boost behaviour. Has to be for all CPUs.
-        #[arg(long, conflicts_with = "for_")]
+        #[arg(short = 't', long, conflicts_with = "for_")]
         turbo: Option<cpu::Turbo>,
+    },
 
-        /// Set ACPI platform profile. Has to be for all CPUs.
-        #[arg(long, alias = "profile", conflicts_with = "for_")]
-        platform_profile: Option<String>,
+    /// Modify power supply attributes.
+    PowerSet {
+        /// The power supplies to apply the changes to. When unspecified, will be applied to all power supplies.
+        #[arg(short = 'p', long = "for")]
+        for_: Option<Vec<String>>,
 
         /// Set the percentage that the power supply has to drop under for charging to start. Short form: --charge-start.
-        #[arg(short = 'p', long, alias = "charge-start", value_parser = clap::value_parser!(u8).range(0..=100), conflicts_with = "for_")]
+        #[arg(short = 'c', long, alias = "charge-start", value_parser = clap::value_parser!(u8).range(0..=100))]
         charge_threshold_start: Option<u8>,
 
         /// Set the percentage where charging will stop. Short form: --charge-end.
-        #[arg(short = 'P', long, alias = "charge-end", value_parser = clap::value_parser!(u8).range(0..=100), conflicts_with = "for_")]
+        #[arg(short = 'C', long, alias = "charge-end", value_parser = clap::value_parser!(u8).range(0..=100))]
         charge_threshold_end: Option<u8>,
+
+        /// Set ACPI platform profile. Has to be for all power supplies.
+        #[arg(short = 'f', long, alias = "profile", conflicts_with = "for_")]
+        platform_profile: Option<String>,
     },
 }
 
@@ -96,7 +103,7 @@ fn real_main() -> anyhow::Result<()> {
             Ok(())
         }
 
-        Command::Set {
+        Command::CpuSet {
             for_,
             governor,
             energy_performance_preference,
@@ -104,9 +111,6 @@ fn real_main() -> anyhow::Result<()> {
             frequency_mhz_minimum,
             frequency_mhz_maximum,
             turbo,
-            platform_profile,
-            charge_threshold_start,
-            charge_threshold_end,
         } => {
             let cpus = match for_ {
                 Some(cpus) => cpus,
@@ -139,11 +143,33 @@ fn real_main() -> anyhow::Result<()> {
                 cpu::set_turbo(turbo)?;
             }
 
-            if let Some(platform_profile) = platform_profile.as_ref() {
-                cpu::set_platform_profile(platform_profile)?;
-            }
+            Ok(())
+        }
 
-            for power_supply in power_supply::get_power_supplies()? {
+        Command::PowerSet {
+            for_,
+            charge_threshold_start,
+            charge_threshold_end,
+            platform_profile,
+        } => {
+            let power_supplies = match for_ {
+                Some(names) => {
+                    let power_supplies = Vec::with_capacity(names.len());
+
+                    for name in names {
+                        power_supplies.push(power_supply::get_power_supply(&name)?);
+                    }
+
+                    power_supplies
+                }
+
+                None => power_supply::get_power_supplies()?
+                    .into_iter()
+                    .filter(|power_supply| power_supply.threshold_config.is_some())
+                    .collect(),
+            };
+
+            for power_supply in power_supplies {
                 if let Some(threshold_start) = charge_threshold_start {
                     power_supply::set_charge_threshold_start(&power_supply, threshold_start)?;
                 }
@@ -151,6 +177,10 @@ fn real_main() -> anyhow::Result<()> {
                 if let Some(threshold_end) = charge_threshold_end {
                     power_supply::set_charge_threshold_end(&power_supply, threshold_end)?;
                 }
+            }
+
+            if let Some(platform_profile) = platform_profile.as_ref() {
+                cpu::set_platform_profile(platform_profile)?;
             }
 
             Ok(())
