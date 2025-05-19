@@ -111,7 +111,9 @@ pub struct DaemonConfigLayer {
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq, Eq)]
 #[serde(transparent, default, rename_all = "kebab-case")]
-pub struct DaemonConfig(pub Vec<DaemonConfigLayer>);
+pub struct DaemonConfig {
+    config: Vec<DaemonConfigLayer>,
+}
 
 impl DaemonConfig {
     pub fn load_from(path: &Path) -> anyhow::Result<Self> {
@@ -122,9 +124,9 @@ impl DaemonConfig {
         let config: Self = toml::from_str(&contents).context("failed to parse config file")?;
 
         {
-            let mut priorities = Vec::with_capacity(config.0.len());
+            let mut priorities = Vec::with_capacity(config.config.len());
 
-            for layer in &config.0 {
+            for layer in &config.config {
                 if priorities.contains(&layer.priority) {
                     bail!("each config layer must have a different priority")
                 }
