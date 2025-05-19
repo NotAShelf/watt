@@ -3,6 +3,8 @@ use std::{fs, path::Path};
 use anyhow::{Context, bail};
 use serde::{Deserialize, Serialize};
 
+use crate::{cpu, power_supply};
+
 fn is_default<T: Default + PartialEq>(value: &T) -> bool {
     *value == T::default()
 }
@@ -46,6 +48,51 @@ pub struct CpuDelta {
     pub turbo: Option<bool>,
 }
 
+impl CpuDelta {
+    pub fn apply(&self) -> anyhow::Result<()> {
+        let cpus = match &self.for_ {
+            Some(numbers) => {
+                let mut cpus = Vec::with_capacity(numbers.len());
+
+                for &number in numbers {
+                    cpus.push(cpu::Cpu::new(number)?);
+                }
+
+                cpus
+            }
+            None => cpu::Cpu::all()?,
+        };
+
+        for cpu in cpus {
+            if let Some(governor) = self.governor.as_ref() {
+                cpu.set_governor(governor)?;
+            }
+
+            if let Some(epp) = self.energy_performance_preference.as_ref() {
+                cpu.set_epp(epp)?;
+            }
+
+            if let Some(epb) = self.energy_performance_bias.as_ref() {
+                cpu.set_epb(epb)?;
+            }
+
+            if let Some(mhz_minimum) = self.frequency_mhz_minimum {
+                cpu.set_frequency_minimum(mhz_minimum)?;
+            }
+
+            if let Some(mhz_maximum) = self.frequency_mhz_maximum {
+                cpu.set_frequency_maximum(mhz_maximum)?;
+            }
+        }
+
+        if let Some(turbo) = self.turbo {
+            cpu::Cpu::set_turbo(turbo)?;
+        }
+
+        Ok(())
+    }
+}
+
 #[derive(Serialize, Deserialize, clap::Parser, Default, Debug, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
 pub struct PowerDelta {
@@ -68,6 +115,43 @@ pub struct PowerDelta {
     #[arg(short = 'f', long, alias = "profile", conflicts_with = "for_")]
     #[serde(skip_serializing_if = "is_default")]
     pub platform_profile: Option<String>,
+}
+
+impl PowerDelta {
+    pub fn apply(&self) -> anyhow::Result<()> {
+        let power_supplies = match &self.for_ {
+            Some(names) => {
+                let mut power_supplies = Vec::with_capacity(names.len());
+
+                for name in names {
+                    power_supplies.push(power_supply::PowerSupply::from_name(name.clone())?);
+                }
+
+                power_supplies
+            }
+
+            None => power_supply::PowerSupply::all()?
+                .into_iter()
+                .filter(|power_supply| power_supply.threshold_config.is_some())
+                .collect(),
+        };
+
+        for power_supply in power_supplies {
+            if let Some(threshold_start) = self.charge_threshold_start {
+                power_supply.set_charge_threshold_start(threshold_start)?;
+            }
+
+            if let Some(threshold_end) = self.charge_threshold_end {
+                power_supply.set_charge_threshold_end(threshold_end)?;
+            }
+        }
+
+        if let Some(platform_profile) = self.platform_profile.as_ref() {
+            power_supply::PowerSupply::set_platform_profile(platform_profile)?;
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq, Eq, Hash)]
