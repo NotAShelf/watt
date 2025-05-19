@@ -60,7 +60,7 @@ impl CpuDelta {
 
                 cpus
             }
-            None => cpu::Cpu::all()?,
+            None => cpu::Cpu::all().context("failed to get all CPUs and their information")?,
         };
 
         for cpu in cpus {

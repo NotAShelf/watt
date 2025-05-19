@@ -92,10 +92,13 @@ impl Cpu {
 
     /// Rescan CPU, tuning local copy of settings.
     pub fn rescan(&mut self) -> anyhow::Result<()> {
-        let has_cpufreq = exists(format!(
-            "/sys/devices/system/cpu/cpu{number}/cpufreq",
-            number = self.number,
-        ));
+        let Self { number, .. } = self;
+
+        if !exists(format!("/sys/devices/system/cpu/cpu{number}")) {
+            bail!("{self} does not exist");
+        }
+
+        let has_cpufreq = exists(format!("/sys/devices/system/cpu/cpu{number}/cpufreq"));
 
         self.has_cpufreq = has_cpufreq;
 
