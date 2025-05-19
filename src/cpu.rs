@@ -14,7 +14,7 @@ fn read_u64(path: impl AsRef<Path>) -> anyhow::Result<u64> {
 
     let content = fs::read_to_string(path)?;
 
-    Ok(content.trim().parse::<u64>()?)
+    Ok(content.trim().parse()?)
 }
 
 fn write(path: impl AsRef<Path>, value: &str) -> anyhow::Result<()> {
@@ -73,7 +73,7 @@ impl Cpu {
             };
 
             // Has to match "cpu{N}".
-            let Ok(number) = cpu_prefix_removed.parse::<u32>() else {
+            let Ok(number) = cpu_prefix_removed.parse() else {
                 continue;
             };
 
