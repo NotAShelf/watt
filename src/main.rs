@@ -1,9 +1,9 @@
 mod config;
-mod core;
+// mod core;
 mod cpu;
-mod daemon;
-mod engine;
-mod monitor;
+// mod daemon;
+// mod engine;
+// mod monitor;
 mod power_supply;
 
 use anyhow::Context;
@@ -56,102 +56,15 @@ fn real_main() -> anyhow::Result<()> {
         Command::Info => todo!(),
 
         Command::Start { config } => {
-            let config = config::DaemonConfig::load_from(&config)
+            let _config = config::DaemonConfig::load_from(&config)
                 .context("failed to load daemon config file")?;
 
-            daemon::run(config)
-        }
-
-        Command::CpuSet(config::CpuDelta {
-            for_,
-            governor,
-            energy_performance_preference,
-            energy_performance_bias,
-            frequency_mhz_minimum,
-            frequency_mhz_maximum,
-            turbo,
-        }) => {
-            let cpus = match for_ {
-                Some(numbers) => {
-                    let mut cpus = Vec::with_capacity(numbers.len());
-
-                    for number in numbers {
-                        cpus.push(cpu::Cpu::new(number)?);
-                    }
-
-                    cpus
-                }
-                None => cpu::Cpu::all()?,
-            };
-
-            for cpu in cpus {
-                if let Some(governor) = governor.as_ref() {
-                    cpu.set_governor(governor)?;
-                }
-
-                if let Some(epp) = energy_performance_preference.as_ref() {
-                    cpu.set_epp(epp)?;
-                }
-
-                if let Some(epb) = energy_performance_bias.as_ref() {
-                    cpu.set_epb(epb)?;
-                }
-
-                if let Some(mhz_minimum) = frequency_mhz_minimum {
-                    cpu.set_frequency_minimum(mhz_minimum)?;
-                }
-
-                if let Some(mhz_maximum) = frequency_mhz_maximum {
-                    cpu.set_frequency_maximum(mhz_maximum)?;
-                }
-            }
-
-            if let Some(turbo) = turbo {
-                cpu::Cpu::set_turbo(turbo)?;
-            }
-
+            // daemon::run(config)
             Ok(())
         }
 
-        Command::PowerSet(config::PowerDelta {
-            for_,
-            charge_threshold_start,
-            charge_threshold_end,
-            platform_profile,
-        }) => {
-            let power_supplies = match for_ {
-                Some(names) => {
-                    let mut power_supplies = Vec::with_capacity(names.len());
-
-                    for name in names {
-                        power_supplies.push(power_supply::PowerSupply::from_name(name)?);
-                    }
-
-                    power_supplies
-                }
-
-                None => power_supply::PowerSupply::all()?
-                    .into_iter()
-                    .filter(|power_supply| power_supply.threshold_config.is_some())
-                    .collect(),
-            };
-
-            for power_supply in power_supplies {
-                if let Some(threshold_start) = charge_threshold_start {
-                    power_supply.set_charge_threshold_start(threshold_start)?;
-                }
-
-                if let Some(threshold_end) = charge_threshold_end {
-                    power_supply.set_charge_threshold_end(threshold_end)?;
-                }
-            }
-
-            if let Some(platform_profile) = platform_profile.as_ref() {
-                power_supply::PowerSupply::set_platform_profile(platform_profile);
-            }
-
-            Ok(())
-        }
+        Command::CpuSet(delta) => delta.apply(),
+        Command::PowerSet(delta) => delta.apply(),
     }
 }
 

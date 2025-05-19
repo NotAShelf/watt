@@ -236,7 +236,7 @@ impl Cpu {
         self.validate_frequency_minimum(frequency_mhz)?;
 
         // We use u64 for the intermediate calculation to prevent overflow
-        let frequency_khz = u64::from(frequency_mhz) * 1000;
+        let frequency_khz = frequency_mhz * 1000;
         let frequency_khz = frequency_khz.to_string();
 
         write(
@@ -258,7 +258,7 @@ impl Cpu {
             return Ok(());
         };
 
-        if new_frequency_mhz as u64 * 1000 < minimum_frequency_khz {
+        if new_frequency_mhz * 1000 < minimum_frequency_khz {
             bail!(
                 "new minimum frequency ({new_frequency_mhz} MHz) cannot be lower than the minimum frequency ({} MHz) for {self}",
                 minimum_frequency_khz / 1000,
@@ -274,7 +274,7 @@ impl Cpu {
         self.validate_frequency_maximum(frequency_mhz)?;
 
         // We use u64 for the intermediate calculation to prevent overflow
-        let frequency_khz = u64::from(frequency_mhz) * 1000;
+        let frequency_khz = frequency_mhz * 1000;
         let frequency_khz = frequency_khz.to_string();
 
         write(
@@ -344,7 +344,7 @@ impl Cpu {
             let Cpu { number, .. } = cpu;
 
             write(
-                &format!("/sys/devices/system/cpu/cpu{number}/cpufreq/boost"),
+                format!("/sys/devices/system/cpu/cpu{number}/cpufreq/boost"),
                 value_boost,
             )
             .is_ok()
