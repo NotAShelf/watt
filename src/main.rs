@@ -10,6 +10,7 @@ use anyhow::Context;
 use clap::Parser as _;
 use std::fmt::Write as _;
 use std::io::Write as _;
+use std::path::PathBuf;
 use std::{io, process};
 use yansi::Paint as _;
 
@@ -29,57 +30,17 @@ enum Command {
     Info,
 
     /// Start the daemon.
-    Start,
+    Start {
+        /// The daemon config path.
+        #[arg(long, env = "SUPERFREQ_CONFIG")]
+        config: PathBuf,
+    },
 
     /// Modify CPU attributes.
-    CpuSet {
-        /// The CPUs to apply the changes to. When unspecified, will be applied to all CPUs.
-        #[arg(short = 'c', long = "for")]
-        for_: Option<Vec<u32>>,
-
-        /// Set the CPU governor.
-        #[arg(short = 'g', long)]
-        governor: Option<String>, // TODO: Validate with clap for available governors.
-
-        /// Set CPU Energy Performance Preference (EPP). Short form: --epp.
-        #[arg(short = 'p', long, alias = "epp")]
-        energy_performance_preference: Option<String>,
-
-        /// Set CPU Energy Performance Bias (EPB). Short form: --epb.
-        #[arg(short = 'b', long, alias = "epb")]
-        energy_performance_bias: Option<String>,
-
-        /// Set minimum CPU frequency in MHz. Short form: --freq-min.
-        #[arg(short = 'f', long, alias = "freq-min", value_parser = clap::value_parser!(u64).range(1..=10_000))]
-        frequency_mhz_minimum: Option<u64>,
-
-        /// Set maximum CPU frequency in MHz. Short form: --freq-max.
-        #[arg(short = 'F', long, alias = "freq-max", value_parser = clap::value_parser!(u64).range(1..=10_000))]
-        frequency_mhz_maximum: Option<u64>,
-
-        /// Set turbo boost behaviour. Has to be for all CPUs.
-        #[arg(short = 't', long, conflicts_with = "for_")]
-        turbo: Option<bool>,
-    },
+    CpuSet(config::CpuDelta),
 
     /// Modify power supply attributes.
-    PowerSet {
-        /// The power supplies to apply the changes to. When unspecified, will be applied to all power supplies.
-        #[arg(short = 'p', long = "for")]
-        for_: Option<Vec<String>>,
-
-        /// Set the percentage that the power supply has to drop under for charging to start. Short form: --charge-start.
-        #[arg(short = 'c', long, alias = "charge-start", value_parser = clap::value_parser!(u8).range(0..=100))]
-        charge_threshold_start: Option<u8>,
-
-        /// Set the percentage where charging will stop. Short form: --charge-end.
-        #[arg(short = 'C', long, alias = "charge-end", value_parser = clap::value_parser!(u8).range(0..=100))]
-        charge_threshold_end: Option<u8>,
-
-        /// Set ACPI platform profile. Has to be for all power supplies.
-        #[arg(short = 'f', long, alias = "profile", conflicts_with = "for_")]
-        platform_profile: Option<String>,
-    },
+    PowerSet(config::PowerDelta),
 }
 
 fn real_main() -> anyhow::Result<()> {
@@ -91,17 +52,17 @@ fn real_main() -> anyhow::Result<()> {
         .format_module_path(false)
         .init();
 
-    let config = config::load_config().context("failed to load config")?;
-
     match cli.command {
         Command::Info => todo!(),
 
-        Command::Start => {
-            daemon::run_daemon(config)?;
-            Ok(())
+        Command::Start { config } => {
+            let config = config::DaemonConfig::load_from(&config)
+                .context("failed to load daemon config file")?;
+
+            daemon::run(config)
         }
 
-        Command::CpuSet {
+        Command::CpuSet(config::CpuDelta {
             for_,
             governor,
             energy_performance_preference,
@@ -109,7 +70,7 @@ fn real_main() -> anyhow::Result<()> {
             frequency_mhz_minimum,
             frequency_mhz_maximum,
             turbo,
-        } => {
+        }) => {
             let cpus = match for_ {
                 Some(numbers) => {
                     let mut cpus = Vec::with_capacity(numbers.len());
@@ -152,12 +113,12 @@ fn real_main() -> anyhow::Result<()> {
             Ok(())
         }
 
-        Command::PowerSet {
+        Command::PowerSet(config::PowerDelta {
             for_,
             charge_threshold_start,
             charge_threshold_end,
             platform_profile,
-        } => {
+        }) => {
             let power_supplies = match for_ {
                 Some(names) => {
                     let mut power_supplies = Vec::with_capacity(names.len());
