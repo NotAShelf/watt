@@ -1,8 +1,7 @@
 use crate::config::{AppConfig, ProfileConfig, TurboAutoSettings};
-use crate::core::{OperationalMode, SystemReport, TurboSetting};
+use crate::core::{OperationalMode, SystemReport};
 use crate::cpu::{self};
 use crate::power_supply;
-use crate::util::error::{ControlError, EngineError};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -119,30 +118,14 @@ impl TurboHysteresis {
 /// 1. Try to apply a feature setting
 /// 2. If not supported, log a warning and continue
 /// 3. If other error, propagate the error
-fn try_apply_feature<F, T>(
+fn try_apply_feature<F: FnOnce() -> anyhow::Result<()>, T>(
     feature_name: &str,
     value_description: &str,
     apply_fn: F,
-) -> Result<(), EngineError>
-where
-    F: FnOnce() -> Result<T, ControlError>,
-{
+) -> anyhow::Result<()> {
     log::info!("Setting {feature_name} to '{value_description}'");
 
-    match apply_fn() {
-        Ok(_) => Ok(()),
-        Err(e) => {
-            if matches!(e, ControlError::NotSupported(_)) {
-                log::warn!(
-                    "{feature_name} setting is not supported on this system. Skipping {feature_name} configuration."
-                );
-                Ok(())
-            } else {
-                // Propagate all other errors, including InvalidValueError
-                Err(EngineError::ControlError(e))
-            }
-        }
-    }
+    apply_fn()
 }
 
 /// Determines the appropriate CPU profile based on power status or forced mode,
@@ -151,19 +134,19 @@ pub fn determine_and_apply_settings(
     report: &SystemReport,
     config: &AppConfig,
     force_mode: Option<OperationalMode>,
-) -> Result<(), EngineError> {
-    // First, check if there's a governor override set
-    if let Some(override_governor) = cpu::get_governor_override() {
-        log::info!(
-            "Governor override is active: '{}'. Setting governor.",
-            override_governor.trim()
-        );
+) -> anyhow::Result<()> {
+    // // First, check if there's a governor override set
+    // if let Some(override_governor) = cpu::get_governor_override() {
+    //     log::info!(
+    //         "Governor override is active: '{}'. Setting governor.",
+    //         override_governor.trim()
+    //     );
 
-        // Apply the override governor setting
-        try_apply_feature("override governor", override_governor.trim(), || {
-            cpu::set_governor(override_governor.trim(), None)
-        })?;
-    }
+    //     // Apply the override governor setting
+    //     try_apply_feature("override governor", override_governor.trim(), || {
+    //         cpu::set_governor(override_governor.trim(), None)
+    //     })?;
+    // }
 
     // Determine AC/Battery status once, early in the function
     // For desktops (no batteries), we should always use the AC power profile
@@ -203,17 +186,11 @@ pub fn determine_and_apply_settings(
     // Apply settings from selected_profile_config
     if let Some(governor) = &selected_profile_config.governor {
         log::info!("Setting governor to '{governor}'");
-        // Let set_governor handle the validation
-        if let Err(e) = cpu::set_governor(governor, None) {
-            // If the governor is not available, log a warning
-            if matches!(e, ControlError::InvalidGovernor(_))
-                || matches!(e, ControlError::NotSupported(_))
-            {
-                log::warn!(
-                    "Configured governor '{governor}' is not available on this system. Skipping."
-                );
-            } else {
-                return Err(e.into());
+        for cpu in cpu::Cpu::all()? {
+            // Let set_governor handle the validation
+            if let Err(error) = cpu.set_governor(governor) {
+                // If the governor is not available, log a warning
+                log::warn!("{error}");
             }
         }
     }
@@ -297,7 +274,7 @@ fn manage_auto_turbo(
     report: &SystemReport,
     config: &ProfileConfig,
     on_ac_power: bool,
-) -> Result<(), EngineError> {
+) -> anyhow::Result<()> {
     // Get the auto turbo settings from the config
     let turbo_settings = &config.turbo_auto_settings;
 

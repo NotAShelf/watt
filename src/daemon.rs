@@ -1,8 +1,10 @@
-use crate::config::{AppConfig, LogLevel};
+use anyhow::Context;
+use anyhow::bail;
+
+use crate::config::AppConfig;
 use crate::core::SystemReport;
 use crate::engine;
 use crate::monitor;
-use crate::util::error::{AppError, ControlError};
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::Write;
@@ -60,10 +62,7 @@ fn idle_multiplier(idle_secs: u64) -> f32 {
 /// Calculate optimal polling interval based on system conditions and history
 ///
 /// Returns Ok with the calculated interval, or Err if the configuration is invalid
-fn compute_new(
-    params: &IntervalParams,
-    system_history: &SystemHistory,
-) -> Result<u64, ControlError> {
+fn compute_new(params: &IntervalParams, system_history: &SystemHistory) -> anyhow::Result<u64> {
     // Use the centralized validation function
     validate_poll_intervals(params.min_interval, params.max_interval)?;
 
@@ -361,7 +360,7 @@ impl SystemHistory {
         &self,
         config: &AppConfig,
         on_battery: bool,
-    ) -> Result<u64, ControlError> {
+    ) -> anyhow::Result<u64> {
         let params = IntervalParams {
             base_interval: config.daemon.poll_interval_sec,
             min_interval: config.daemon.min_poll_interval_sec,
@@ -380,37 +379,31 @@ impl SystemHistory {
 
 /// Validates that poll interval configuration is consistent
 /// Returns Ok if configuration is valid, Err with a descriptive message if invalid
-fn validate_poll_intervals(min_interval: u64, max_interval: u64) -> Result<(), ControlError> {
+fn validate_poll_intervals(min_interval: u64, max_interval: u64) -> anyhow::Result<()> {
     if min_interval < 1 {
-        return Err(ControlError::InvalidValueError(
-            "min_interval must be ≥ 1".to_string(),
-        ));
+        bail!("min_interval must be ≥ 1");
     }
     if max_interval < 1 {
-        return Err(ControlError::InvalidValueError(
-            "max_interval must be ≥ 1".to_string(),
-        ));
+        bail!("max_interval must be ≥ 1");
     }
     if max_interval >= min_interval {
         Ok(())
     } else {
-        Err(ControlError::InvalidValueError(format!(
+        bail!(
             "Invalid interval configuration: max_interval ({max_interval}) is less than min_interval ({min_interval})"
-        )))
+        );
     }
 }
 
 /// Run the daemon
-pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
+pub fn run_daemon(config: AppConfig) -> anyhow::Result<()> {
     log::info!("Starting superfreq daemon...");
 
     // Validate critical configuration values before proceeding
-    if let Err(err) = validate_poll_intervals(
+    validate_poll_intervals(
         config.daemon.min_poll_interval_sec,
         config.daemon.max_poll_interval_sec,
-    ) {
-        return Err(AppError::Control(err));
-    }
+    )?;
 
     // Create a flag that will be set to true when a signal is received
     let running = Arc::new(AtomicBool::new(true));
@@ -421,7 +414,7 @@ pub fn run_daemon(config: AppConfig) -> Result<(), AppError> {
         log::info!("Received shutdown signal, exiting...");
         r.store(false, Ordering::SeqCst);
     })
-    .map_err(|e| AppError::Generic(format!("Error setting Ctrl-C handler: {e}")))?;
+    .context("failed to set Ctrl-C handler")?;
 
     log::info!(
         "Daemon initialized with poll interval: {}s",

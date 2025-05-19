@@ -1,16 +1,18 @@
+use anyhow::bail;
 // Configuration types and structures for superfreq
-use crate::core::TurboSetting;
 use serde::{Deserialize, Serialize};
 use std::convert::TryFrom;
 
 /// Defines constant-returning functions used for default values.
-/// This hopefully reduces repetition since we have way too many default functions
-/// that just return constants.
+/// This hopefully reduces repetition since we have way too many
+/// default functions that just return constants.
 macro_rules! default_const {
-    ($name:ident, $type:ty, $value:expr) => {
-        const fn $name() -> $type {
-            $value
-        }
+    ($($name:ident -> $type:ty = $value:expr;)*) => {
+        $(
+            const fn $name() -> $type {
+                $value
+            }
+        )*
     };
 }
 
@@ -20,34 +22,21 @@ pub struct PowerSupplyChargeThresholds {
     pub stop: u8,
 }
 
-impl PowerSupplyChargeThresholds {
-    pub fn new(start: u8, stop: u8) -> Result<Self, ConfigError> {
+impl TryFrom<(u8, u8)> for PowerSupplyChargeThresholds {
+    type Error = anyhow::Error;
+
+    fn try_from((start, stop): (u8, u8)) -> anyhow::Result<Self> {
         if stop == 0 {
-            return Err(ConfigError::Validation(
-                "Stop threshold must be greater than 0%".to_string(),
-            ));
+            bail!("stop threshold must be greater than 0%");
         }
         if start >= stop {
-            return Err(ConfigError::Validation(format!(
-                "Start threshold ({start}) must be less than stop threshold ({stop})"
-            )));
+            bail!("start threshold ({start}) must be less than stop threshold ({stop})");
         }
         if stop > 100 {
-            return Err(ConfigError::Validation(format!(
-                "Stop threshold ({stop}) cannot exceed 100%"
-            )));
+            bail!("stop threshold ({stop}) cannot exceed 100%");
         }
 
-        Ok(Self { start, stop })
-    }
-}
-
-impl TryFrom<(u8, u8)> for PowerSupplyChargeThresholds {
-    type Error = ConfigError;
-
-    fn try_from(values: (u8, u8)) -> Result<Self, Self::Error> {
-        let (start, stop) = values;
-        Self::new(start, stop)
+        Ok(PowerSupplyChargeThresholds { start, stop })
     }
 }
 
@@ -55,7 +44,7 @@ impl TryFrom<(u8, u8)> for PowerSupplyChargeThresholds {
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct ProfileConfig {
     pub governor: Option<String>,
-    pub turbo: Option<TurboSetting>,
+    pub turbo: Option<bool>,
     pub epp: Option<String>, // Energy Performance Preference (EPP)
     pub epb: Option<String>, // Energy Performance Bias (EPB) - usually an integer, but string for flexibility from sysfs
     pub min_freq_mhz: Option<u32>,
@@ -73,7 +62,7 @@ impl Default for ProfileConfig {
     fn default() -> Self {
         Self {
             governor: Some("schedutil".to_string()), // common sensible default (?)
-            turbo: Some(TurboSetting::Auto),
+            turbo: None,
             epp: None,              // defaults depend on governor and system
             epb: None,              // defaults depend on governor and system
             min_freq_mhz: None,     // no override
@@ -95,19 +84,6 @@ pub struct AppConfig {
     pub ignored_power_supplies: Option<Vec<String>>,
     #[serde(default)]
     pub daemon: DaemonConfig,
-}
-
-// Error type for config loading
-#[derive(Debug, thiserror::Error)]
-pub enum ConfigError {
-    #[error("I/O error: {0}")]
-    Io(#[from] std::io::Error),
-
-    #[error("TOML parsing error: {0}")]
-    Toml(#[from] toml::de::Error),
-
-    #[error("Configuration validation error: {0}")]
-    Validation(String),
 }
 
 // Intermediate structs for TOML parsing
@@ -178,22 +154,14 @@ pub const DEFAULT_LOAD_THRESHOLD_LOW: f32 = 30.0; // disable turbo if load is be
 pub const DEFAULT_TEMP_THRESHOLD_HIGH: f32 = 75.0; // disable turbo if temperature is above this
 pub const DEFAULT_INITIAL_TURBO_STATE: bool = false; // by default, start with turbo disabled
 
-default_const!(
-    default_load_threshold_high,
-    f32,
-    DEFAULT_LOAD_THRESHOLD_HIGH
-);
-default_const!(default_load_threshold_low, f32, DEFAULT_LOAD_THRESHOLD_LOW);
-default_const!(
-    default_temp_threshold_high,
-    f32,
-    DEFAULT_TEMP_THRESHOLD_HIGH
-);
-default_const!(
-    default_initial_turbo_state,
-    bool,
-    DEFAULT_INITIAL_TURBO_STATE
-);
+default_const! {
+    default_load_threshold_high -> f32 = DEFAULT_LOAD_THRESHOLD_HIGH;
+    default_load_threshold_low ->  f32 = DEFAULT_LOAD_THRESHOLD_LOW;
+
+    default_temp_threshold_high -> f32 = DEFAULT_TEMP_THRESHOLD_HIGH;
+
+    default_initial_turbo_state -> bool = DEFAULT_INITIAL_TURBO_STATE;
+}
 
 impl Default for TurboAutoSettings {
     fn default() -> Self {
@@ -213,10 +181,10 @@ impl From<ProfileConfigToml> for ProfileConfig {
             turbo: toml_config
                 .turbo
                 .and_then(|s| match s.to_lowercase().as_str() {
-                    "always" => Some(TurboSetting::Always),
-                    "auto" => Some(TurboSetting::Auto),
-                    "never" => Some(TurboSetting::Never),
-                    _ => None,
+                    "always" => Some(true),
+                    "auto" => None,
+                    "never" => Some(false),
+                    _ => panic!("invalid turbo value: {s}, must be one of: always, auto, never"),
                 }),
             epp: toml_config.epp,
             epb: toml_config.epb,
@@ -270,14 +238,16 @@ impl Default for DaemonConfig {
     }
 }
 
-default_const!(default_poll_interval_sec, u64, 5);
-default_const!(default_adaptive_interval, bool, false);
-default_const!(default_min_poll_interval_sec, u64, 1);
-default_const!(default_max_poll_interval_sec, u64, 30);
-default_const!(default_throttle_on_battery, bool, true);
-default_const!(default_log_level, LogLevel, LogLevel::Info);
-default_const!(default_stats_file_path, Option<String>, None);
-default_const!(default_enable_auto_turbo, bool, true);
+default_const! {
+    default_poll_interval_sec -> u64 = 5;
+    default_adaptive_interval -> bool = false;
+    default_min_poll_interval_sec -> u64 = 1;
+    default_max_poll_interval_sec -> u64 = 30;
+    default_throttle_on_battery -> bool = true;
+    default_log_level -> LogLevel = LogLevel::Info;
+    default_stats_file_path -> Option<String> = None;
+    default_enable_auto_turbo -> bool = true;
+}
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct DaemonConfigToml {
