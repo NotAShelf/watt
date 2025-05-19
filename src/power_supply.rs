@@ -62,12 +62,7 @@ pub struct PowerSupply {
 
 impl fmt::Display for PowerSupply {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "power supply '{name}' at '{path}'",
-            name = &self.name,
-            path = self.path.display(),
-        )?;
+        write!(f, "power supply '{name}'", name = &self.name)?;
 
         if let Some(config) = self.threshold_config.as_ref() {
             write!(
@@ -147,6 +142,10 @@ impl PowerSupply {
     }
 
     pub fn rescan(&mut self) -> anyhow::Result<()> {
+        if !self.path.exists() {
+            bail!("{self} does not exist");
+        }
+
         let threshold_config = self
             .get_type()
             .with_context(|| format!("failed to determine what type of power supply '{self}' is"))?
