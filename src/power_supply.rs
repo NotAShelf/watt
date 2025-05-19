@@ -137,19 +137,20 @@ impl PowerSupply {
         Ok(power_supplies)
     }
 
-    fn is_battery(&self) -> anyhow::Result<bool> {
+    fn get_type(&self) -> anyhow::Result<String> {
         let type_path = self.path.join("type");
 
         let type_ = fs::read_to_string(&type_path)
             .with_context(|| format!("failed to read '{path}'", path = type_path.display()))?;
 
-        Ok(type_ == "Battery")
+        Ok(type_)
     }
 
     pub fn rescan(&mut self) -> anyhow::Result<()> {
         let threshold_config = self
-            .is_battery()
+            .get_type()
             .with_context(|| format!("failed to determine what type of power supply '{self}' is"))?
+            .eq("Battery")
             .then(|| {
                 for config in POWER_SUPPLY_THRESHOLD_CONFIGS {
                     if self.path.join(config.path_start).exists()
