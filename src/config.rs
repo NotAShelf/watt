@@ -154,38 +154,103 @@ impl PowerDelta {
     }
 }
 
-#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
 #[serde(untagged, rename_all = "kebab-case")]
-pub enum Condition {
-    ChargeLessThan(u8),
-    ChargeMoreThan(u8),
+pub enum Expression {
+    #[serde(rename = "$cpu-temperature")]
+    CpuTemperature,
 
-    TemperatureLessThan(u8),
-    TemperatureMoreThan(u8),
+    #[serde(rename = "%cpu-volatility")]
+    CpuVolatility,
 
-    UtilizationLessThan(u8),
-    UtilizationMoreThan(u8),
+    #[serde(rename = "%cpu-utilization")]
+    CpuUtilization,
 
+    #[serde(rename = "%power-supply-charge")]
+    PowerSupplyCharge,
+
+    #[serde(rename = "%power-supply-discharge-rate")]
+    PowerSupplyDischargeRate,
+
+    #[serde(rename = "?charging")]
     Charging,
+    #[serde(rename = "?on-battery")]
     OnBattery,
 
+    #[serde(rename = "#false")]
     False,
+
     #[default]
+    #[serde(rename = "#true")]
     True,
 
-    All(Vec<Condition>),
-    Any(Vec<Condition>),
+    Number(f64),
 
-    Not(Box<Condition>),
+    Plus {
+        value: Box<Expression>,
+        plus: Box<Expression>,
+    },
+    Minus {
+        value: Box<Expression>,
+        minus: Box<Expression>,
+    },
+    Multiply {
+        value: Box<Expression>,
+        multiply: Box<Expression>,
+    },
+    Power {
+        value: Box<Expression>,
+        power: Box<Expression>,
+    },
+    Divide {
+        value: Box<Expression>,
+        divide: Box<Expression>,
+    },
+
+    LessThan {
+        value: Box<Expression>,
+        is_less_than: Box<Expression>,
+    },
+
+    MoreThan {
+        value: Box<Expression>,
+        is_more_than: Box<Expression>,
+    },
+
+    Equal {
+        value: Box<Expression>,
+        is_equal: Box<Expression>,
+        leeway: Box<Expression>,
+    },
+
+    And {
+        value: Box<Expression>,
+        and: Box<Expression>,
+    },
+    All {
+        all: Vec<Expression>,
+    },
+
+    Or {
+        value: Box<Expression>,
+        or: Box<Expression>,
+    },
+    Any {
+        any: Vec<Expression>,
+    },
+
+    Not {
+        not: Box<Expression>,
+    },
 }
 
-#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
-pub struct DaemonConfigLayer {
+pub struct Rule {
     priority: u8,
 
     #[serde(default, skip_serializing_if = "is_default")]
-    if_: Condition,
+    if_: Expression,
 
     #[serde(default, skip_serializing_if = "is_default")]
     cpu: CpuDelta,
@@ -193,10 +258,11 @@ pub struct DaemonConfigLayer {
     power: PowerDelta,
 }
 
-#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
 #[serde(transparent, default, rename_all = "kebab-case")]
 pub struct DaemonConfig {
-    config: Vec<DaemonConfigLayer>,
+    #[serde(rename = "rule")]
+    rules: Vec<Rule>,
 }
 
 impl DaemonConfig {
@@ -208,14 +274,14 @@ impl DaemonConfig {
         let config: Self = toml::from_str(&contents).context("failed to parse config file")?;
 
         {
-            let mut priorities = Vec::with_capacity(config.config.len());
+            let mut priorities = Vec::with_capacity(config.rules.len());
 
-            for layer in &config.config {
-                if priorities.contains(&layer.priority) {
-                    bail!("each config layer must have a different priority")
+            for rule in &config.rules {
+                if priorities.contains(&rule.priority) {
+                    bail!("each config rule must have a different priority")
                 }
 
-                priorities.push(layer.priority);
+                priorities.push(rule.priority);
             }
         }
 
