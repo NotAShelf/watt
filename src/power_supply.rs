@@ -1,4 +1,5 @@
 use anyhow::{Context, bail};
+use yansi::Paint as _;
 
 use std::{
     fmt, fs,
@@ -62,13 +63,13 @@ pub struct PowerSupply {
 
 impl fmt::Display for PowerSupply {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "power supply '{name}'", name = &self.name)?;
+        write!(f, "power supply '{name}'", name = self.name.yellow())?;
 
         if let Some(config) = self.threshold_config.as_ref() {
             write!(
                 f,
                 " from manufacturer '{manufacturer}'",
-                manufacturer = config.manufacturer,
+                manufacturer = config.manufacturer.green(),
             )?;
         }
 

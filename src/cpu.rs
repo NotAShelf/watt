@@ -1,4 +1,5 @@
 use anyhow::{Context, bail};
+use yansi::Paint as _;
 
 use std::{fmt, fs, path::Path, string::ToString};
 
@@ -36,7 +37,8 @@ pub struct Cpu {
 
 impl fmt::Display for Cpu {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let Self { number, .. } = self;
+        let number = self.number.cyan();
+
         write!(f, "CPU {number}")
     }
 }
