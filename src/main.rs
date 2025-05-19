@@ -61,7 +61,7 @@ enum Command {
 
         /// Set turbo boost behaviour. Has to be for all CPUs.
         #[arg(short = 't', long, conflicts_with = "for_")]
-        turbo: Option<cpu::Turbo>,
+        turbo: Option<bool>,
     },
 
     /// Modify power supply attributes.
@@ -113,34 +113,42 @@ fn real_main() -> anyhow::Result<()> {
             turbo,
         } => {
             let cpus = match for_ {
-                Some(cpus) => cpus,
-                None => cpu::get_real_cpus()?,
+                Some(numbers) => {
+                    let mut cpus = Vec::with_capacity(numbers.len());
+
+                    for number in numbers {
+                        cpus.push(cpu::Cpu::new(number)?);
+                    }
+
+                    cpus
+                }
+                None => cpu::Cpu::all()?,
             };
 
             for cpu in cpus {
                 if let Some(governor) = governor.as_ref() {
-                    cpu::set_governor(governor, cpu)?;
+                    cpu.set_governor(governor)?;
                 }
 
                 if let Some(epp) = energy_performance_preference.as_ref() {
-                    cpu::set_epp(epp, cpu)?;
+                    cpu.set_epp(epp)?;
                 }
 
                 if let Some(epb) = energy_performance_bias.as_ref() {
-                    cpu::set_epb(epb, cpu)?;
+                    cpu.set_epb(epb)?;
                 }
 
                 if let Some(mhz_minimum) = frequency_mhz_minimum {
-                    cpu::set_frequency_minimum(mhz_minimum, cpu)?;
+                    cpu.set_frequency_minimum(mhz_minimum)?;
                 }
 
                 if let Some(mhz_maximum) = frequency_mhz_maximum {
-                    cpu::set_frequency_maximum(mhz_maximum, cpu)?;
+                    cpu.set_frequency_maximum(mhz_maximum)?;
                 }
             }
 
             if let Some(turbo) = turbo {
-                cpu::set_turbo(turbo)?;
+                cpu::Cpu::set_turbo(turbo)?;
             }
 
             Ok(())
@@ -157,13 +165,13 @@ fn real_main() -> anyhow::Result<()> {
                     let power_supplies = Vec::with_capacity(names.len());
 
                     for name in names {
-                        power_supplies.push(power_supply::get_power_supply(&name)?);
+                        power_supplies.push(power_supply::PowerSupply::from_name(name)?);
                     }
 
                     power_supplies
                 }
 
-                None => power_supply::get_power_supplies()?
+                None => power_supply::PowerSupply::all()?
                     .into_iter()
                     .filter(|power_supply| power_supply.threshold_config.is_some())
                     .collect(),
@@ -171,16 +179,16 @@ fn real_main() -> anyhow::Result<()> {
 
             for power_supply in power_supplies {
                 if let Some(threshold_start) = charge_threshold_start {
-                    power_supply::set_charge_threshold_start(&power_supply, threshold_start)?;
+                    power_supply.set_charge_threshold_start(threshold_start)?;
                 }
 
                 if let Some(threshold_end) = charge_threshold_end {
-                    power_supply::set_charge_threshold_end(&power_supply, threshold_end)?;
+                    power_supply.set_charge_threshold_end(threshold_end)?;
                 }
             }
 
             if let Some(platform_profile) = platform_profile.as_ref() {
-                cpu::set_platform_profile(platform_profile)?;
+                power_supply::PowerSupply::set_platform_profile(platform_profile);
             }
 
             Ok(())
