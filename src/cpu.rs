@@ -1,6 +1,6 @@
 use anyhow::{Context, bail};
 
-use std::{fs, path::Path, string::ToString};
+use std::{fmt, fs, path::Path, string::ToString};
 
 fn exists(path: impl AsRef<Path>) -> bool {
     let path = path.as_ref();
@@ -28,9 +28,17 @@ fn write(path: impl AsRef<Path>, value: &str) -> anyhow::Result<()> {
     })
 }
 
+#[derive(Debug, Clone, Copy)]
 pub struct Cpu {
     pub number: u32,
     pub has_cpufreq: bool,
+}
+
+impl fmt::Display for Cpu {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self { number, .. } = self;
+        write!(f, "CPU {number}")
+    }
 }
 
 impl Cpu {
@@ -119,7 +127,7 @@ impl Cpu {
             .any(|avail_governor| avail_governor == governor)
         {
             bail!(
-                "governor '{governor}' is not available for CPU {number}. available governors: {governors}",
+                "governor '{governor}' is not available for {self}. available governors: {governors}",
                 governors = governors.join(", "),
             );
         }
@@ -130,7 +138,7 @@ impl Cpu {
         )
         .with_context(|| {
             format!(
-                "this probably means that CPU {number} doesn't exist or doesn't support changing governors"
+                "this probably means that {self} doesn't exist or doesn't support changing governors"
             )
         })
     }
@@ -157,7 +165,7 @@ impl Cpu {
 
         if !epps.iter().any(|avail_epp| avail_epp == epp) {
             bail!(
-                "EPP value '{epp}' is not availabile for CPU {number}. available EPP values: {epps}",
+                "EPP value '{epp}' is not availabile for {self}. available EPP values: {epps}",
                 epps = epps.join(", "),
             );
         }
@@ -167,9 +175,7 @@ impl Cpu {
             epp,
         )
         .with_context(|| {
-            format!(
-                "this probably means that CPU {number} doesn't exist or doesn't support changing EPP"
-            )
+            format!("this probably means that {self} doesn't exist or doesn't support changing EPP")
         })
     }
 
@@ -210,7 +216,7 @@ impl Cpu {
 
         if !epbs.contains(&epb) {
             bail!(
-                "EPB value '{epb}' is not available for CPU {number}. available EPB values: {valid}",
+                "EPB value '{epb}' is not available for {self}. available EPB values: {valid}",
                 valid = epbs.join(", "),
             );
         }
@@ -220,9 +226,7 @@ impl Cpu {
             epb,
         )
         .with_context(|| {
-            format!(
-                "this probably means that CPU {number} doesn't exist or doesn't support changing EPB"
-            )
+            format!("this probably means that {self} doesn't exist or doesn't support changing EPB")
         })
     }
 
@@ -240,7 +244,7 @@ impl Cpu {
             &frequency_khz,
         )
         .with_context(|| {
-            format!("this probably means that CPU {number} doesn't exist or doesn't support changing minimum frequency")
+            format!("this probably means that {self} doesn't exist or doesn't support changing minimum frequency")
         })
     }
 
@@ -256,7 +260,7 @@ impl Cpu {
 
         if new_frequency_mhz as u64 * 1000 < minimum_frequency_khz {
             bail!(
-                "new minimum frequency ({new_frequency_mhz} MHz) cannot be lower than the minimum frequency ({} MHz) for CPU {number}",
+                "new minimum frequency ({new_frequency_mhz} MHz) cannot be lower than the minimum frequency ({} MHz) for {self}",
                 minimum_frequency_khz / 1000,
             );
         }
@@ -278,7 +282,7 @@ impl Cpu {
             &frequency_khz,
         )
         .with_context(|| {
-            format!("this probably means that CPU {number} doesn't exist or doesn't support changing maximum frequency")
+            format!("this probably means that {self} doesn't exist or doesn't support changing maximum frequency")
         })
     }
 
@@ -294,7 +298,7 @@ impl Cpu {
 
         if new_frequency_mhz * 1000 > maximum_frequency_khz {
             bail!(
-                "new maximum frequency ({new_frequency_mhz} MHz) cannot be higher than the maximum frequency ({} MHz) for CPU {number}",
+                "new maximum frequency ({new_frequency_mhz} MHz) cannot be higher than the maximum frequency ({} MHz) for {self}",
                 maximum_frequency_khz / 1000,
             );
         }
