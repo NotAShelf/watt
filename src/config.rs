@@ -157,14 +157,20 @@ impl PowerDelta {
 #[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
 #[serde(untagged, rename_all = "kebab-case")]
 pub enum Expression {
+    #[serde(rename = "%cpu-usage")]
+    CpuUsage,
+
+    #[serde(rename = "$cpu-usage-volatility")]
+    CpuUsageVolatility,
+
     #[serde(rename = "$cpu-temperature")]
     CpuTemperature,
 
-    #[serde(rename = "%cpu-volatility")]
-    CpuVolatility,
+    #[serde(rename = "$cpu-temperature-volatility")]
+    CpuTemperatureVolatility,
 
-    #[serde(rename = "%cpu-utilization")]
-    CpuUtilization,
+    #[serde(rename = "$cpu-idle-seconds")]
+    CpuIdleSeconds,
 
     #[serde(rename = "%power-supply-charge")]
     PowerSupplyCharge,

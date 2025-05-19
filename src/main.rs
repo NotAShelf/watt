@@ -1,7 +1,7 @@
 mod config;
 // mod core;
 mod cpu;
-// mod daemon;
+mod daemon;
 // mod engine;
 // mod monitor;
 mod power_supply;
@@ -56,11 +56,10 @@ fn real_main() -> anyhow::Result<()> {
         Command::Info => todo!(),
 
         Command::Start { config } => {
-            let _config = config::DaemonConfig::load_from(&config)
+            let config = config::DaemonConfig::load_from(&config)
                 .context("failed to load daemon config file")?;
 
-            // daemon::run(config)
-            Ok(())
+            daemon::run(config)
         }
 
         Command::CpuSet(delta) => delta.apply(),
