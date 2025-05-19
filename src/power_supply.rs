@@ -53,6 +53,7 @@ const POWER_SUPPLY_THRESHOLD_CONFIGS: &[PowerSupplyThresholdConfig] = &[
 ];
 
 /// Represents a power supply that supports charge threshold control.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PowerSupply {
     pub name: String,
     pub path: PathBuf,
