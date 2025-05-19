@@ -1,4 +1,3 @@
-mod cli;
 mod config;
 mod core;
 mod cpu;
@@ -6,7 +5,6 @@ mod daemon;
 mod engine;
 mod monitor;
 mod power_supply;
-mod util;
 
 use anyhow::Context;
 use clap::Parser as _;
@@ -162,7 +160,7 @@ fn real_main() -> anyhow::Result<()> {
         } => {
             let power_supplies = match for_ {
                 Some(names) => {
-                    let power_supplies = Vec::with_capacity(names.len());
+                    let mut power_supplies = Vec::with_capacity(names.len());
 
                     for name in names {
                         power_supplies.push(power_supply::PowerSupply::from_name(name)?);

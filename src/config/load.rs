@@ -2,7 +2,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::config::types::{AppConfig, AppConfigToml, ConfigError, DaemonConfig, ProfileConfig};
+use anyhow::Context as _;
+
+use crate::config::types::{AppConfig, AppConfigToml, DaemonConfig, ProfileConfig};
 
 /// The primary function to load application configuration from a specific path or from default locations.
 ///
@@ -14,22 +16,23 @@ use crate::config::types::{AppConfig, AppConfigToml, ConfigError, DaemonConfig, 
 ///
 /// * `Ok(AppConfig)` - Successfully loaded configuration
 /// * `Err(ConfigError)` - Error loading or parsing configuration
-pub fn load_config() -> Result<AppConfig, ConfigError> {
+pub fn load_config() -> anyhow::Result<AppConfig> {
     load_config_from_path(None)
 }
 
 /// Load configuration from a specific path or try default paths
-pub fn load_config_from_path(specific_path: Option<&str>) -> Result<AppConfig, ConfigError> {
+pub fn load_config_from_path(specific_path: Option<&str>) -> anyhow::Result<AppConfig> {
     // If a specific path is provided, only try that one
     if let Some(path_str) = specific_path {
         let path = Path::new(path_str);
         if path.exists() {
             return load_and_parse_config(path);
         }
-        return Err(ConfigError::Io(std::io::Error::new(
+
+        Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             format!("Specified config file not found: {}", path.display()),
-        )));
+        ))?;
     }
 
     // Check for SUPERFREQ_CONFIG environment variable
@@ -79,10 +82,16 @@ pub fn load_config_from_path(specific_path: Option<&str>) -> Result<AppConfig, C
 }
 
 /// Load and parse a configuration file
-fn load_and_parse_config(path: &Path) -> Result<AppConfig, ConfigError> {
-    let contents = fs::read_to_string(path).map_err(ConfigError::Io)?;
+fn load_and_parse_config(path: &Path) -> anyhow::Result<AppConfig> {
+    let contents = fs::read_to_string(path).with_context(|| {
+        format!(
+            "failed to read config file from '{path}'",
+            path = path.display(),
+        )
+    })?;
 
-    let toml_app_config = toml::from_str::<AppConfigToml>(&contents).map_err(ConfigError::Toml)?;
+    let toml_app_config =
+        toml::from_str::<AppConfigToml>(&contents).context("failed to parse config toml")?;
 
     // Handle inheritance of values from global to profile configs
     let mut charger_profile = toml_app_config.charger.clone();

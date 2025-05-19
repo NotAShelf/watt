@@ -1,7 +1,5 @@
 use crate::config::AppConfig;
 use crate::core::{BatteryInfo, CpuCoreInfo, CpuGlobalInfo, SystemInfo, SystemLoad, SystemReport};
-use crate::cpu::get_real_cpus;
-use crate::util::error::SysMonitorError;
 use std::{
     collections::HashMap,
     fs,
@@ -12,10 +10,8 @@ use std::{
     time::SystemTime,
 };
 
-pub type Result<T, E = SysMonitorError> = std::result::Result<T, E>;
-
 // Read a sysfs file to a string, trimming whitespace
-fn read_sysfs_file_trimmed(path: impl AsRef<Path>) -> Result<String> {
+fn read_sysfs_file_trimmed(path: impl AsRef<Path>) -> anyhow::Result<String> {
     fs::read_to_string(path.as_ref())
         .map(|s| s.trim().to_string())
         .map_err(|e| {
@@ -24,7 +20,7 @@ fn read_sysfs_file_trimmed(path: impl AsRef<Path>) -> Result<String> {
 }
 
 // Read a sysfs file and parse it to a specific type
-fn read_sysfs_value<T: FromStr>(path: impl AsRef<Path>) -> Result<T> {
+fn read_sysfs_value<T: FromStr>(path: impl AsRef<Path>) -> anyhow::Result<T> {
     let content = read_sysfs_file_trimmed(path.as_ref())?;
     content.parse::<T>().map_err(|_| {
         SysMonitorError::ParseError(format!(
@@ -76,7 +72,7 @@ impl CpuTimes {
     }
 }
 
-fn read_all_cpu_times() -> Result<HashMap<u32, CpuTimes>> {
+fn read_all_cpu_times() -> anyhow::Result<HashMap<u32, CpuTimes>> {
     let content = fs::read_to_string("/proc/stat").map_err(SysMonitorError::Io)?;
     let mut cpu_times_map = HashMap::new();
 
@@ -156,7 +152,7 @@ pub fn get_cpu_core_info(
     core_id: u32,
     prev_times: &CpuTimes,
     current_times: &CpuTimes,
-) -> Result<CpuCoreInfo> {
+) -> anyhow::Result<CpuCoreInfo> {
     let cpufreq_path = PathBuf::from(format!("/sys/devices/system/cpu/cpu{core_id}/cpufreq/"));
 
     let current_frequency_mhz = read_sysfs_value::<u32>(cpufreq_path.join("scaling_cur_freq"))
@@ -358,7 +354,7 @@ fn get_fallback_temperature(hw_path: &Path) -> Option<f32> {
     None
 }
 
-pub fn get_all_cpu_core_info() -> Result<Vec<CpuCoreInfo>> {
+pub fn get_all_cpu_core_info() -> anyhow::Result<Vec<CpuCoreInfo>> {
     let initial_cpu_times = read_all_cpu_times()?;
     thread::sleep(Duration::from_millis(250)); // interval for CPU usage calculation
     let final_cpu_times = read_all_cpu_times()?;
@@ -486,7 +482,7 @@ pub fn get_cpu_global_info(cpu_cores: &[CpuCoreInfo]) -> CpuGlobalInfo {
     }
 }
 
-pub fn get_battery_info(config: &AppConfig) -> Result<Vec<BatteryInfo>> {
+pub fn get_battery_info(config: &AppConfig) -> anyhow::Result<Vec<BatteryInfo>> {
     let mut batteries = Vec::new();
     let power_supply_path = Path::new("/sys/class/power_supply");
 
@@ -682,7 +678,7 @@ fn is_likely_desktop_system() -> bool {
     true
 }
 
-pub fn get_system_load() -> Result<SystemLoad> {
+pub fn get_system_load() -> anyhow::Result<SystemLoad> {
     let loadavg_str = read_sysfs_file_trimmed("/proc/loadavg")?;
     let parts: Vec<&str> = loadavg_str.split_whitespace().collect();
     if parts.len() < 3 {
@@ -707,7 +703,7 @@ pub fn get_system_load() -> Result<SystemLoad> {
     })
 }
 
-pub fn collect_system_report(config: &AppConfig) -> Result<SystemReport> {
+pub fn collect_system_report(config: &AppConfig) -> anyhow::Result<SystemReport> {
     let system_info = get_system_info();
     let cpu_cores = get_all_cpu_core_info()?;
     let cpu_global = get_cpu_global_info(&cpu_cores);
@@ -724,7 +720,7 @@ pub fn collect_system_report(config: &AppConfig) -> Result<SystemReport> {
     })
 }
 
-pub fn get_cpu_model() -> Result<String> {
+pub fn get_cpu_model() -> anyhow::Result<String> {
     let path = Path::new("/proc/cpuinfo");
     let content = fs::read_to_string(path).map_err(|_| {
         SysMonitorError::ReadError(format!("Cannot read contents of {}.", path.display()))
@@ -743,7 +739,7 @@ pub fn get_cpu_model() -> Result<String> {
     ))
 }
 
-pub fn get_linux_distribution() -> Result<String> {
+pub fn get_linux_distribution() -> anyhow::Result<String> {
     let os_release_path = Path::new("/etc/os-release");
     let content = fs::read_to_string(os_release_path).map_err(|_| {
         SysMonitorError::ReadError(format!(
