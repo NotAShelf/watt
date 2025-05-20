@@ -1,8 +1,6 @@
 pub struct SystemInfo {
     // Overall system details
     pub cpu_model: String,
-    pub architecture: String,
-    pub linux_distribution: String,
 }
 
 pub struct CpuCoreInfo {
