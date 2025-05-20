@@ -1,33 +1,9 @@
 use anyhow::{Context, bail};
 use yansi::Paint as _;
 
-use std::{fmt, fs, path::Path, string::ToString};
+use std::{fmt, string::ToString};
 
-fn exists(path: impl AsRef<Path>) -> bool {
-    let path = path.as_ref();
-
-    path.exists()
-}
-
-// Not doing any anyhow stuff here as all the calls of this ignore errors.
-fn read_u64(path: impl AsRef<Path>) -> anyhow::Result<u64> {
-    let path = path.as_ref();
-
-    let content = fs::read_to_string(path)?;
-
-    Ok(content.trim().parse()?)
-}
-
-fn write(path: impl AsRef<Path>, value: &str) -> anyhow::Result<()> {
-    let path = path.as_ref();
-
-    fs::write(path, value).with_context(|| {
-        format!(
-            "failed to write '{value}' to '{path}'",
-            path = path.display(),
-        )
-    })
-}
+use crate::fs;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Cpu {
@@ -96,11 +72,11 @@ impl Cpu {
     pub fn rescan(&mut self) -> anyhow::Result<()> {
         let Self { number, .. } = self;
 
-        if !exists(format!("/sys/devices/system/cpu/cpu{number}")) {
+        if !fs::exists(format!("/sys/devices/system/cpu/cpu{number}")) {
             bail!("{self} does not exist");
         }
 
-        let has_cpufreq = exists(format!("/sys/devices/system/cpu/cpu{number}/cpufreq"));
+        let has_cpufreq = fs::exists(format!("/sys/devices/system/cpu/cpu{number}/cpufreq"));
 
         self.has_cpufreq = has_cpufreq;
 
@@ -110,7 +86,7 @@ impl Cpu {
     pub fn get_available_governors(&self) -> Vec<String> {
         let Self { number, .. } = self;
 
-        let Ok(content) = fs::read_to_string(format!(
+        let Ok(Some(content)) = fs::read(format!(
             "/sys/devices/system/cpu/cpu{number}/cpufreq/scaling_available_governors"
         )) else {
             return Vec::new();
@@ -137,7 +113,7 @@ impl Cpu {
             );
         }
 
-        write(
+        fs::write(
             format!("/sys/devices/system/cpu/cpu{number}/cpufreq/scaling_governor"),
             governor,
         )
@@ -151,7 +127,7 @@ impl Cpu {
     pub fn get_available_epps(&self) -> Vec<String> {
         let Self { number, .. } = self;
 
-        let Ok(content) = fs::read_to_string(format!(
+        let Ok(Some(content)) = fs::read(format!(
             "/sys/devices/system/cpu/cpu{number}/cpufreq/energy_performance_available_preferences"
         )) else {
             return Vec::new();
@@ -175,7 +151,7 @@ impl Cpu {
             );
         }
 
-        write(
+        fs::write(
             format!("/sys/devices/system/cpu/cpu{number}/cpufreq/energy_performance_preference"),
             epp,
         )
@@ -226,7 +202,7 @@ impl Cpu {
             );
         }
 
-        write(
+        fs::write(
             format!("/sys/devices/system/cpu/cpu{number}/cpufreq/energy_performance_bias"),
             epb,
         )
@@ -244,7 +220,7 @@ impl Cpu {
         let frequency_khz = frequency_mhz * 1000;
         let frequency_khz = frequency_khz.to_string();
 
-        write(
+        fs::write(
             format!("/sys/devices/system/cpu/cpu{number}/cpufreq/scaling_min_freq"),
             &frequency_khz,
         )
@@ -256,7 +232,7 @@ impl Cpu {
     fn validate_frequency_minimum(&self, new_frequency_mhz: u64) -> anyhow::Result<()> {
         let Self { number, .. } = self;
 
-        let Ok(minimum_frequency_khz) = read_u64(format!(
+        let Ok(minimum_frequency_khz) = fs::read_u64(format!(
             "/sys/devices/system/cpu/cpu{number}/cpufreq/scaling_min_freq"
         )) else {
             // Just let it pass if we can't find anything.
@@ -282,7 +258,7 @@ impl Cpu {
         let frequency_khz = frequency_mhz * 1000;
         let frequency_khz = frequency_khz.to_string();
 
-        write(
+        fs::write(
             format!("/sys/devices/system/cpu/cpu{number}/cpufreq/scaling_max_freq"),
             &frequency_khz,
         )
@@ -294,7 +270,7 @@ impl Cpu {
     fn validate_frequency_maximum(&self, new_frequency_mhz: u64) -> anyhow::Result<()> {
         let Self { number, .. } = self;
 
-        let Ok(maximum_frequency_khz) = read_u64(format!(
+        let Ok(maximum_frequency_khz) = fs::read_u64(format!(
             "/sys/devices/system/cpu/cpu{number}/cpufreq/scaling_min_freq"
         )) else {
             // Just let it pass if we can't find anything.
@@ -331,16 +307,16 @@ impl Cpu {
         let generic_boost_path = "/sys/devices/system/cpu/cpufreq/boost";
 
         // Try each boost control path in order of specificity
-        if write(intel_boost_path_negated, value_boost_negated).is_ok() {
+        if fs::write(intel_boost_path_negated, value_boost_negated).is_ok() {
             return Ok(());
         }
-        if write(amd_boost_path, value_boost).is_ok() {
+        if fs::write(amd_boost_path, value_boost).is_ok() {
             return Ok(());
         }
-        if write(msr_boost_path, value_boost).is_ok() {
+        if fs::write(msr_boost_path, value_boost).is_ok() {
             return Ok(());
         }
-        if write(generic_boost_path, value_boost).is_ok() {
+        if fs::write(generic_boost_path, value_boost).is_ok() {
             return Ok(());
         }
 
@@ -348,7 +324,7 @@ impl Cpu {
         if Self::all()?.iter().any(|cpu| {
             let Cpu { number, .. } = cpu;
 
-            write(
+            fs::write(
                 format!("/sys/devices/system/cpu/cpu{number}/cpufreq/boost"),
                 value_boost,
             )

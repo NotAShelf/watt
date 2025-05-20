@@ -1,22 +1,12 @@
-use anyhow::{Context, bail};
+use anyhow::{Context, anyhow, bail};
 use yansi::Paint as _;
 
 use std::{
-    fmt, fs,
+    fmt,
     path::{Path, PathBuf},
 };
 
-// TODO: Migrate to central utils file. Same exists in cpu.rs.
-fn write(path: impl AsRef<Path>, value: &str) -> anyhow::Result<()> {
-    let path = path.as_ref();
-
-    fs::write(path, value).with_context(|| {
-        format!(
-            "failed to write '{value}' to '{path}'",
-            path = path.display(),
-        )
-    })
-}
+use crate::fs;
 
 /// Represents a pattern of path suffixes used to control charge thresholds
 /// for different device vendors.
@@ -136,10 +126,10 @@ impl PowerSupply {
     fn get_type(&self) -> anyhow::Result<String> {
         let type_path = self.path.join("type");
 
-        let type_ = fs::read_to_string(&type_path)
+        let type_ = fs::read(&type_path)
             .with_context(|| format!("failed to read '{path}'", path = type_path.display()))?;
 
-        Ok(type_)
+        type_.ok_or_else(|| anyhow!("'{path}' doesn't exist", path = type_path.display()))
     }
 
     pub fn rescan(&mut self) -> anyhow::Result<()> {
@@ -180,9 +170,9 @@ impl PowerSupply {
     }
 
     pub fn set_charge_threshold_start(&self, charge_threshold_start: u8) -> anyhow::Result<()> {
-        write(
+        fs::write(
             &self.charge_threshold_path_start().ok_or_else(|| {
-                anyhow::anyhow!(
+                anyhow!(
                     "power supply '{name}' does not support changing charge threshold levels",
                     name = self.name,
                 )
@@ -197,9 +187,9 @@ impl PowerSupply {
     }
 
     pub fn set_charge_threshold_end(&self, charge_threshold_end: u8) -> anyhow::Result<()> {
-        write(
+        fs::write(
             &self.charge_threshold_path_end().ok_or_else(|| {
-                anyhow::anyhow!(
+                anyhow!(
                     "power supply '{name}' does not support changing charge threshold levels",
                     name = self.name,
                 )
@@ -216,7 +206,7 @@ impl PowerSupply {
     pub fn get_available_platform_profiles() -> Vec<String> {
         let path = "/sys/firmware/acpi/platform_profile_choices";
 
-        let Ok(content) = fs::read_to_string(path) else {
+        let Ok(Some(content)) = fs::read(path) else {
             return Vec::new();
         };
 
@@ -245,7 +235,7 @@ impl PowerSupply {
             );
         }
 
-        write("/sys/firmware/acpi/platform_profile", profile)
+        fs::write("/sys/firmware/acpi/platform_profile", profile)
             .context("this probably means that your system does not support changing ACPI profiles")
     }
 }
