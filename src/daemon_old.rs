@@ -12,143 +12,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-/// Parameters for computing optimal polling interval
-struct IntervalParams {
-    /// Base polling interval in seconds
-    base_interval: u64,
-    /// Minimum allowed polling interval in seconds
-    min_interval: u64,
-    /// Maximum allowed polling interval in seconds
-    max_interval: u64,
-    /// How rapidly CPU usage is changing
-    cpu_volatility: f32,
-    /// How rapidly temperature is changing
-    temp_volatility: f32,
-    /// Battery discharge rate in %/hour if available
-    battery_discharge_rate: Option<f32>,
-    /// Time since last detected user activity
-    last_user_activity: Duration,
-    /// Whether the system appears to be idle
-    is_system_idle: bool,
-    /// Whether the system is running on battery power
-    on_battery: bool,
-}
-
-/// Calculate the idle time multiplier based on system idle duration
-///
-/// Returns a multiplier between 1.0 and 5.0 (capped):
-/// - For idle times < 2 minutes: Linear interpolation from 1.0 to 2.0
-/// - For idle times >= 2 minutes: Logarithmic scaling (1.0 + log2(minutes))
-fn idle_multiplier(idle_secs: u64) -> f32 {
-    if idle_secs == 0 {
-        return 1.0; // No idle time, no multiplier effect
-    }
-
-    let idle_factor = if idle_secs < 120 {
-        // Less than 2 minutes (0 to 119 seconds)
-        // Linear interpolation from 1.0 (at 0s) to 2.0 (at 120s)
-        1.0 + (idle_secs as f32) / 120.0
-    } else {
-        // 2 minutes (120 seconds) or more
-        let idle_time_minutes = idle_secs / 60;
-        // Logarithmic scaling: 1.0 + log2(minutes)
-        1.0 + (idle_time_minutes as f32).log2().max(0.5)
-    };
-
-    // Cap the multiplier to avoid excessive intervals
-    idle_factor.min(5.0) // max factor of 5x
-}
-
-/// Calculate optimal polling interval based on system conditions and history
-///
-/// Returns Ok with the calculated interval, or Err if the configuration is invalid
-fn compute_new(params: &IntervalParams, system_history: &SystemHistory) -> anyhow::Result<u64> {
-    // Use the centralized validation function
-    validate_poll_intervals(params.min_interval, params.max_interval)?;
-
-    // Start with base interval
-    let mut adjusted_interval = params.base_interval;
-
-    // If we're on battery, we want to be more aggressive about saving power
-    if params.on_battery {
-        // Apply a multiplier based on battery discharge rate
-        if let Some(discharge_rate) = params.battery_discharge_rate {
-            if discharge_rate > 20.0 {
-                // High discharge rate - increase polling interval significantly (3x)
-                adjusted_interval = adjusted_interval.saturating_mul(3);
-            } else if discharge_rate > 10.0 {
-                // Moderate discharge - double polling interval (2x)
-                adjusted_interval = adjusted_interval.saturating_mul(2);
-            } else {
-                // Low discharge rate - increase by 50% (multiply by 3/2)
-                adjusted_interval = adjusted_interval.saturating_mul(3).saturating_div(2);
-            }
-        } else {
-            // If we don't know discharge rate, use a conservative multiplier (2x)
-            adjusted_interval = adjusted_interval.saturating_mul(2);
-        }
-    }
-
-    // Adjust for system idleness
-    if params.is_system_idle {
-        let idle_time_seconds = params.last_user_activity.as_secs();
-
-        // Apply adjustment only if the system has been idle for a non-zero duration
-        if idle_time_seconds > 0 {
-            let idle_factor = idle_multiplier(idle_time_seconds);
-
-            log::debug!(
-                "System idle for {} seconds (approx. {} minutes), applying idle factor: {:.2}x",
-                idle_time_seconds,
-                (idle_time_seconds as f32 / 60.0).round(),
-                idle_factor
-            );
-
-            // Convert f32 multiplier to integer-safe math
-            // Multiply by a large number first, then divide to maintain precision
-            // Use 1000 as the scaling factor to preserve up to 3 decimal places
-            let scaling_factor = 1000;
-            let scaled_factor = (idle_factor * scaling_factor as f32) as u64;
-            adjusted_interval = adjusted_interval
-                .saturating_mul(scaled_factor)
-                .saturating_div(scaling_factor);
-        }
-        // If idle_time_seconds is 0, no factor is applied by this block
-    }
-
-    // Adjust for CPU/temperature volatility
-    if params.cpu_volatility > 10.0 || params.temp_volatility > 2.0 {
-        // For division by 2 (halving the interval), we can safely use integer division
-        adjusted_interval = (adjusted_interval / 2).max(1);
-    }
-
-    // Enforce a minimum of 1 second to prevent busy loops, regardless of params.min_interval
-    let min_safe_interval = params.min_interval.max(1);
-    let new_interval = adjusted_interval.clamp(min_safe_interval, params.max_interval);
-
-    // Blend the new interval with the cached value if available
-    let blended_interval = if let Some(cached) = system_history.last_computed_interval {
-        // Use a weighted average: 70% previous value, 30% new value
-        // This smooths out drastic changes in polling frequency
-        const PREVIOUS_VALUE_WEIGHT: u128 = 7; // 70%
-        const NEW_VALUE_WEIGHT: u128 = 3; // 30%
-        const TOTAL_WEIGHT: u128 = PREVIOUS_VALUE_WEIGHT + NEW_VALUE_WEIGHT; // 10
-
-        // XXX: Use u128 arithmetic to avoid overflow with large interval values
-        let result = (u128::from(cached) * PREVIOUS_VALUE_WEIGHT
-            + u128::from(new_interval) * NEW_VALUE_WEIGHT)
-            / TOTAL_WEIGHT;
-
-        result as u64
-    } else {
-        new_interval
-    };
-
-    // Blended result still needs to respect the configured bounds
-    // Again enforce minimum of 1 second regardless of params.min_interval
-    Ok(blended_interval.clamp(min_safe_interval, params.max_interval))
-}
-
 /// Tracks historical system data for "advanced" adaptive polling
 #[derive(Debug)]
 struct SystemHistory {
@@ -172,23 +35,6 @@ struct SystemHistory {
     current_state: SystemState,
     /// Last computed optimal polling interval
     last_computed_interval: Option<u64>,
-}
-
-impl Default for SystemHistory {
-    fn default() -> Self {
-        Self {
-            cpu_usage_history: VecDeque::new(),
-            temperature_history: VecDeque::new(),
-            last_user_activity: Instant::now(),
-            last_battery_percentage: None,
-            last_battery_timestamp: None,
-            battery_discharge_rate: None,
-            state_durations: std::collections::HashMap::new(),
-            last_state_change: Instant::now(),
-            current_state: SystemState::default(),
-            last_computed_interval: None,
-        }
-    }
 }
 
 impl SystemHistory {
@@ -353,45 +199,6 @@ impl SystemHistory {
         let recent_avg =
             self.cpu_usage_history.iter().sum::<f32>() / self.cpu_usage_history.len() as f32;
         recent_avg < 10.0 && self.get_cpu_volatility() < 5.0
-    }
-
-    /// Calculate optimal polling interval based on system conditions
-    fn calculate_optimal_interval(
-        &self,
-        config: &AppConfig,
-        on_battery: bool,
-    ) -> anyhow::Result<u64> {
-        let params = IntervalParams {
-            base_interval: config.daemon.poll_interval_sec,
-            min_interval: config.daemon.min_poll_interval_sec,
-            max_interval: config.daemon.max_poll_interval_sec,
-            cpu_volatility: self.get_cpu_volatility(),
-            temp_volatility: self.get_temperature_volatility(),
-            battery_discharge_rate: self.battery_discharge_rate,
-            last_user_activity: self.last_user_activity.elapsed(),
-            is_system_idle: self.is_system_idle(),
-            on_battery,
-        };
-
-        compute_new(&params, self)
-    }
-}
-
-/// Validates that poll interval configuration is consistent
-/// Returns Ok if configuration is valid, Err with a descriptive message if invalid
-fn validate_poll_intervals(min_interval: u64, max_interval: u64) -> anyhow::Result<()> {
-    if min_interval < 1 {
-        bail!("min_interval must be ≥ 1");
-    }
-    if max_interval < 1 {
-        bail!("max_interval must be ≥ 1");
-    }
-    if max_interval >= min_interval {
-        Ok(())
-    } else {
-        bail!(
-            "Invalid interval configuration: max_interval ({max_interval}) is less than min_interval ({min_interval})"
-        );
     }
 }
 
@@ -558,36 +365,6 @@ pub fn run_daemon(config: AppConfig) -> anyhow::Result<()> {
     }
 
     log::info!("Daemon stopped");
-    Ok(())
-}
-
-/// Write current system stats to a file for --stats to read
-fn write_stats_file(path: &str, report: &SystemReport) -> Result<(), std::io::Error> {
-    let mut file = File::create(path)?;
-
-    writeln!(file, "timestamp={:?}", report.timestamp)?;
-
-    // CPU info
-    writeln!(file, "governor={:?}", report.cpu_global.current_governor)?;
-    writeln!(file, "turbo={:?}", report.cpu_global.turbo_status)?;
-    if let Some(temp) = report.cpu_global.average_temperature_celsius {
-        writeln!(file, "cpu_temp={temp:.1}")?;
-    }
-
-    // Battery info
-    if !report.batteries.is_empty() {
-        let battery = &report.batteries[0];
-        writeln!(file, "ac_power={}", battery.ac_connected)?;
-        if let Some(cap) = battery.capacity_percent {
-            writeln!(file, "battery_percent={cap}")?;
-        }
-    }
-
-    // System load
-    writeln!(file, "load_1m={:.2}", report.system_load.load_avg_1min)?;
-    writeln!(file, "load_5m={:.2}", report.system_load.load_avg_5min)?;
-    writeln!(file, "load_15m={:.2}", report.system_load.load_avg_15min)?;
-
     Ok(())
 }
 

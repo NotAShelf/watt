@@ -1,8 +1,14 @@
 use std::{
     collections::VecDeque,
     ops,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
+
+use anyhow::Context;
 
 use crate::config;
 
@@ -33,17 +39,17 @@ struct Daemon {
     /// Last time when there was user activity.
     last_user_activity: Instant,
 
+    /// The last computed polling interval.
+    last_polling_interval: Option<Duration>,
+
+    /// Whether if we are charging right now.
+    charging: bool,
+
     /// CPU usage and temperature log.
     cpu_log: VecDeque<CpuLog>,
 
     /// Power supply status log.
     power_supply_log: VecDeque<PowerSupplyLog>,
-
-    /// Whether if we are charging right now.
-    charging: bool,
-
-    /// The last computed polling interval.
-    last_polling_interval: Option<Duration>,
 }
 
 struct CpuLog {
@@ -237,5 +243,20 @@ impl Daemon {
 }
 
 pub fn run(config: config::DaemonConfig) -> anyhow::Result<()> {
+    log::info!("starting daemon...");
+
+    let cancelled = Arc::new(AtomicBool::new(false));
+
+    let cancelled_ = Arc::clone(&cancelled);
+    ctrlc::set_handler(move || {
+        log::info!("received shutdown signal");
+        cancelled_.store(true, Ordering::SeqCst);
+    })
+    .context("failed to set Ctrl-C handler")?;
+
+    while !cancelled.load(Ordering::SeqCst) {}
+
+    log::info!("exiting...");
+
     Ok(())
 }
