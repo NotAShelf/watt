@@ -50,6 +50,8 @@ enum Command {
 fn real_main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
+    yansi::whenever(yansi::Condition::TTY_AND_COLOR);
+
     env_logger::Builder::new()
         .filter_level(cli.verbosity.log_level_filter())
         .format_timestamp(None)
