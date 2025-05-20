@@ -1,10 +1,14 @@
+mod cpu;
+mod power_supply;
+mod system;
+
+mod fs;
+
 mod config;
 // mod core;
-mod cpu;
 mod daemon;
 // mod engine;
 // mod monitor;
-mod power_supply;
 
 use anyhow::Context;
 use clap::Parser as _;
