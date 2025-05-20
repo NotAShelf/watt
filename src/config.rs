@@ -255,7 +255,7 @@ pub enum Expression {
 pub struct Rule {
     priority: u8,
 
-    #[serde(default, skip_serializing_if = "is_default")]
+    #[serde(default, rename = "if", skip_serializing_if = "is_default")]
     if_: Expression,
 
     #[serde(default, skip_serializing_if = "is_default")]
@@ -265,7 +265,7 @@ pub struct Rule {
 }
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
-#[serde(transparent, default, rename_all = "kebab-case")]
+#[serde(default, rename_all = "kebab-case")]
 pub struct DaemonConfig {
     #[serde(rename = "rule")]
     rules: Vec<Rule>,
