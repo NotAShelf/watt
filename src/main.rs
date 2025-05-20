@@ -36,7 +36,7 @@ enum Command {
     /// Start the daemon.
     Start {
         /// The daemon config path.
-        #[arg(long, env = "SUPERFREQ_CONFIG")]
+        #[arg(long, env = "WATT_CONFIG")]
         config: PathBuf,
     },
 

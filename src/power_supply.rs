@@ -48,6 +48,9 @@ const POWER_SUPPLY_THRESHOLD_CONFIGS: &[PowerSupplyThresholdConfig] = &[
 pub struct PowerSupply {
     pub name: String,
     pub path: PathBuf,
+
+    pub is_from_peripheral: bool,
+
     pub threshold_config: Option<PowerSupplyThresholdConfig>,
 }
 
@@ -74,6 +77,9 @@ impl PowerSupply {
         let mut power_supply = Self {
             path: Path::new(POWER_SUPPLY_PATH).join(&name),
             name,
+
+            is_from_peripheral: false,
+
             threshold_config: None,
         };
 
@@ -93,6 +99,8 @@ impl PowerSupply {
                 .to_string(),
 
             path,
+
+            is_from_peripheral: false,
 
             threshold_config: None,
         };
@@ -156,6 +164,46 @@ impl PowerSupply {
             .flatten();
 
         self.threshold_config = threshold_config;
+
+        self.is_from_peripheral = 'is_from_peripheral: {
+            let name_lower = self.name.to_lowercase();
+
+            // Common peripheral battery names.
+            if name_lower.contains("mouse")
+                || name_lower.contains("keyboard")
+                || name_lower.contains("trackpad")
+                || name_lower.contains("gamepad")
+                || name_lower.contains("controller")
+                || name_lower.contains("headset")
+                || name_lower.contains("headphone")
+            {
+                break 'is_from_peripheral true;
+            }
+
+            // Small capacity batteries are likely not laptop batteries.
+            if let Some(energy_full) = fs::read_u64(self.path.join("energy_full")) {
+                let energy_full = energy_full
+                    .with_context(|| format!("failed to read the max charge '{self}' can hold"))?;
+
+                // Most laptop batteries are at least 20,000,000 µWh (20 Wh).
+                // Peripheral batteries are typically much smaller.
+                if energy_full < 10_000_000 {
+                    // 10 Wh in µWh.
+                    break 'is_from_peripheral true;
+                }
+            }
+            // Check for model name that indicates a peripheral
+            if let Some(model) = fs::read(self.path.join("model_name")) {
+                let model =
+                    model.with_context(|| format!("failed to read the model name of '{self}'"))?;
+
+                if model.contains("bluetooth") || model.contains("wireless") {
+                    break 'is_from_peripheral true;
+                }
+            }
+
+            false
+        };
 
         Ok(())
     }
