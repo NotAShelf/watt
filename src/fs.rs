@@ -29,18 +29,19 @@ pub fn read(path: impl AsRef<Path>) -> Option<anyhow::Result<String>> {
     }
 }
 
-pub fn read_u64(path: impl AsRef<Path>) -> anyhow::Result<u64> {
+pub fn read_u64(path: impl AsRef<Path>) -> Option<anyhow::Result<u64>> {
     let path = path.as_ref();
 
-    let content = fs::read_to_string(path)
-        .with_context(|| format!("failed to read '{path}'", path = path.display()))?;
+    match read(path)? {
+        Ok(content) => Some(content.trim().parse().with_context(|| {
+            format!(
+                "failed to parse contents of '{path}' as a unsigned number",
+                path = path.display(),
+            )
+        })),
 
-    Ok(content.trim().parse().with_context(|| {
-        format!(
-            "failed to parse contents of '{path}' as a unsigned number",
-            path = path.display(),
-        )
-    })?)
+        Err(error) => Some(Err(error)),
+    }
 }
 
 pub fn write(path: impl AsRef<Path>, value: &str) -> anyhow::Result<()> {
