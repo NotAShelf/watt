@@ -120,6 +120,8 @@ impl Cpu {
     }
 
     fn rescan_times(&mut self) -> anyhow::Result<()> {
+        // TODO: Don't read this per CPU. Share the read or
+        // find something in /sys/.../cpu{N} that does it.
         let content = fs::read("/proc/stat")
             .context("/proc/stat does not exist")?
             .context("failed to read CPU stat")?;
