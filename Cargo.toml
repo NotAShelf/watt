@@ -19,5 +19,5 @@ thiserror = "2.0"
 anyhow = "1.0"
 jiff = "0.2.13"
 clap-verbosity-flag = "3.0.2"
-yansi = "1.0.1"
+yansi = { version = "1.0.1", features = ["detect-env", "detect-tty"] }
 derive_more = { version = "2.0.1", features = ["full"] }
