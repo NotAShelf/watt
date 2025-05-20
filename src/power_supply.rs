@@ -146,7 +146,7 @@ impl PowerSupply {
             bail!("{self} does not exist");
         }
 
-        let threshold_config = self
+        self.threshold_config = self
             .get_type()
             .with_context(|| format!("failed to determine what type of power supply '{self}' is"))?
             .eq("Battery")
@@ -162,8 +162,6 @@ impl PowerSupply {
                 None
             })
             .flatten();
-
-        self.threshold_config = threshold_config;
 
         self.is_from_peripheral = 'is_from_peripheral: {
             let name_lower = self.name.to_lowercase();

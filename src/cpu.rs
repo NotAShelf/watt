@@ -5,10 +5,37 @@ use std::{fmt, string::ToString};
 
 use crate::fs;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cpu {
     pub number: u32,
+
     pub has_cpufreq: bool,
+
+    pub time_user: u64,
+    pub time_nice: u64,
+    pub time_system: u64,
+    pub time_idle: u64,
+    pub time_iowait: u64,
+    pub time_irq: u64,
+    pub time_softirq: u64,
+    pub time_steal: u64,
+}
+
+impl Cpu {
+    pub fn time_total(&self) -> u64 {
+        self.time_user
+            + self.time_nice
+            + self.time_system
+            + self.time_idle
+            + self.time_iowait
+            + self.time_irq
+            + self.time_softirq
+            + self.time_steal
+    }
+
+    pub fn time_idle(&self) -> u64 {
+        self.time_idle + self.time_iowait
+    }
 }
 
 impl fmt::Display for Cpu {
@@ -24,6 +51,15 @@ impl Cpu {
         let mut cpu = Self {
             number,
             has_cpufreq: false,
+
+            time_user: 0,
+            time_nice: 0,
+            time_system: 0,
+            time_idle: 0,
+            time_iowait: 0,
+            time_irq: 0,
+            time_softirq: 0,
+            time_steal: 0,
         };
         cpu.rescan()?;
 
@@ -76,9 +112,68 @@ impl Cpu {
             bail!("{self} does not exist");
         }
 
-        let has_cpufreq = fs::exists(format!("/sys/devices/system/cpu/cpu{number}/cpufreq"));
+        self.has_cpufreq = fs::exists(format!("/sys/devices/system/cpu/cpu{number}/cpufreq"));
 
-        self.has_cpufreq = has_cpufreq;
+        self.rescan_times()?;
+
+        Ok(())
+    }
+
+    fn rescan_times(&mut self) -> anyhow::Result<()> {
+        let content = fs::read("/proc/stat")
+            .context("/proc/stat does not exist")?
+            .context("failed to read CPU stat")?;
+
+        let cpu_name = format!("cpu{number}", number = self.number);
+
+        let mut stats = content
+            .lines()
+            .find_map(|line| {
+                line.starts_with(&cpu_name)
+                    .then(|| line.split_whitespace().skip(1))
+            })
+            .with_context(|| format!("failed to find {self} in CPU stats"))?;
+
+        self.time_user = stats
+            .next()
+            .with_context(|| format!("failed to find {self} user time"))?
+            .parse()
+            .with_context(|| format!("failed to parse {self} user time"))?;
+        self.time_nice = stats
+            .next()
+            .with_context(|| format!("failed to find {self} nice time"))?
+            .parse()
+            .with_context(|| format!("failed to parse {self} nice time"))?;
+        self.time_system = stats
+            .next()
+            .with_context(|| format!("failed to find {self} system time"))?
+            .parse()
+            .with_context(|| format!("failed to parse {self} system time"))?;
+        self.time_idle = stats
+            .next()
+            .with_context(|| format!("failed to find {self} idle time"))?
+            .parse()
+            .with_context(|| format!("failed to parse {self} idle time"))?;
+        self.time_iowait = stats
+            .next()
+            .with_context(|| format!("failed to find {self} iowait time"))?
+            .parse()
+            .with_context(|| format!("failed to parse {self} iowait time"))?;
+        self.time_irq = stats
+            .next()
+            .with_context(|| format!("failed to find {self} irq time"))?
+            .parse()
+            .with_context(|| format!("failed to parse {self} irq time"))?;
+        self.time_softirq = stats
+            .next()
+            .with_context(|| format!("failed to find {self} softirq time"))?
+            .parse()
+            .with_context(|| format!("failed to parse {self} softirq time"))?;
+        self.time_steal = stats
+            .next()
+            .with_context(|| format!("failed to find {self} steal time"))?
+            .parse()
+            .with_context(|| format!("failed to parse {self} steal time"))?;
 
         Ok(())
     }
@@ -232,7 +327,7 @@ impl Cpu {
     fn validate_frequency_minimum(&self, new_frequency_mhz: u64) -> anyhow::Result<()> {
         let Self { number, .. } = self;
 
-        let Ok(minimum_frequency_khz) = fs::read_u64(format!(
+        let Some(Ok(minimum_frequency_khz)) = fs::read_u64(format!(
             "/sys/devices/system/cpu/cpu{number}/cpufreq/scaling_min_freq"
         )) else {
             // Just let it pass if we can't find anything.
@@ -270,7 +365,7 @@ impl Cpu {
     fn validate_frequency_maximum(&self, new_frequency_mhz: u64) -> anyhow::Result<()> {
         let Self { number, .. } = self;
 
-        let Ok(maximum_frequency_khz) = fs::read_u64(format!(
+        let Some(Ok(maximum_frequency_khz)) = fs::read_u64(format!(
             "/sys/devices/system/cpu/cpu{number}/cpufreq/scaling_min_freq"
         )) else {
             // Just let it pass if we can't find anything.
