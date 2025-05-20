@@ -10,37 +10,10 @@ use std::{
     time::SystemTime,
 };
 
-// Read a sysfs file to a string, trimming whitespace
-fn read_sysfs_file_trimmed(path: impl AsRef<Path>) -> anyhow::Result<String> {
-    fs::read_to_string(path.as_ref())
-        .map(|s| s.trim().to_string())
-        .map_err(|e| {
-            SysMonitorError::ReadError(format!("Path: {:?}, Error: {}", path.as_ref().display(), e))
-        })
-}
-
-// Read a sysfs file and parse it to a specific type
-fn read_sysfs_value<T: FromStr>(path: impl AsRef<Path>) -> anyhow::Result<T> {
-    let content = read_sysfs_file_trimmed(path.as_ref())?;
-    content.parse::<T>().map_err(|_| {
-        SysMonitorError::ParseError(format!(
-            "Could not parse '{}' from {:?}",
-            content,
-            path.as_ref().display()
-        ))
-    })
-}
-
 pub fn get_system_info() -> SystemInfo {
     let cpu_model = get_cpu_model().unwrap_or_else(|_| "Unknown".to_string());
-    let linux_distribution = get_linux_distribution().unwrap_or_else(|_| "Unknown".to_string());
-    let architecture = std::env::consts::ARCH.to_string();
 
-    SystemInfo {
-        cpu_model,
-        architecture,
-        linux_distribution,
-    }
+    SystemInfo { cpu_model }
 }
 
 pub fn get_cpu_core_info(
@@ -528,46 +501,4 @@ pub fn get_cpu_model() -> anyhow::Result<String> {
     Err(SysMonitorError::ParseError(
         "Could not find CPU model name in /proc/cpuinfo.".to_string(),
     ))
-}
-
-pub fn get_linux_distribution() -> anyhow::Result<String> {
-    let os_release_path = Path::new("/etc/os-release");
-    let content = fs::read_to_string(os_release_path).map_err(|_| {
-        SysMonitorError::ReadError(format!(
-            "Cannot read contents of {}.",
-            os_release_path.display()
-        ))
-    })?;
-
-    for line in content.lines() {
-        if line.starts_with("PRETTY_NAME=") {
-            if let Some(val) = line.split('=').nth(1) {
-                let linux_distribution = val.trim_matches('"').to_string();
-                return Ok(linux_distribution);
-            }
-        }
-    }
-
-    let lsb_release_path = Path::new("/etc/lsb-release");
-    let content = fs::read_to_string(lsb_release_path).map_err(|_| {
-        SysMonitorError::ReadError(format!(
-            "Cannot read contents of {}.",
-            lsb_release_path.display()
-        ))
-    })?;
-
-    for line in content.lines() {
-        if line.starts_with("DISTRIB_DESCRIPTION=") {
-            if let Some(val) = line.split('=').nth(1) {
-                let linux_distribution = val.trim_matches('"').to_string();
-                return Ok(linux_distribution);
-            }
-        }
-    }
-
-    Err(SysMonitorError::ParseError(format!(
-        "Could not find distribution name in {} or {}.",
-        os_release_path.display(),
-        lsb_release_path.display()
-    )))
 }
