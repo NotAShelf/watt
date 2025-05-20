@@ -39,7 +39,11 @@ struct Daemon {
     /// Power supply status log.
     power_supply_log: VecDeque<PowerSupplyLog>,
 
+    /// Whether if we are charging right now.
     charging: bool,
+
+    /// The last computed polling interval.
+    last_polling_interval: Option<Duration>,
 }
 
 struct CpuLog {
@@ -167,7 +171,7 @@ impl Daemon {
 }
 
 impl Daemon {
-    fn polling_interval(&self) -> Duration {
+    fn polling_interval(&mut self) -> Duration {
         let mut interval = Duration::from_secs(5);
 
         // We are on battery, so we must be more conservative with our polling.
@@ -185,6 +189,8 @@ impl Daemon {
                     }
                 }
 
+                // If we can't deterine the discharge rate, that means that
+                // we were very recently started. Which is user activity.
                 None => {
                     interval *= 2;
                 }
@@ -213,7 +219,20 @@ impl Daemon {
             }
         }
 
-        todo!("implement rest from daemon_old.rs")
+        let interval = match self.last_polling_interval {
+            Some(last_interval) => Duration::from_secs_f64(
+                // 30% of current computed interval, 70% of last interval.
+                interval.as_secs_f64() * 0.3 + last_interval.as_secs_f64() * 0.7,
+            ),
+
+            None => interval,
+        };
+
+        let interval = Duration::from_secs_f64(interval.as_secs_f64().clamp(1.0, 30.0));
+
+        self.last_polling_interval = Some(interval);
+
+        interval
     }
 }
 
