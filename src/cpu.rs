@@ -86,7 +86,7 @@ impl Cpu {
     pub fn get_available_governors(&self) -> Vec<String> {
         let Self { number, .. } = self;
 
-        let Ok(Some(content)) = fs::read(format!(
+        let Some(Ok(content)) = fs::read(format!(
             "/sys/devices/system/cpu/cpu{number}/cpufreq/scaling_available_governors"
         )) else {
             return Vec::new();
@@ -127,7 +127,7 @@ impl Cpu {
     pub fn get_available_epps(&self) -> Vec<String> {
         let Self { number, .. } = self;
 
-        let Ok(Some(content)) = fs::read(format!(
+        let Some(Ok(content)) = fs::read(format!(
             "/sys/devices/system/cpu/cpu{number}/cpufreq/energy_performance_available_preferences"
         )) else {
             return Vec::new();

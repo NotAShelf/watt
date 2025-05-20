@@ -127,9 +127,10 @@ impl PowerSupply {
         let type_path = self.path.join("type");
 
         let type_ = fs::read(&type_path)
+            .with_context(|| format!("'{path}' doesn't exist", path = type_path.display()))?
             .with_context(|| format!("failed to read '{path}'", path = type_path.display()))?;
 
-        type_.ok_or_else(|| anyhow!("'{path}' doesn't exist", path = type_path.display()))
+        Ok(type_)
     }
 
     pub fn rescan(&mut self) -> anyhow::Result<()> {
@@ -206,7 +207,7 @@ impl PowerSupply {
     pub fn get_available_platform_profiles() -> Vec<String> {
         let path = "/sys/firmware/acpi/platform_profile_choices";
 
-        let Ok(Some(content)) = fs::read(path) else {
+        let Some(Ok(content)) = fs::read(path) else {
             return Vec::new();
         };
 

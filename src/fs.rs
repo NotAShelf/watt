@@ -15,17 +15,17 @@ pub fn read_dir(path: impl AsRef<Path>) -> anyhow::Result<fs::ReadDir> {
         .with_context(|| format!("failed to read directory '{path}'", path = path.display()))
 }
 
-pub fn read(path: impl AsRef<Path>) -> anyhow::Result<Option<String>> {
+pub fn read(path: impl AsRef<Path>) -> Option<anyhow::Result<String>> {
     let path = path.as_ref();
 
     match fs::read_to_string(path) {
-        Ok(string) => Ok(Some(string)),
+        Ok(string) => Some(Ok(string)),
 
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
 
-        Err(error) => {
-            Err(error).with_context(|| format!("failed to read '{path}", path = path.display()))
-        }
+        Err(error) => Some(
+            Err(error).with_context(|| format!("failed to read '{path}", path = path.display())),
+        ),
     }
 }
 
