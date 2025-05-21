@@ -11,6 +11,10 @@ pub struct Cpu {
 
     pub has_cpufreq: bool,
 
+    pub frequency_mhz: u64,
+    pub frequency_mhz_minimum: u64,
+    pub frequency_mhz_maximum: u64,
+
     pub time_user: u64,
     pub time_nice: u64,
     pub time_system: u64,
@@ -51,6 +55,10 @@ impl Cpu {
         let mut cpu = Self {
             number,
             has_cpufreq: false,
+
+            frequency_mhz: 0,
+            frequency_mhz_minimum: 0,
+            frequency_mhz_maximum: 0,
 
             time_user: 0,
             time_nice: 0,
@@ -115,6 +123,7 @@ impl Cpu {
         self.has_cpufreq = fs::exists(format!("/sys/devices/system/cpu/cpu{number}/cpufreq"));
 
         self.rescan_times()?;
+        self.rescan_frequency()?;
 
         Ok(())
     }
@@ -176,6 +185,32 @@ impl Cpu {
             .with_context(|| format!("failed to find {self} steal time"))?
             .parse()
             .with_context(|| format!("failed to parse {self} steal time"))?;
+
+        Ok(())
+    }
+
+    fn rescan_frequency(&mut self) -> anyhow::Result<()> {
+        let Self { number, .. } = *self;
+
+        let frequency_khz = fs::read_u64(format!(
+            "/sys/devices/system/cpu/cpu{number}/cpufreq/scaling_cur_freq"
+        ))
+        .with_context(|| format!("failed to find {self} frequency"))?
+        .with_context(|| format!("failed to parse {self} frequency"))?;
+        let frequency_khz_minimum = fs::read_u64(format!(
+            "/sys/devices/system/cpu/cpu{number}/cpufreq/scaling_min_freq"
+        ))
+        .with_context(|| format!("failed to find {self} frequency minimum"))?
+        .with_context(|| format!("failed to parse {self} frequency"))?;
+        let frequency_khz_maximum = fs::read_u64(format!(
+            "/sys/devices/system/cpu/cpu{number}/cpufreq/scaling_max_freq"
+        ))
+        .with_context(|| format!("failed to find {self} frequency maximum"))?
+        .with_context(|| format!("failed to parse {self} frequency"))?;
+
+        self.frequency_mhz = frequency_khz / 1000;
+        self.frequency_mhz_minimum = frequency_khz_minimum / 1000;
+        self.frequency_mhz_maximum = frequency_khz_maximum / 1000;
 
         Ok(())
     }
@@ -308,10 +343,10 @@ impl Cpu {
         })
     }
 
-    pub fn set_frequency_minimum(&self, frequency_mhz: u64) -> anyhow::Result<()> {
-        let Self { number, .. } = self;
+    pub fn set_frequency_mhz_minimum(&mut self, frequency_mhz: u64) -> anyhow::Result<()> {
+        let Self { number, .. } = *self;
 
-        self.validate_frequency_minimum(frequency_mhz)?;
+        self.validate_frequency_mhz_minimum(frequency_mhz)?;
 
         // We use u64 for the intermediate calculation to prevent overflow
         let frequency_khz = frequency_mhz * 1000;
@@ -323,10 +358,14 @@ impl Cpu {
         )
         .with_context(|| {
             format!("this probably means that {self} doesn't exist or doesn't support changing minimum frequency")
-        })
+        })?;
+
+        self.frequency_mhz_minimum = frequency_mhz;
+
+        Ok(())
     }
 
-    fn validate_frequency_minimum(&self, new_frequency_mhz: u64) -> anyhow::Result<()> {
+    fn validate_frequency_mhz_minimum(&self, new_frequency_mhz: u64) -> anyhow::Result<()> {
         let Self { number, .. } = self;
 
         let Some(Ok(minimum_frequency_khz)) = fs::read_u64(format!(
@@ -346,10 +385,10 @@ impl Cpu {
         Ok(())
     }
 
-    pub fn set_frequency_maximum(&self, frequency_mhz: u64) -> anyhow::Result<()> {
-        let Self { number, .. } = self;
+    pub fn set_frequency_mhz_maximum(&mut self, frequency_mhz: u64) -> anyhow::Result<()> {
+        let Self { number, .. } = *self;
 
-        self.validate_frequency_maximum(frequency_mhz)?;
+        self.validate_frequency_mhz_maximum(frequency_mhz)?;
 
         // We use u64 for the intermediate calculation to prevent overflow
         let frequency_khz = frequency_mhz * 1000;
@@ -361,10 +400,14 @@ impl Cpu {
         )
         .with_context(|| {
             format!("this probably means that {self} doesn't exist or doesn't support changing maximum frequency")
-        })
+        })?;
+
+        self.frequency_mhz_maximum = frequency_mhz;
+
+        Ok(())
     }
 
-    fn validate_frequency_maximum(&self, new_frequency_mhz: u64) -> anyhow::Result<()> {
+    fn validate_frequency_mhz_maximum(&self, new_frequency_mhz: u64) -> anyhow::Result<()> {
         let Self { number, .. } = self;
 
         let Some(Ok(maximum_frequency_khz)) = fs::read_u64(format!(

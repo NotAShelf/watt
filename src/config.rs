@@ -50,7 +50,7 @@ pub struct CpuDelta {
 
 impl CpuDelta {
     pub fn apply(&self) -> anyhow::Result<()> {
-        let cpus = match &self.for_ {
+        let mut cpus = match &self.for_ {
             Some(numbers) => {
                 let mut cpus = Vec::with_capacity(numbers.len());
 
@@ -63,7 +63,7 @@ impl CpuDelta {
             None => cpu::Cpu::all().context("failed to get all CPUs and their information")?,
         };
 
-        for cpu in cpus {
+        for cpu in &mut cpus {
             if let Some(governor) = self.governor.as_ref() {
                 cpu.set_governor(governor)?;
             }
@@ -77,11 +77,11 @@ impl CpuDelta {
             }
 
             if let Some(mhz_minimum) = self.frequency_mhz_minimum {
-                cpu.set_frequency_minimum(mhz_minimum)?;
+                cpu.set_frequency_mhz_minimum(mhz_minimum)?;
             }
 
             if let Some(mhz_maximum) = self.frequency_mhz_maximum {
-                cpu.set_frequency_maximum(mhz_maximum)?;
+                cpu.set_frequency_mhz_maximum(mhz_maximum)?;
             }
         }
 
