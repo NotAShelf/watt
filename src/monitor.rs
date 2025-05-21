@@ -21,18 +21,6 @@ pub fn get_cpu_core_info(
     prev_times: &CpuTimes,
     current_times: &CpuTimes,
 ) -> anyhow::Result<CpuCoreInfo> {
-    let cpufreq_path = PathBuf::from(format!("/sys/devices/system/cpu/cpu{core_id}/cpufreq/"));
-
-    let current_frequency_mhz = read_sysfs_value::<u32>(cpufreq_path.join("scaling_cur_freq"))
-        .map(|khz| khz / 1000)
-        .ok();
-    let min_frequency_mhz = read_sysfs_value::<u32>(cpufreq_path.join("scaling_min_freq"))
-        .map(|khz| khz / 1000)
-        .ok();
-    let max_frequency_mhz = read_sysfs_value::<u32>(cpufreq_path.join("scaling_max_freq"))
-        .map(|khz| khz / 1000)
-        .ok();
-
     // Temperature detection.
     // Should be generic enough to be able to support for multiple hardware sensors
     // with the possibility of extending later down the road.
@@ -144,9 +132,6 @@ pub fn get_cpu_core_info(
 
     Ok(CpuCoreInfo {
         core_id,
-        current_frequency_mhz,
-        min_frequency_mhz,
-        max_frequency_mhz,
         usage_percent,
         temperature_celsius,
     })
