@@ -260,25 +260,6 @@ pub fn get_cpu_global_info(cpu_cores: &[CpuCoreInfo]) -> CpuGlobalInfo {
     let turbo_status_path = Path::new("/sys/devices/system/cpu/intel_pstate/no_turbo");
     let boost_path = Path::new("/sys/devices/system/cpu/cpufreq/boost");
 
-    let current_governor = if cpufreq_base_path_buf.join("scaling_governor").exists() {
-        read_sysfs_file_trimmed(cpufreq_base_path_buf.join("scaling_governor")).ok()
-    } else {
-        None
-    };
-
-    let available_governors = if cpufreq_base_path_buf
-        .join("scaling_available_governors")
-        .exists()
-    {
-        read_sysfs_file_trimmed(cpufreq_base_path_buf.join("scaling_available_governors"))
-            .map_or_else(
-                |_| vec![],
-                |s| s.split_whitespace().map(String::from).collect(),
-            )
-    } else {
-        vec![]
-    };
-
     let turbo_status = if turbo_status_path.exists() {
         // 0 means turbo enabled, 1 means disabled for intel_pstate
         read_sysfs_value::<u8>(turbo_status_path)
@@ -325,8 +306,6 @@ pub fn get_cpu_global_info(cpu_cores: &[CpuCoreInfo]) -> CpuGlobalInfo {
 
     // Return the constructed CpuGlobalInfo
     CpuGlobalInfo {
-        current_governor,
-        available_governors,
         turbo_status,
         epp: energy_perf_pref,
         epb: energy_perf_bias,

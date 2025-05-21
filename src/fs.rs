@@ -19,7 +19,7 @@ pub fn read(path: impl AsRef<Path>) -> Option<anyhow::Result<String>> {
     let path = path.as_ref();
 
     match fs::read_to_string(path) {
-        Ok(string) => Some(Ok(string)),
+        Ok(string) => Some(Ok(string.trim().to_owned())),
 
         Err(error) if error.kind() == io::ErrorKind::NotFound => None,
 

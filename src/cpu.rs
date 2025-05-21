@@ -11,9 +11,12 @@ pub struct Cpu {
 
     pub has_cpufreq: bool,
 
-    pub frequency_mhz: u64,
-    pub frequency_mhz_minimum: u64,
-    pub frequency_mhz_maximum: u64,
+    pub available_governors: Vec<String>,
+    pub governor: Option<String>,
+
+    pub frequency_mhz: Option<u64>,
+    pub frequency_mhz_minimum: Option<u64>,
+    pub frequency_mhz_maximum: Option<u64>,
 
     pub time_user: u64,
     pub time_nice: u64,
@@ -56,9 +59,12 @@ impl Cpu {
             number,
             has_cpufreq: false,
 
-            frequency_mhz: 0,
-            frequency_mhz_minimum: 0,
-            frequency_mhz_maximum: 0,
+            available_governors: Vec::new(),
+            governor: None,
+
+            frequency_mhz: None,
+            frequency_mhz_minimum: None,
+            frequency_mhz_maximum: None,
 
             time_user: 0,
             time_nice: 0,
@@ -123,7 +129,11 @@ impl Cpu {
         self.has_cpufreq = fs::exists(format!("/sys/devices/system/cpu/cpu{number}/cpufreq"));
 
         self.rescan_times()?;
-        self.rescan_frequency()?;
+
+        if self.has_cpufreq {
+            self.rescan_governor()?;
+            self.rescan_frequency()?;
+        }
 
         Ok(())
     }
@@ -189,6 +199,33 @@ impl Cpu {
         Ok(())
     }
 
+    fn rescan_governor(&mut self) -> anyhow::Result<()> {
+        let Self { number, .. } = *self;
+
+        self.available_governors = 'available_governors: {
+            let Some(Ok(content)) = fs::read(format!(
+                "/sys/devices/system/cpu/cpu{number}/cpufreq/scaling_available_governors"
+            )) else {
+                break 'available_governors Vec::new();
+            };
+
+            content
+                .split_whitespace()
+                .map(ToString::to_string)
+                .collect()
+        };
+
+        self.governor = Some(
+            fs::read(format!(
+                "/sys/devices/system/cpu/cpu{number}/cpufreq/scaling_governor"
+            ))
+            .with_context(|| format!("failed to find {self} scaling governor"))?
+            .with_context(|| format!("failed to read {self} scaling governor"))?,
+        );
+
+        Ok(())
+    }
+
     fn rescan_frequency(&mut self) -> anyhow::Result<()> {
         let Self { number, .. } = *self;
 
@@ -208,32 +245,19 @@ impl Cpu {
         .with_context(|| format!("failed to find {self} frequency maximum"))?
         .with_context(|| format!("failed to parse {self} frequency"))?;
 
-        self.frequency_mhz = frequency_khz / 1000;
-        self.frequency_mhz_minimum = frequency_khz_minimum / 1000;
-        self.frequency_mhz_maximum = frequency_khz_maximum / 1000;
+        self.frequency_mhz = Some(frequency_khz / 1000);
+        self.frequency_mhz_minimum = Some(frequency_khz_minimum / 1000);
+        self.frequency_mhz_maximum = Some(frequency_khz_maximum / 1000);
 
         Ok(())
     }
 
-    pub fn get_available_governors(&self) -> Vec<String> {
-        let Self { number, .. } = self;
-
-        let Some(Ok(content)) = fs::read(format!(
-            "/sys/devices/system/cpu/cpu{number}/cpufreq/scaling_available_governors"
-        )) else {
-            return Vec::new();
-        };
-
-        content
-            .split_whitespace()
-            .map(ToString::to_string)
-            .collect()
-    }
-
-    pub fn set_governor(&self, governor: &str) -> anyhow::Result<()> {
-        let Self { number, .. } = self;
-
-        let governors = self.get_available_governors();
+    pub fn set_governor(&mut self, governor: &str) -> anyhow::Result<()> {
+        let Self {
+            number,
+            available_governors: ref governors,
+            ..
+        } = *self;
 
         if !governors
             .iter()
@@ -253,7 +277,11 @@ impl Cpu {
             format!(
                 "this probably means that {self} doesn't exist or doesn't support changing governors"
             )
-        })
+        })?;
+
+        self.governor = Some(governor.to_owned());
+
+        Ok(())
     }
 
     pub fn get_available_epps(&self) -> Vec<String> {
@@ -360,7 +388,7 @@ impl Cpu {
             format!("this probably means that {self} doesn't exist or doesn't support changing minimum frequency")
         })?;
 
-        self.frequency_mhz_minimum = frequency_mhz;
+        self.frequency_mhz_minimum = Some(frequency_mhz);
 
         Ok(())
     }
@@ -402,7 +430,7 @@ impl Cpu {
             format!("this probably means that {self} doesn't exist or doesn't support changing maximum frequency")
         })?;
 
-        self.frequency_mhz_maximum = frequency_mhz;
+        self.frequency_mhz_maximum = Some(frequency_mhz);
 
         Ok(())
     }
