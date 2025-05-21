@@ -238,25 +238,6 @@ pub fn get_all_cpu_core_info() -> anyhow::Result<Vec<CpuCoreInfo>> {
 }
 
 pub fn get_cpu_global_info(cpu_cores: &[CpuCoreInfo]) -> CpuGlobalInfo {
-    // Find a valid CPU to read global settings from
-    // Try cpu0 first, then fall back to any available CPU with cpufreq
-    let mut cpufreq_base_path_buf = PathBuf::from("/sys/devices/system/cpu/cpu0/cpufreq/");
-
-    if !cpufreq_base_path_buf.exists() {
-        let core_count = get_real_cpus().unwrap_or_else(|e| {
-            eprintln!("Warning: {e}");
-            0
-        });
-
-        for i in 0..core_count {
-            let test_path = PathBuf::from(format!("/sys/devices/system/cpu/cpu{i}/cpufreq/"));
-            if test_path.exists() {
-                cpufreq_base_path_buf = test_path;
-                break; // Exit the loop as soon as we find a valid path
-            }
-        }
-    }
-
     let turbo_status_path = Path::new("/sys/devices/system/cpu/intel_pstate/no_turbo");
     let boost_path = Path::new("/sys/devices/system/cpu/cpufreq/boost");
 
@@ -271,14 +252,6 @@ pub fn get_cpu_global_info(cpu_cores: &[CpuCoreInfo]) -> CpuGlobalInfo {
     } else {
         None
     };
-
-    // EPP (Energy Performance Preference)
-    let energy_perf_pref =
-        read_sysfs_file_trimmed(cpufreq_base_path_buf.join("energy_performance_preference")).ok();
-
-    // EPB (Energy Performance Bias)
-    let energy_perf_bias =
-        read_sysfs_file_trimmed(cpufreq_base_path_buf.join("energy_performance_bias")).ok();
 
     let platform_profile = read_sysfs_file_trimmed("/sys/firmware/acpi/platform_profile").ok();
 
@@ -307,8 +280,6 @@ pub fn get_cpu_global_info(cpu_cores: &[CpuCoreInfo]) -> CpuGlobalInfo {
     // Return the constructed CpuGlobalInfo
     CpuGlobalInfo {
         turbo_status,
-        epp: energy_perf_pref,
-        epb: energy_perf_bias,
         platform_profile,
         average_temperature_celsius,
     }

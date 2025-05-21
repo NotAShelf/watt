@@ -18,6 +18,12 @@ pub struct Cpu {
     pub frequency_mhz_minimum: Option<u64>,
     pub frequency_mhz_maximum: Option<u64>,
 
+    pub available_epps: Vec<String>,
+    pub epp: Option<String>,
+
+    pub available_epbs: Vec<String>,
+    pub epb: Option<String>,
+
     pub time_user: u64,
     pub time_nice: u64,
     pub time_system: u64,
@@ -65,6 +71,12 @@ impl Cpu {
             frequency_mhz: None,
             frequency_mhz_minimum: None,
             frequency_mhz_maximum: None,
+
+            available_epps: Vec::new(),
+            epp: None,
+
+            available_epbs: Vec::new(),
+            epb: None,
 
             time_user: 0,
             time_nice: 0,
@@ -133,6 +145,8 @@ impl Cpu {
         if self.has_cpufreq {
             self.rescan_governor()?;
             self.rescan_frequency()?;
+            self.rescan_epp()?;
+            self.rescan_epb()?;
         }
 
         Ok(())
@@ -252,6 +266,75 @@ impl Cpu {
         Ok(())
     }
 
+    fn rescan_epp(&mut self) -> anyhow::Result<()> {
+        let Self { number, .. } = self;
+
+        self.available_epps = 'available_epps: {
+            let Some(Ok(content)) = fs::read(format!(
+                "/sys/devices/system/cpu/cpu{number}/cpufreq/energy_performance_available_preferences"
+            )) else {
+                break 'available_epps Vec::new();
+            };
+
+            content
+                .split_whitespace()
+                .map(ToString::to_string)
+                .collect()
+        };
+
+        self.epp = Some(
+            fs::read(format!(
+                "/sys/devices/system/cpu/cpu{number}/cpufreq/energy_performance_preference"
+            ))
+            .with_context(|| format!("failed to find {self} EPP"))?
+            .with_context(|| format!("failed to read {self} EPP"))?,
+        );
+
+        Ok(())
+    }
+
+    fn rescan_epb(&mut self) -> anyhow::Result<()> {
+        let Self { number, .. } = self;
+
+        self.available_epbs = if self.has_cpufreq {
+            vec![
+                "1".to_owned(),
+                "2".to_owned(),
+                "3".to_owned(),
+                "4".to_owned(),
+                "5".to_owned(),
+                "6".to_owned(),
+                "7".to_owned(),
+                "8".to_owned(),
+                "9".to_owned(),
+                "10".to_owned(),
+                "11".to_owned(),
+                "12".to_owned(),
+                "13".to_owned(),
+                "14".to_owned(),
+                "15".to_owned(),
+                "performance".to_owned(),
+                "balance-performance".to_owned(),
+                "balance_performance".to_owned(), // Alternative form with underscore.
+                "balance-power".to_owned(),
+                "balance_power".to_owned(), // Alternative form with underscore.
+                "power".to_owned(),
+            ]
+        } else {
+            Vec::new()
+        };
+
+        self.epb = Some(
+            fs::read(format!(
+                "/sys/devices/system/cpu/cpu{number}/cpufreq/energy_performance_bias"
+            ))
+            .with_context(|| format!("failed to find {self} EPB"))?
+            .with_context(|| format!("failed to read {self} EPB"))?,
+        );
+
+        Ok(())
+    }
+
     pub fn set_governor(&mut self, governor: &str) -> anyhow::Result<()> {
         let Self {
             number,
@@ -284,25 +367,12 @@ impl Cpu {
         Ok(())
     }
 
-    pub fn get_available_epps(&self) -> Vec<String> {
-        let Self { number, .. } = self;
-
-        let Some(Ok(content)) = fs::read(format!(
-            "/sys/devices/system/cpu/cpu{number}/cpufreq/energy_performance_available_preferences"
-        )) else {
-            return Vec::new();
-        };
-
-        content
-            .split_whitespace()
-            .map(ToString::to_string)
-            .collect()
-    }
-
-    pub fn set_epp(&self, epp: &str) -> anyhow::Result<()> {
-        let Self { number, .. } = self;
-
-        let epps = self.get_available_epps();
+    pub fn set_epp(&mut self, epp: &str) -> anyhow::Result<()> {
+        let Self {
+            number,
+            available_epps: ref epps,
+            ..
+        } = *self;
 
         if !epps.iter().any(|avail_epp| avail_epp == epp) {
             bail!(
@@ -320,42 +390,14 @@ impl Cpu {
         })
     }
 
-    pub fn get_available_epbs(&self) -> &'static [&'static str] {
-        if !self.has_cpufreq {
-            return &[];
-        }
-
-        &[
-            "1",
-            "2",
-            "3",
-            "4",
-            "5",
-            "6",
-            "7",
-            "8",
-            "9",
-            "10",
-            "11",
-            "12",
-            "13",
-            "14",
-            "15",
-            "performance",
-            "balance-performance",
-            "balance_performance", // Alternative form with underscore.
-            "balance-power",
-            "balance_power", // Alternative form with underscore.
-            "power",
-        ]
-    }
-
     pub fn set_epb(&self, epb: &str) -> anyhow::Result<()> {
-        let Self { number, .. } = self;
+        let Self {
+            number,
+            available_epbs: ref epbs,
+            ..
+        } = *self;
 
-        let epbs = self.get_available_epbs();
-
-        if !epbs.contains(&epb) {
+        if !epbs.iter().any(|avail_epb| avail_epb == epb) {
             bail!(
                 "EPB value '{epb}' is not available for {self}. available EPB values: {valid}",
                 valid = epbs.join(", "),
