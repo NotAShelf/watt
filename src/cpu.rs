@@ -553,4 +553,16 @@ impl Cpu {
 
         bail!("no supported CPU boost control mechanism found");
     }
+
+    pub fn turbo() -> Option<bool> {
+        if let Some(Ok(content)) = fs::read_u64("/sys/devices/system/cpu/intel_pstate/no_turbo") {
+            return Some(content == 0);
+        }
+
+        if let Some(Ok(content)) = fs::read_u64("/sys/devices/system/cpu/cpufreq/boost") {
+            return Some(content == 1);
+        }
+
+        None
+    }
 }

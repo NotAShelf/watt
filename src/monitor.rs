@@ -238,21 +238,6 @@ pub fn get_all_cpu_core_info() -> anyhow::Result<Vec<CpuCoreInfo>> {
 }
 
 pub fn get_cpu_global_info(cpu_cores: &[CpuCoreInfo]) -> CpuGlobalInfo {
-    let turbo_status_path = Path::new("/sys/devices/system/cpu/intel_pstate/no_turbo");
-    let boost_path = Path::new("/sys/devices/system/cpu/cpufreq/boost");
-
-    let turbo_status = if turbo_status_path.exists() {
-        // 0 means turbo enabled, 1 means disabled for intel_pstate
-        read_sysfs_value::<u8>(turbo_status_path)
-            .map(|val| val == 0)
-            .ok()
-    } else if boost_path.exists() {
-        // 1 means turbo enabled, 0 means disabled for generic cpufreq boost
-        read_sysfs_value::<u8>(boost_path).map(|val| val == 1).ok()
-    } else {
-        None
-    };
-
     let platform_profile = read_sysfs_file_trimmed("/sys/firmware/acpi/platform_profile").ok();
 
     // Calculate average CPU temperature from the core temperatures
@@ -279,7 +264,6 @@ pub fn get_cpu_global_info(cpu_cores: &[CpuCoreInfo]) -> CpuGlobalInfo {
 
     // Return the constructed CpuGlobalInfo
     CpuGlobalInfo {
-        turbo_status,
         platform_profile,
         average_temperature_celsius,
     }
