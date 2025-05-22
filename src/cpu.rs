@@ -387,10 +387,14 @@ impl Cpu {
         )
         .with_context(|| {
             format!("this probably means that {self} doesn't exist or doesn't support changing EPP")
-        })
+        })?;
+
+        self.epp = Some(epp.to_owned());
+
+        Ok(())
     }
 
-    pub fn set_epb(&self, epb: &str) -> anyhow::Result<()> {
+    pub fn set_epb(&mut self, epb: &str) -> anyhow::Result<()> {
         let Self {
             number,
             available_epbs: ref epbs,
@@ -410,7 +414,11 @@ impl Cpu {
         )
         .with_context(|| {
             format!("this probably means that {self} doesn't exist or doesn't support changing EPB")
-        })
+        })?;
+
+        self.epb = Some(epb.to_owned());
+
+        Ok(())
     }
 
     pub fn set_frequency_mhz_minimum(&mut self, frequency_mhz: u64) -> anyhow::Result<()> {
