@@ -1,19 +1,25 @@
 use anyhow::{Context, bail};
 
-use crate::fs;
+use crate::{cpu, fs, power_supply};
 
 pub struct System {
-    pub is_desktop: bool,
+    pub is_ac: bool,
 
     pub load_average_1min: f64,
     pub load_average_5min: f64,
     pub load_average_15min: f64,
+
+    pub cpus: Vec<cpu::Cpu>,
+    pub power_supplies: Vec<power_supply::PowerSupply>,
 }
 
 impl System {
     pub fn new() -> anyhow::Result<Self> {
         let mut system = Self {
-            is_desktop: false,
+            is_ac: false,
+
+            cpus: Vec::new(),
+            power_supplies: Vec::new(),
 
             load_average_1min: 0.0,
             load_average_5min: 0.0,
@@ -26,13 +32,23 @@ impl System {
     }
 
     pub fn rescan(&mut self) -> anyhow::Result<()> {
-        self.rescan_is_desktop()?;
+        self.cpus = cpu::Cpu::all().context("failed to scan CPUs")?;
+
+        self.power_supplies =
+            power_supply::PowerSupply::all().context("failed to scan power supplies")?;
+
+        self.is_ac = self
+            .power_supplies
+            .iter()
+            .any(|power_supply| power_supply.is_ac())
+            || self.is_desktop()?;
+
         self.rescan_load_average()?;
 
         Ok(())
     }
 
-    fn rescan_is_desktop(&mut self) -> anyhow::Result<()> {
+    fn is_desktop(&mut self) -> anyhow::Result<bool> {
         if let Some(chassis_type) =
             fs::read("/sys/class/dmi/id/chassis_type").context("failed to read chassis type")?
         {
@@ -42,13 +58,11 @@ impl System {
             match chassis_type.trim() {
                 // Desktop form factors.
                 "3" | "4" | "5" | "6" | "7" | "15" | "16" | "17" => {
-                    self.is_desktop = true;
-                    return Ok(());
+                    return Ok(true);
                 }
                 // Laptop form factors.
                 "9" | "10" | "14" => {
-                    self.is_desktop = false;
-                    return Ok(());
+                    return Ok(false);
                 }
 
                 // Unknown, continue with other checks
@@ -61,8 +75,7 @@ impl System {
             || fs::exists("/sys/devices/system/cpu/cpufreq/conservative");
 
         if !power_saving_exists {
-            self.is_desktop = true;
-            return Ok(()); // Likely a desktop.
+            return Ok(true); // Likely a desktop.
         }
 
         // Check battery-specific ACPI paths that laptops typically have
@@ -74,14 +87,12 @@ impl System {
 
         for path in laptop_acpi_paths {
             if fs::exists(path) {
-                self.is_desktop = false; // Likely a laptop.
-                return Ok(());
+                return Ok(false); // Likely a laptop.
             }
         }
 
         // Default to assuming desktop if we can't determine.
-        self.is_desktop = true;
-        Ok(())
+        Ok(true)
     }
 
     fn rescan_load_average(&mut self) -> anyhow::Result<()> {

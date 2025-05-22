@@ -246,20 +246,6 @@ pub fn get_cpu_global_info(cpu_cores: &[CpuCoreInfo]) -> CpuGlobalInfo {
     }
 }
 
-pub fn get_battery_info(config: &AppConfig) -> anyhow::Result<Vec<BatteryInfo>> {
-    // No AC adapter detected but we're on a desktop system
-    // Default to AC power for desktops
-    if !overall_ac_connected {
-        overall_ac_connected = is_likely_desktop_system();
-    }
-    // If we found no batteries but have power supplies, we're likely on a desktop
-    if batteries.is_empty() && overall_ac_connected {
-        log::debug!("No laptop batteries found, likely a desktop system");
-    }
-
-    Ok(batteries)
-}
-
 pub fn get_cpu_model() -> anyhow::Result<String> {
     let path = Path::new("/proc/cpuinfo");
     let content = fs::read_to_string(path).map_err(|_| {
