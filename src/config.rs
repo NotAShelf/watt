@@ -119,7 +119,7 @@ pub struct PowerDelta {
 
 impl PowerDelta {
     pub fn apply(&self) -> anyhow::Result<()> {
-        let power_supplies = match &self.for_ {
+        let mut power_supplies = match &self.for_ {
             Some(names) => {
                 let mut power_supplies = Vec::with_capacity(names.len());
 
@@ -136,13 +136,13 @@ impl PowerDelta {
                 .collect(),
         };
 
-        for power_supply in power_supplies {
+        for power_supply in &mut power_supplies {
             if let Some(threshold_start) = self.charge_threshold_start {
-                power_supply.set_charge_threshold_start(threshold_start)?;
+                power_supply.set_charge_threshold_start(threshold_start as f64 / 100.0)?;
             }
 
             if let Some(threshold_end) = self.charge_threshold_end {
-                power_supply.set_charge_threshold_end(threshold_end)?;
+                power_supply.set_charge_threshold_end(threshold_end as f64 / 100.0)?;
             }
         }
 

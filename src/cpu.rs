@@ -160,8 +160,8 @@ impl Cpu {
         // TODO: Don't read this per CPU. Share the read or
         // find something in /sys/.../cpu{N} that does it.
         let content = fs::read("/proc/stat")
-            .context("/proc/stat does not exist")?
-            .context("failed to read CPU stat")?;
+            .context("failed to read CPU stat")?
+            .context("/proc/stat does not exist")?;
 
         let cpu_name = format!("cpu{number}", number = self.number);
 
@@ -175,44 +175,44 @@ impl Cpu {
 
         self.time_user = stats
             .next()
-            .with_context(|| format!("failed to find {self} user time"))?
+            .with_context(|| format!("failed to parse {self} user time"))?
             .parse()
-            .with_context(|| format!("failed to parse {self} user time"))?;
+            .with_context(|| format!("failed to find {self} user time"))?;
         self.time_nice = stats
             .next()
-            .with_context(|| format!("failed to find {self} nice time"))?
+            .with_context(|| format!("failed to parse {self} nice time"))?
             .parse()
-            .with_context(|| format!("failed to parse {self} nice time"))?;
+            .with_context(|| format!("failed to find {self} nice time"))?;
         self.time_system = stats
             .next()
-            .with_context(|| format!("failed to find {self} system time"))?
+            .with_context(|| format!("failed to parse {self} system time"))?
             .parse()
-            .with_context(|| format!("failed to parse {self} system time"))?;
+            .with_context(|| format!("failed to find {self} system time"))?;
         self.time_idle = stats
             .next()
-            .with_context(|| format!("failed to find {self} idle time"))?
+            .with_context(|| format!("failed to parse {self} idle time"))?
             .parse()
-            .with_context(|| format!("failed to parse {self} idle time"))?;
+            .with_context(|| format!("failed to find {self} idle time"))?;
         self.time_iowait = stats
             .next()
-            .with_context(|| format!("failed to find {self} iowait time"))?
+            .with_context(|| format!("failed to parse {self} iowait time"))?
             .parse()
-            .with_context(|| format!("failed to parse {self} iowait time"))?;
+            .with_context(|| format!("failed to find {self} iowait time"))?;
         self.time_irq = stats
             .next()
-            .with_context(|| format!("failed to find {self} irq time"))?
+            .with_context(|| format!("failed to parse {self} irq time"))?
             .parse()
-            .with_context(|| format!("failed to parse {self} irq time"))?;
+            .with_context(|| format!("failed to find {self} irq time"))?;
         self.time_softirq = stats
             .next()
-            .with_context(|| format!("failed to find {self} softirq time"))?
+            .with_context(|| format!("failed to parse {self} softirq time"))?
             .parse()
-            .with_context(|| format!("failed to parse {self} softirq time"))?;
+            .with_context(|| format!("failed to find {self} softirq time"))?;
         self.time_steal = stats
             .next()
-            .with_context(|| format!("failed to find {self} steal time"))?
+            .with_context(|| format!("failed to parse {self} steal time"))?
             .parse()
-            .with_context(|| format!("failed to parse {self} steal time"))?;
+            .with_context(|| format!("failed to find {self} steal time"))?;
 
         Ok(())
     }
@@ -221,9 +221,11 @@ impl Cpu {
         let Self { number, .. } = *self;
 
         self.available_governors = 'available_governors: {
-            let Some(Ok(content)) = fs::read(format!(
+            let Some(content) = fs::read(format!(
                 "/sys/devices/system/cpu/cpu{number}/cpufreq/scaling_available_governors"
-            )) else {
+            ))
+            .with_context(|| format!("failed to read {self} available governors"))?
+            else {
                 break 'available_governors Vec::new();
             };
 
@@ -237,8 +239,8 @@ impl Cpu {
             fs::read(format!(
                 "/sys/devices/system/cpu/cpu{number}/cpufreq/scaling_governor"
             ))
-            .with_context(|| format!("failed to find {self} scaling governor"))?
-            .with_context(|| format!("failed to read {self} scaling governor"))?,
+            .with_context(|| format!("failed to read {self} scaling governor"))?
+            .with_context(|| format!("failed to find {self} scaling governor"))?,
         );
 
         Ok(())
@@ -247,21 +249,21 @@ impl Cpu {
     fn rescan_frequency(&mut self) -> anyhow::Result<()> {
         let Self { number, .. } = *self;
 
-        let frequency_khz = fs::read_u64(format!(
+        let frequency_khz = fs::read_n::<u64>(format!(
             "/sys/devices/system/cpu/cpu{number}/cpufreq/scaling_cur_freq"
         ))
-        .with_context(|| format!("failed to find {self} frequency"))?
-        .with_context(|| format!("failed to parse {self} frequency"))?;
-        let frequency_khz_minimum = fs::read_u64(format!(
+        .with_context(|| format!("failed to parse {self} frequency"))?
+        .with_context(|| format!("failed to find {self} frequency"))?;
+        let frequency_khz_minimum = fs::read_n::<u64>(format!(
             "/sys/devices/system/cpu/cpu{number}/cpufreq/scaling_min_freq"
         ))
-        .with_context(|| format!("failed to find {self} frequency minimum"))?
-        .with_context(|| format!("failed to parse {self} frequency"))?;
-        let frequency_khz_maximum = fs::read_u64(format!(
+        .with_context(|| format!("failed to parse {self} frequency minimum"))?
+        .with_context(|| format!("failed to find {self} frequency"))?;
+        let frequency_khz_maximum = fs::read_n::<u64>(format!(
             "/sys/devices/system/cpu/cpu{number}/cpufreq/scaling_max_freq"
         ))
-        .with_context(|| format!("failed to find {self} frequency maximum"))?
-        .with_context(|| format!("failed to parse {self} frequency"))?;
+        .with_context(|| format!("failed to parse {self} frequency maximum"))?
+        .with_context(|| format!("failed to find {self} frequency"))?;
 
         self.frequency_mhz = Some(frequency_khz / 1000);
         self.frequency_mhz_minimum = Some(frequency_khz_minimum / 1000);
@@ -271,12 +273,12 @@ impl Cpu {
     }
 
     fn rescan_epp(&mut self) -> anyhow::Result<()> {
-        let Self { number, .. } = self;
+        let Self { number, .. } = *self;
 
         self.available_epps = 'available_epps: {
-            let Some(Ok(content)) = fs::read(format!(
+            let Some(content) = fs::read(format!(
                 "/sys/devices/system/cpu/cpu{number}/cpufreq/energy_performance_available_preferences"
-            )) else {
+            )).with_context(|| format!("failed to read {self} available EPPs"))? else {
                 break 'available_epps Vec::new();
             };
 
@@ -290,8 +292,8 @@ impl Cpu {
             fs::read(format!(
                 "/sys/devices/system/cpu/cpu{number}/cpufreq/energy_performance_preference"
             ))
-            .with_context(|| format!("failed to find {self} EPP"))?
-            .with_context(|| format!("failed to read {self} EPP"))?,
+            .with_context(|| format!("failed to read {self} EPP"))?
+            .with_context(|| format!("failed to find {self} EPP"))?,
         );
 
         Ok(())
@@ -332,8 +334,8 @@ impl Cpu {
             fs::read(format!(
                 "/sys/devices/system/cpu/cpu{number}/cpufreq/energy_performance_bias"
             ))
-            .with_context(|| format!("failed to find {self} EPB"))?
-            .with_context(|| format!("failed to read {self} EPB"))?,
+            .with_context(|| format!("failed to read {self} EPB"))?
+            .with_context(|| format!("failed to find {self} EPB"))?,
         );
 
         Ok(())
@@ -450,9 +452,11 @@ impl Cpu {
     fn validate_frequency_mhz_minimum(&self, new_frequency_mhz: u64) -> anyhow::Result<()> {
         let Self { number, .. } = self;
 
-        let Some(Ok(minimum_frequency_khz)) = fs::read_u64(format!(
+        let Some(minimum_frequency_khz) = fs::read_n::<u64>(format!(
             "/sys/devices/system/cpu/cpu{number}/cpufreq/scaling_min_freq"
-        )) else {
+        ))
+        .with_context(|| format!("failed to read {self} minimum frequency"))?
+        else {
             // Just let it pass if we can't find anything.
             return Ok(());
         };
@@ -492,9 +496,11 @@ impl Cpu {
     fn validate_frequency_mhz_maximum(&self, new_frequency_mhz: u64) -> anyhow::Result<()> {
         let Self { number, .. } = self;
 
-        let Some(Ok(maximum_frequency_khz)) = fs::read_u64(format!(
-            "/sys/devices/system/cpu/cpu{number}/cpufreq/scaling_min_freq"
-        )) else {
+        let Some(maximum_frequency_khz) = fs::read_n::<u64>(format!(
+            "/sys/devices/system/cpu/cpu{number}/cpufreq/scaling_max_freq"
+        ))
+        .with_context(|| format!("failed to read {self} maximum frequency"))?
+        else {
             // Just let it pass if we can't find anything.
             return Ok(());
         };
@@ -558,15 +564,19 @@ impl Cpu {
         bail!("no supported CPU boost control mechanism found");
     }
 
-    pub fn turbo() -> Option<bool> {
-        if let Some(Ok(content)) = fs::read_u64("/sys/devices/system/cpu/intel_pstate/no_turbo") {
-            return Some(content == 0);
+    pub fn turbo() -> anyhow::Result<Option<bool>> {
+        if let Some(content) = fs::read_n::<u64>("/sys/devices/system/cpu/intel_pstate/no_turbo")
+            .context("failed to read CPU turbo boost status")?
+        {
+            return Ok(Some(content == 0));
         }
 
-        if let Some(Ok(content)) = fs::read_u64("/sys/devices/system/cpu/cpufreq/boost") {
-            return Some(content == 1);
+        if let Some(content) = fs::read_n::<u64>("/sys/devices/system/cpu/cpufreq/boost")
+            .context("failed to read CPU turbo boost status")?
+        {
+            return Ok(Some(content == 1));
         }
 
-        None
+        Ok(None)
     }
 }
