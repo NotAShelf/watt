@@ -6,7 +6,6 @@ pub struct SystemInfo {
 pub struct CpuCoreInfo {
     // Per-core data
     pub core_id: u32,
-    pub usage_percent: Option<f32>,
     pub temperature_celsius: Option<f32>,
 }
 
