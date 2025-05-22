@@ -13,7 +13,6 @@ pub struct CpuGlobalInfo {
     // System-wide CPU settings
     pub epp: Option<String>, // Energy Performance Preference
     pub epb: Option<String>, // Energy Performance Bias
-    pub platform_profile: Option<String>,
     pub average_temperature_celsius: Option<f32>, // Average temperature across all cores
 }
 

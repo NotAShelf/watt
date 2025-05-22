@@ -218,8 +218,6 @@ pub fn get_all_cpu_core_info() -> anyhow::Result<Vec<CpuCoreInfo>> {
 }
 
 pub fn get_cpu_global_info(cpu_cores: &[CpuCoreInfo]) -> CpuGlobalInfo {
-    let platform_profile = read_sysfs_file_trimmed("/sys/firmware/acpi/platform_profile").ok();
-
     // Calculate average CPU temperature from the core temperatures
     let average_temperature_celsius = if cpu_cores.is_empty() {
         None
@@ -244,143 +242,22 @@ pub fn get_cpu_global_info(cpu_cores: &[CpuCoreInfo]) -> CpuGlobalInfo {
 
     // Return the constructed CpuGlobalInfo
     CpuGlobalInfo {
-        platform_profile,
         average_temperature_celsius,
     }
 }
 
 pub fn get_battery_info(config: &AppConfig) -> anyhow::Result<Vec<BatteryInfo>> {
-    let mut batteries = Vec::new();
-    let power_supply_path = Path::new("/sys/class/power_supply");
-
-    if !power_supply_path.exists() {
-        return Ok(batteries); // no power supply directory
-    }
-
-    let ignored_supplies = config.ignored_power_supplies.clone().unwrap_or_default();
-
-    // Determine overall AC connection status
-    let mut overall_ac_connected = false;
-    for entry in fs::read_dir(power_supply_path)? {
-        let entry = entry?;
-        let ps_path = entry.path();
-        let name = entry.file_name().into_string().unwrap_or_default();
-
-        // Check for AC adapter type (common names: AC, ACAD, ADP)
-        if let Ok(ps_type) = read_sysfs_file_trimmed(ps_path.join("type")) {
-            if ps_type == "Mains"
-                || ps_type == "USB_PD_DRP"
-                || ps_type == "USB_PD"
-                || ps_type == "USB_DCP"
-                || ps_type == "USB_CDP"
-                || ps_type == "USB_ACA"
-            {
-                // USB types can also provide power
-                if let Ok(online) = read_sysfs_value::<u8>(ps_path.join("online")) {
-                    if online == 1 {
-                        overall_ac_connected = true;
-                        break;
-                    }
-                }
-            }
-        } else if name.starts_with("AC") || name.contains("ACAD") || name.contains("ADP") {
-            // Fallback for type file missing
-            if let Ok(online) = read_sysfs_value::<u8>(ps_path.join("online")) {
-                if online == 1 {
-                    overall_ac_connected = true;
-                    break;
-                }
-            }
-        }
-    }
-
     // No AC adapter detected but we're on a desktop system
     // Default to AC power for desktops
     if !overall_ac_connected {
         overall_ac_connected = is_likely_desktop_system();
     }
-
-    for entry in fs::read_dir(power_supply_path)? {
-        let entry = entry?;
-        let ps_path = entry.path();
-        let name = entry.file_name().into_string().unwrap_or_default();
-
-        if ignored_supplies.contains(&name) {
-            continue;
-        }
-
-        if let Ok(ps_type) = read_sysfs_file_trimmed(ps_path.join("type")) {
-            if ps_type == "Battery" {
-                // Skip peripheral batteries that aren't real laptop batteries
-                if is_peripheral_battery(&ps_path, &name) {
-                    log::debug!("Skipping peripheral battery: {name}");
-                    continue;
-                }
-
-                let status_str = read_sysfs_file_trimmed(ps_path.join("status")).ok();
-                let capacity_percent = read_sysfs_value::<u8>(ps_path.join("capacity")).ok();
-
-                let power_rate_watts = if ps_path.join("power_now").exists() {
-                    read_sysfs_value::<i32>(ps_path.join("power_now")) // uW
-                        .map(|uw| uw as f32 / 1_000_000.0)
-                        .ok()
-                } else if ps_path.join("current_now").exists()
-                    && ps_path.join("voltage_now").exists()
-                {
-                    let current_ua = read_sysfs_value::<i32>(ps_path.join("current_now")).ok(); // uA
-                    let voltage_uv = read_sysfs_value::<i32>(ps_path.join("voltage_now")).ok(); // uV
-                    if let (Some(c), Some(v)) = (current_ua, voltage_uv) {
-                        // Power (W) = (Voltage (V) * Current (A))
-                        // (v / 1e6 V) * (c / 1e6 A) = (v * c / 1e12) W
-                        Some((f64::from(c) * f64::from(v) / 1_000_000_000_000.0) as f32)
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
-
-                let charge_start_threshold =
-                    read_sysfs_value::<u8>(ps_path.join("charge_control_start_threshold")).ok();
-                let charge_stop_threshold =
-                    read_sysfs_value::<u8>(ps_path.join("charge_control_end_threshold")).ok();
-
-                batteries.push(BatteryInfo {
-                    name: name.clone(),
-                    ac_connected: overall_ac_connected,
-                    charging_state: status_str,
-                    capacity_percent,
-                    power_rate_watts,
-                    charge_start_threshold,
-                    charge_stop_threshold,
-                });
-            }
-        }
-    }
-
     // If we found no batteries but have power supplies, we're likely on a desktop
     if batteries.is_empty() && overall_ac_connected {
         log::debug!("No laptop batteries found, likely a desktop system");
     }
 
     Ok(batteries)
-}
-
-pub fn collect_system_report(config: &AppConfig) -> anyhow::Result<SystemReport> {
-    let system_info = get_system_info();
-    let cpu_cores = get_all_cpu_core_info()?;
-    let cpu_global = get_cpu_global_info(&cpu_cores);
-    let batteries = get_battery_info(config)?;
-    let system_load = get_system_load()?;
-
-    Ok(SystemReport {
-        system_info,
-        cpu_cores,
-        cpu_global,
-        batteries,
-        system_load,
-        timestamp: SystemTime::now(),
-    })
 }
 
 pub fn get_cpu_model() -> anyhow::Result<String> {

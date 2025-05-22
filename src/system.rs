@@ -33,9 +33,9 @@ impl System {
     }
 
     fn rescan_is_desktop(&mut self) -> anyhow::Result<()> {
-        if let Some(chassis_type) = fs::read("/sys/class/dmi/id/chassis_type") {
-            let chassis_type = chassis_type.context("failed to read chassis type")?;
-
+        if let Some(chassis_type) =
+            fs::read("/sys/class/dmi/id/chassis_type").context("failed to read chassis type")?
+        {
             // 3=Desktop, 4=Low Profile Desktop, 5=Pizza Box, 6=Mini Tower
             // 7=Tower, 8=Portable, 9=Laptop, 10=Notebook, 11=Hand Held, 13=All In One
             // 14=Sub Notebook, 15=Space-saving, 16=Lunch Box, 17=Main Server Chassis
@@ -86,8 +86,8 @@ impl System {
 
     fn rescan_load_average(&mut self) -> anyhow::Result<()> {
         let content = fs::read("/proc/loadavg")
-            .context("load average file doesn't exist, are you on linux?")?
-            .context("failed to read load average")?;
+            .context("failed to read load average")?
+            .context("load average file doesn't exist, are you on linux?")?;
 
         let mut parts = content.split_whitespace();
 
