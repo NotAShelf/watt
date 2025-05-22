@@ -111,28 +111,8 @@ pub fn get_cpu_core_info(
         }
     }
 
-    let usage_percent: Option<f32> = {
-        let prev_idle = prev_times.idle_time();
-        let current_idle = current_times.idle_time();
-
-        let prev_total = prev_times.total_time();
-        let current_total = current_times.total_time();
-
-        let total_diff = current_total.saturating_sub(prev_total);
-        let idle_diff = current_idle.saturating_sub(prev_idle);
-
-        // Avoid division by zero if no time has passed or counters haven't changed
-        if total_diff == 0 {
-            None
-        } else {
-            let usage = 100.0 * (1.0 - (idle_diff as f32 / total_diff as f32));
-            Some(usage.clamp(0.0, 100.0)) // clamp between 0 and 100
-        }
-    };
-
     Ok(CpuCoreInfo {
         core_id,
-        usage_percent,
         temperature_celsius,
     })
 }

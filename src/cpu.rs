@@ -49,6 +49,10 @@ impl Cpu {
     pub fn time_idle(&self) -> u64 {
         self.time_idle + self.time_iowait
     }
+
+    pub fn usage(&self) -> f64 {
+        1.0 - self.time_idle() as f64 / self.time_total() as f64
+    }
 }
 
 impl fmt::Display for Cpu {
