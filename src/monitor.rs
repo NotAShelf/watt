@@ -652,7 +652,7 @@ fn is_likely_desktop_system() -> bool {
         // 3=Desktop, 4=Low Profile Desktop, 5=Pizza Box, 6=Mini Tower
         // 7=Tower, 8=Portable, 9=Laptop, 10=Notebook, 11=Hand Held, 13=All In One
         // 14=Sub Notebook, 15=Space-saving, 16=Lunch Box, 17=Main Server Chassis
-        // 31=Convertible Laptop, 24=sealed-case PC
+        // 24=sealed-case PC, 31=Convertible Laptop
         match chassis_type {
             "3" | "4" | "5" | "6" | "7" | "15" | "16" | "17" | "24" => return true, // desktop form factors
             "9" | "10" | "14" | "31" => return false, // laptop form factors
