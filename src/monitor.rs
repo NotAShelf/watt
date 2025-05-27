@@ -658,14 +658,6 @@ fn is_likely_desktop_system() -> bool {
         }
     }
 
-    // Check CPU power policies, desktops often don't have these
-    let power_saving_exists = Path::new("/sys/module/intel_pstate/parameters/no_hwp").exists()
-        || Path::new("/sys/devices/system/cpu/cpufreq/conservative").exists();
-
-    if !power_saving_exists {
-        return true; // likely a desktop
-    }
-
     // Check battery-specific ACPI paths that laptops typically have
     let laptop_acpi_paths = [
         "/sys/class/power_supply/BAT0",
@@ -677,6 +669,14 @@ fn is_likely_desktop_system() -> bool {
         if Path::new(path).exists() {
             return false; // Likely a laptop
         }
+    }
+
+    // Check CPU power policies, desktops often don't have these
+    let power_saving_exists = Path::new("/sys/module/intel_pstate/parameters/no_hwp").exists()
+        || Path::new("/sys/devices/system/cpu/cpufreq/conservative").exists();
+
+    if !power_saving_exists {
+        return true; // likely a desktop
     }
 
     // Default to assuming desktop if we can't determine
