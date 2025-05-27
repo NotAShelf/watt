@@ -52,30 +52,24 @@ impl System {
         if let Some(chassis_type) =
             fs::read("/sys/class/dmi/id/chassis_type").context("failed to read chassis type")?
         {
-            // 3=Desktop, 4=Low Profile Desktop, 5=Pizza Box, 6=Mini Tower
-            // 7=Tower, 8=Portable, 9=Laptop, 10=Notebook, 11=Hand Held, 13=All In One
-            // 14=Sub Notebook, 15=Space-saving, 16=Lunch Box, 17=Main Server Chassis
+            // 3=Desktop, 4=Low Profile Desktop, 5=Pizza Box, 6=Mini Tower,
+            // 7=Tower, 8=Portable, 9=Laptop, 10=Notebook, 11=Hand Held, 13=All In One,
+            // 14=Sub Notebook, 15=Space-saving, 16=Lunch Box, 17=Main Server Chassis,
+            // 31=Convertible Laptop
             match chassis_type.trim() {
                 // Desktop form factors.
                 "3" | "4" | "5" | "6" | "7" | "15" | "16" | "17" => {
                     return Ok(true);
                 }
+
                 // Laptop form factors.
-                "9" | "10" | "14" => {
+                "9" | "10" | "14" | "31" => {
                     return Ok(false);
                 }
 
                 // Unknown, continue with other checks
                 _ => {}
             }
-        }
-
-        // Check CPU power policies, desktops often don't have these
-        let power_saving_exists = fs::exists("/sys/module/intel_pstate/parameters/no_hwp")
-            || fs::exists("/sys/devices/system/cpu/cpufreq/conservative");
-
-        if !power_saving_exists {
-            return Ok(true); // Likely a desktop.
         }
 
         // Check battery-specific ACPI paths that laptops typically have
@@ -89,6 +83,14 @@ impl System {
             if fs::exists(path) {
                 return Ok(false); // Likely a laptop.
             }
+        }
+
+        // Check CPU power policies, desktops often don't have these
+        let power_saving_exists = fs::exists("/sys/module/intel_pstate/parameters/no_hwp")
+            || fs::exists("/sys/devices/system/cpu/cpufreq/conservative");
+
+        if !power_saving_exists {
+            return Ok(true); // Likely a desktop.
         }
 
         // Default to assuming desktop if we can't determine.
