@@ -648,13 +648,15 @@ fn is_likely_desktop_system() -> bool {
         let chassis_type = chassis_type.trim();
 
         // Chassis types:
+        // https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.8.0.pdf
         // 3=Desktop, 4=Low Profile Desktop, 5=Pizza Box, 6=Mini Tower
         // 7=Tower, 8=Portable, 9=Laptop, 10=Notebook, 11=Hand Held, 13=All In One
         // 14=Sub Notebook, 15=Space-saving, 16=Lunch Box, 17=Main Server Chassis
+        // 31=Convertible Laptop, 24=sealed-case PC
         match chassis_type {
-            "3" | "4" | "5" | "6" | "7" | "15" | "16" | "17" => return true, // desktop form factors
-            "9" | "10" | "14" => return false,                               // laptop form factors
-            _ => {} // Unknown, continue with other checks
+            "3" | "4" | "5" | "6" | "7" | "15" | "16" | "17" | "24" => return true, // desktop form factors
+            "9" | "10" | "14" | "31" => return false, // laptop form factors
+            _ => {}                                   // Unknown, continue with other checks
         }
     }
 
