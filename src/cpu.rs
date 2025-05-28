@@ -5,9 +5,10 @@ use std::{cell::OnceCell, collections::HashMap, fmt, string::ToString};
 
 use crate::fs;
 
-#[derive(Default, Debug, Clone, PartialEq, Eq)]
+#[derive(Default, Debug, Clone, PartialEq)]
 pub struct CpuRescanCache {
     stat: OnceCell<HashMap<u32, CpuStat>>,
+    temperatures: OnceCell<HashMap<u32, f64>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,7 +23,28 @@ pub struct CpuStat {
     pub steal: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl CpuStat {
+    pub fn total(&self) -> u64 {
+        self.user
+            + self.nice
+            + self.system
+            + self.idle
+            + self.iowait
+            + self.irq
+            + self.softirq
+            + self.steal
+    }
+
+    pub fn idle(&self) -> u64 {
+        self.idle + self.iowait
+    }
+
+    pub fn usage(&self) -> f64 {
+        1.0 - self.idle() as f64 / self.total() as f64
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct Cpu {
     pub number: u32,
 
@@ -42,27 +64,8 @@ pub struct Cpu {
     pub epb: Option<String>,
 
     pub stat: CpuStat,
-}
 
-impl Cpu {
-    pub fn time_total(&self) -> u64 {
-        self.stat.user
-            + self.stat.nice
-            + self.stat.system
-            + self.stat.idle
-            + self.stat.iowait
-            + self.stat.irq
-            + self.stat.softirq
-            + self.stat.steal
-    }
-
-    pub fn time_idle(&self) -> u64 {
-        self.stat.idle + self.stat.iowait
-    }
-
-    pub fn usage(&self) -> f64 {
-        1.0 - self.time_idle() as f64 / self.time_total() as f64
-    }
+    pub temperature: Option<f64>,
 }
 
 impl fmt::Display for Cpu {
@@ -102,6 +105,8 @@ impl Cpu {
                 softirq: 0,
                 steal: 0,
             },
+
+            temperature: None,
         };
         cpu.rescan(cache)?;
 
@@ -116,9 +121,11 @@ impl Cpu {
         let cache = CpuRescanCache::default();
 
         for entry in fs::read_dir(PATH)
-            .with_context(|| format!("failed to read contents of '{PATH}'"))?
-            .flatten()
+            .with_context(|| format!("failed to read CPU entries from '{PATH}'"))?
+            .with_context(|| format!("'{PATH}' doesn't exist, are you on linux?"))?
         {
+            let entry = entry.with_context(|| format!("failed to read entry of '{PATH}'"))?;
+
             let entry_file_name = entry.file_name();
 
             let Some(name) = entry_file_name.to_str() else {
@@ -157,8 +164,6 @@ impl Cpu {
 
         self.has_cpufreq = fs::exists(format!("/sys/devices/system/cpu/cpu{number}/cpufreq"));
 
-        self.rescan_stat(cache)?;
-
         if self.has_cpufreq {
             self.rescan_governor()?;
             self.rescan_frequency()?;
@@ -166,50 +171,8 @@ impl Cpu {
             self.rescan_epb()?;
         }
 
-        Ok(())
-    }
-
-    fn rescan_stat(&mut self, cache: &CpuRescanCache) -> anyhow::Result<()> {
-        // OnceCell::get_or_try_init is unstable. Cope:
-        let stat = match cache.stat.get() {
-            Some(stat) => stat,
-
-            None => {
-                let content = fs::read("/proc/stat")
-                    .context("failed to read CPU stat")?
-                    .context("/proc/stat does not exist")?;
-
-                cache
-                    .stat
-                    .set(HashMap::from_iter(content.lines().skip(1).filter_map(
-                        |line| {
-                            let mut parts = line.strip_prefix("cpu")?.split_whitespace();
-
-                            let number = parts.next()?.parse().ok()?;
-
-                            let stat = CpuStat {
-                                user: parts.next()?.parse().ok()?,
-                                nice: parts.next()?.parse().ok()?,
-                                system: parts.next()?.parse().ok()?,
-                                idle: parts.next()?.parse().ok()?,
-                                iowait: parts.next()?.parse().ok()?,
-                                irq: parts.next()?.parse().ok()?,
-                                softirq: parts.next()?.parse().ok()?,
-                                steal: parts.next()?.parse().ok()?,
-                            };
-
-                            Some((number, stat))
-                        },
-                    )));
-
-                cache.stat.get().unwrap()
-            }
-        };
-
-        self.stat = stat
-            .get(&self.number)
-            .with_context(|| format!("failed to get stat of {self}"))?
-            .clone();
+        self.rescan_stat(cache)?;
+        self.rescan_temperature(cache)?;
 
         Ok(())
     }
@@ -334,6 +297,106 @@ impl Cpu {
             .with_context(|| format!("failed to read {self} EPB"))?
             .with_context(|| format!("failed to find {self} EPB"))?,
         );
+
+        Ok(())
+    }
+
+    fn rescan_stat(&mut self, cache: &CpuRescanCache) -> anyhow::Result<()> {
+        // OnceCell::get_or_try_init is unstable. Cope:
+        let stat = match cache.stat.get() {
+            Some(stat) => stat,
+
+            None => {
+                let content = fs::read("/proc/stat")
+                    .context("failed to read CPU stat")?
+                    .context("/proc/stat does not exist")?;
+
+                cache
+                    .stat
+                    .set(HashMap::from_iter(content.lines().skip(1).filter_map(
+                        |line| {
+                            let mut parts = line.strip_prefix("cpu")?.split_whitespace();
+
+                            let number = parts.next()?.parse().ok()?;
+
+                            let stat = CpuStat {
+                                user: parts.next()?.parse().ok()?,
+                                nice: parts.next()?.parse().ok()?,
+                                system: parts.next()?.parse().ok()?,
+                                idle: parts.next()?.parse().ok()?,
+                                iowait: parts.next()?.parse().ok()?,
+                                irq: parts.next()?.parse().ok()?,
+                                softirq: parts.next()?.parse().ok()?,
+                                steal: parts.next()?.parse().ok()?,
+                            };
+
+                            Some((number, stat))
+                        },
+                    )))
+                    .unwrap();
+
+                cache.stat.get().unwrap()
+            }
+        };
+
+        self.stat = stat
+            .get(&self.number)
+            .with_context(|| format!("failed to get stat of {self}"))?
+            .clone();
+
+        Ok(())
+    }
+
+    fn rescan_temperature(&mut self, cache: &CpuRescanCache) -> anyhow::Result<()> {
+        // OnceCell::get_or_try_init is unstable. Cope:
+        let temperatures = match cache.temperatures.get() {
+            Some(temperature) => temperature,
+
+            None => {
+                const PATH: &str = "/sys/class/hwmon";
+
+                let temperatures = HashMap::new();
+
+                for entry in fs::read_dir(PATH)
+                    .with_context(|| format!("failed to read hardware information from '{PATH}'"))?
+                    .with_context(|| format!("'{PATH}' doesn't exist, are you on linux?"))?
+                {
+                    let entry =
+                        entry.with_context(|| format!("failed to read entry of '{PATH}'"))?;
+
+                    let entry_path = entry.path();
+
+                    let Some(name) = fs::read(entry_path.join("name")).with_context(|| {
+                        format!(
+                            "failed to read name of hardware entry at '{path}'",
+                            path = entry_path.display(),
+                        )
+                    })?
+                    else {
+                        continue;
+                    };
+
+                    match &*name {
+                        // Intel CPU temperature driver
+                        "coretemp" => todo!(),
+
+                        // AMD CPU temperature driver
+                        // TODO: 'zenergy' can also report those stats, I think?
+                        "k10temp" | "zenpower" | "amdgpu" => todo!(),
+
+                        // Other CPU temperature drivers
+                        _ if name.contains("cpu") || name.contains("temp") => todo!(),
+
+                        _ => {}
+                    }
+                }
+
+                cache.temperatures.set(temperatures).unwrap();
+                cache.temperatures.get().unwrap()
+            }
+        };
+
+        self.temperature = temperatures.get(&self.number).copied();
 
         Ok(())
     }

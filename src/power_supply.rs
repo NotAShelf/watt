@@ -155,6 +155,7 @@ impl PowerSupply {
 
         for entry in fs::read_dir(POWER_SUPPLY_PATH)
             .with_context(|| format!("failed to read '{POWER_SUPPLY_PATH}'"))?
+            .with_context(|| format!("'{POWER_SUPPLY_PATH}' doesn't exist, are you on linux?"))?
         {
             let entry = match entry {
                 Ok(entry) => entry,
