@@ -53,9 +53,10 @@ impl CpuDelta {
         let mut cpus = match &self.for_ {
             Some(numbers) => {
                 let mut cpus = Vec::with_capacity(numbers.len());
+                let cache = cpu::CpuRescanCache::default();
 
                 for &number in numbers {
-                    cpus.push(cpu::Cpu::new(number)?);
+                    cpus.push(cpu::Cpu::new(number, &cache)?);
                 }
 
                 cpus

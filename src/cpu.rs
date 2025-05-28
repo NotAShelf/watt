@@ -1,9 +1,26 @@
 use anyhow::{Context, bail};
 use yansi::Paint as _;
 
-use std::{fmt, string::ToString};
+use std::{cell::OnceCell, collections::HashMap, fmt, string::ToString};
 
 use crate::fs;
+
+#[derive(Default, Debug, Clone, PartialEq, Eq)]
+pub struct CpuRescanCache {
+    stat: OnceCell<HashMap<u32, CpuStat>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CpuStat {
+    pub user: u64,
+    pub nice: u64,
+    pub system: u64,
+    pub idle: u64,
+    pub iowait: u64,
+    pub irq: u64,
+    pub softirq: u64,
+    pub steal: u64,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cpu {
@@ -24,30 +41,23 @@ pub struct Cpu {
     pub available_epbs: Vec<String>,
     pub epb: Option<String>,
 
-    pub time_user: u64,
-    pub time_nice: u64,
-    pub time_system: u64,
-    pub time_idle: u64,
-    pub time_iowait: u64,
-    pub time_irq: u64,
-    pub time_softirq: u64,
-    pub time_steal: u64,
+    pub stat: CpuStat,
 }
 
 impl Cpu {
     pub fn time_total(&self) -> u64 {
-        self.time_user
-            + self.time_nice
-            + self.time_system
-            + self.time_idle
-            + self.time_iowait
-            + self.time_irq
-            + self.time_softirq
-            + self.time_steal
+        self.stat.user
+            + self.stat.nice
+            + self.stat.system
+            + self.stat.idle
+            + self.stat.iowait
+            + self.stat.irq
+            + self.stat.softirq
+            + self.stat.steal
     }
 
     pub fn time_idle(&self) -> u64 {
-        self.time_idle + self.time_iowait
+        self.stat.idle + self.stat.iowait
     }
 
     pub fn usage(&self) -> f64 {
@@ -64,7 +74,7 @@ impl fmt::Display for Cpu {
 }
 
 impl Cpu {
-    pub fn new(number: u32) -> anyhow::Result<Self> {
+    pub fn new(number: u32, cache: &CpuRescanCache) -> anyhow::Result<Self> {
         let mut cpu = Self {
             number,
             has_cpufreq: false,
@@ -82,16 +92,18 @@ impl Cpu {
             available_epbs: Vec::new(),
             epb: None,
 
-            time_user: 0,
-            time_nice: 0,
-            time_system: 0,
-            time_idle: 0,
-            time_iowait: 0,
-            time_irq: 0,
-            time_softirq: 0,
-            time_steal: 0,
+            stat: CpuStat {
+                user: 0,
+                nice: 0,
+                system: 0,
+                idle: 0,
+                iowait: 0,
+                irq: 0,
+                softirq: 0,
+                steal: 0,
+            },
         };
-        cpu.rescan()?;
+        cpu.rescan(cache)?;
 
         Ok(cpu)
     }
@@ -101,6 +113,7 @@ impl Cpu {
         const PATH: &str = "/sys/devices/system/cpu";
 
         let mut cpus = vec![];
+        let cache = CpuRescanCache::default();
 
         for entry in fs::read_dir(PATH)
             .with_context(|| format!("failed to read contents of '{PATH}'"))?
@@ -121,13 +134,13 @@ impl Cpu {
                 continue;
             };
 
-            cpus.push(Self::new(number)?);
+            cpus.push(Self::new(number, &cache)?);
         }
 
         // Fall back if sysfs iteration above fails to find any cpufreq CPUs.
         if cpus.is_empty() {
             for number in 0..num_cpus::get() as u32 {
-                cpus.push(Self::new(number)?);
+                cpus.push(Self::new(number, &cache)?);
             }
         }
 
@@ -135,7 +148,7 @@ impl Cpu {
     }
 
     /// Rescan CPU, tuning local copy of settings.
-    pub fn rescan(&mut self) -> anyhow::Result<()> {
+    pub fn rescan(&mut self, cache: &CpuRescanCache) -> anyhow::Result<()> {
         let Self { number, .. } = self;
 
         if !fs::exists(format!("/sys/devices/system/cpu/cpu{number}")) {
@@ -144,7 +157,7 @@ impl Cpu {
 
         self.has_cpufreq = fs::exists(format!("/sys/devices/system/cpu/cpu{number}/cpufreq"));
 
-        self.rescan_times()?;
+        self.rescan_stat(cache)?;
 
         if self.has_cpufreq {
             self.rescan_governor()?;
@@ -156,63 +169,47 @@ impl Cpu {
         Ok(())
     }
 
-    fn rescan_times(&mut self) -> anyhow::Result<()> {
-        // TODO: Don't read this per CPU. Share the read or
-        // find something in /sys/.../cpu{N} that does it.
-        let content = fs::read("/proc/stat")
-            .context("failed to read CPU stat")?
-            .context("/proc/stat does not exist")?;
+    fn rescan_stat(&mut self, cache: &CpuRescanCache) -> anyhow::Result<()> {
+        // OnceCell::get_or_try_init is unstable. Cope:
+        let stat = match cache.stat.get() {
+            Some(stat) => stat,
 
-        let cpu_name = format!("cpu{number}", number = self.number);
+            None => {
+                let content = fs::read("/proc/stat")
+                    .context("failed to read CPU stat")?
+                    .context("/proc/stat does not exist")?;
 
-        let mut stats = content
-            .lines()
-            .find_map(|line| {
-                line.starts_with(&cpu_name)
-                    .then(|| line.split_whitespace().skip(1))
-            })
-            .with_context(|| format!("failed to find {self} in CPU stats"))?;
+                cache
+                    .stat
+                    .set(HashMap::from_iter(content.lines().skip(1).filter_map(
+                        |line| {
+                            let mut parts = line.strip_prefix("cpu")?.split_whitespace();
 
-        self.time_user = stats
-            .next()
-            .with_context(|| format!("failed to parse {self} user time"))?
-            .parse()
-            .with_context(|| format!("failed to find {self} user time"))?;
-        self.time_nice = stats
-            .next()
-            .with_context(|| format!("failed to parse {self} nice time"))?
-            .parse()
-            .with_context(|| format!("failed to find {self} nice time"))?;
-        self.time_system = stats
-            .next()
-            .with_context(|| format!("failed to parse {self} system time"))?
-            .parse()
-            .with_context(|| format!("failed to find {self} system time"))?;
-        self.time_idle = stats
-            .next()
-            .with_context(|| format!("failed to parse {self} idle time"))?
-            .parse()
-            .with_context(|| format!("failed to find {self} idle time"))?;
-        self.time_iowait = stats
-            .next()
-            .with_context(|| format!("failed to parse {self} iowait time"))?
-            .parse()
-            .with_context(|| format!("failed to find {self} iowait time"))?;
-        self.time_irq = stats
-            .next()
-            .with_context(|| format!("failed to parse {self} irq time"))?
-            .parse()
-            .with_context(|| format!("failed to find {self} irq time"))?;
-        self.time_softirq = stats
-            .next()
-            .with_context(|| format!("failed to parse {self} softirq time"))?
-            .parse()
-            .with_context(|| format!("failed to find {self} softirq time"))?;
-        self.time_steal = stats
-            .next()
-            .with_context(|| format!("failed to parse {self} steal time"))?
-            .parse()
-            .with_context(|| format!("failed to find {self} steal time"))?;
+                            let number = parts.next()?.parse().ok()?;
+
+                            let stat = CpuStat {
+                                user: parts.next()?.parse().ok()?,
+                                nice: parts.next()?.parse().ok()?,
+                                system: parts.next()?.parse().ok()?,
+                                idle: parts.next()?.parse().ok()?,
+                                iowait: parts.next()?.parse().ok()?,
+                                irq: parts.next()?.parse().ok()?,
+                                softirq: parts.next()?.parse().ok()?,
+                                steal: parts.next()?.parse().ok()?,
+                            };
+
+                            Some((number, stat))
+                        },
+                    )));
+
+                cache.stat.get().unwrap()
+            }
+        };
+
+        self.stat = stat
+            .get(&self.number)
+            .with_context(|| format!("failed to get stat of {self}"))?
+            .clone();
 
         Ok(())
     }
