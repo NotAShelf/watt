@@ -8,11 +8,19 @@ pub fn exists(path: impl AsRef<Path>) -> bool {
     path.exists()
 }
 
-pub fn read_dir(path: impl AsRef<Path>) -> anyhow::Result<fs::ReadDir> {
+pub fn read_dir(path: impl AsRef<Path>) -> anyhow::Result<Option<fs::ReadDir>> {
     let path = path.as_ref();
 
-    fs::read_dir(path)
-        .with_context(|| format!("failed to read directory '{path}'", path = path.display()))
+    match fs::read_dir(path) {
+        Ok(entries) => Ok(Some(entries)),
+
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+
+        Err(error) => Err(error).context(format!(
+            "failed to read directory '{path}'",
+            path = path.display()
+        )),
+    }
 }
 
 pub fn read(path: impl AsRef<Path>) -> anyhow::Result<Option<String>> {
@@ -23,9 +31,7 @@ pub fn read(path: impl AsRef<Path>) -> anyhow::Result<Option<String>> {
 
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
 
-        Err(error) => {
-            Err(error).with_context(|| format!("failed to read '{path}", path = path.display()))
-        }
+        Err(error) => Err(error).context(format!("failed to read '{path}", path = path.display())),
     }
 }
 

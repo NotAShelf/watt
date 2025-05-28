@@ -99,8 +99,8 @@ impl System {
 
     fn rescan_load_average(&mut self) -> anyhow::Result<()> {
         let content = fs::read("/proc/loadavg")
-            .context("failed to read load average")?
-            .context("load average file doesn't exist, are you on linux?")?;
+            .context("failed to read load average from '/proc/loadavg'")?
+            .context("'/proc/loadavg' doesn't exist, are you on linux?")?;
 
         let mut parts = content.split_whitespace();
 

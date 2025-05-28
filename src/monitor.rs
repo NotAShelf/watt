@@ -16,11 +16,7 @@ pub fn get_system_info() -> SystemInfo {
     SystemInfo { cpu_model }
 }
 
-pub fn get_cpu_core_info(
-    core_id: u32,
-    prev_times: &CpuTimes,
-    current_times: &CpuTimes,
-) -> anyhow::Result<CpuCoreInfo> {
+pub fn get_cpu_core_info(core_id: u32) -> anyhow::Result<CpuCoreInfo> {
     // Temperature detection.
     // Should be generic enough to be able to support for multiple hardware sensors
     // with the possibility of extending later down the road.
@@ -185,65 +181,6 @@ fn get_fallback_temperature(hw_path: &Path) -> Option<f32> {
         }
     }
     None
-}
-
-pub fn get_all_cpu_core_info() -> anyhow::Result<Vec<CpuCoreInfo>> {
-    let initial_cpu_times = read_all_cpu_times()?;
-    thread::sleep(Duration::from_millis(250)); // interval for CPU usage calculation
-    let final_cpu_times = read_all_cpu_times()?;
-
-    let num_cores = get_real_cpus()
-        .map_err(|_| SysMonitorError::ReadError("Could not get the number of cores".to_string()))?;
-
-    let mut core_infos = Vec::with_capacity(num_cores as usize);
-
-    for core_id in 0..num_cores {
-        if let (Some(prev), Some(curr)) = (
-            initial_cpu_times.get(&core_id),
-            final_cpu_times.get(&core_id),
-        ) {
-            match get_cpu_core_info(core_id, prev, curr) {
-                Ok(info) => core_infos.push(info),
-                Err(e) => {
-                    // Log or handle error for a single core, maybe push a partial info or skip
-                    eprintln!("Error getting info for core {core_id}: {e}");
-                }
-            }
-        } else {
-            // Log or handle missing times for a core
-            eprintln!("Missing CPU time data for core {core_id}");
-        }
-    }
-    Ok(core_infos)
-}
-
-pub fn get_cpu_global_info(cpu_cores: &[CpuCoreInfo]) -> CpuGlobalInfo {
-    // Calculate average CPU temperature from the core temperatures
-    let average_temperature_celsius = if cpu_cores.is_empty() {
-        None
-    } else {
-        // Filter cores with temperature readings, then calculate average
-        let cores_with_temp: Vec<&CpuCoreInfo> = cpu_cores
-            .iter()
-            .filter(|core| core.temperature_celsius.is_some())
-            .collect();
-
-        if cores_with_temp.is_empty() {
-            None
-        } else {
-            // Sum up all temperatures and divide by count
-            let sum: f32 = cores_with_temp
-                .iter()
-                .map(|core| core.temperature_celsius.unwrap())
-                .sum();
-            Some(sum / cores_with_temp.len() as f32)
-        }
-    };
-
-    // Return the constructed CpuGlobalInfo
-    CpuGlobalInfo {
-        average_temperature_celsius,
-    }
 }
 
 pub fn get_cpu_model() -> anyhow::Result<String> {
