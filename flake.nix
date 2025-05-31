@@ -22,5 +22,7 @@
       superfreq = import ./nix/module.nix inputs;
       default = self.nixosModules.superfreq;
     };
+
+    formatter = forAllSystems (system: nixpkgs.legacyPackages.${system}.alejandra);
   };
 }
