@@ -1,6 +1,5 @@
 use std::{
     collections::VecDeque,
-    ops,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -114,8 +113,6 @@ struct CpuLog {
 }
 
 struct CpuVolatility {
-    at: ops::Range<Instant>,
-
     usage: f64,
 
     temperature: f64,
@@ -123,6 +120,17 @@ struct CpuVolatility {
 
 impl Daemon {
     fn cpu_volatility(&self) -> Option<CpuVolatility> {
+        let recent_log_count = self
+            .cpu_log
+            .iter()
+            .rev()
+            .take_while(|log| log.at.elapsed() < Duration::from_secs(5 * 60))
+            .count();
+
+        if recent_log_count < 2 {
+            return None;
+        }
+
         if self.cpu_log.len() < 2 {
             return None;
         }
@@ -142,8 +150,6 @@ impl Daemon {
         }
 
         Some(CpuVolatility {
-            at: self.cpu_log.front().unwrap().at..self.cpu_log.back().unwrap().at,
-
             usage: usage_change_sum / change_count as f64,
             temperature: temperature_change_sum / change_count as f64,
         })
