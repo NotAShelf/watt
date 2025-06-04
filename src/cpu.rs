@@ -8,7 +8,6 @@ use crate::fs;
 #[derive(Default, Debug, Clone, PartialEq)]
 pub struct CpuRescanCache {
     stat: OnceCell<HashMap<u32, CpuStat>>,
-    temperatures: OnceCell<HashMap<u32, f64>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -172,7 +171,6 @@ impl Cpu {
         }
 
         self.rescan_stat(cache)?;
-        self.rescan_temperature(cache)?;
 
         Ok(())
     }
@@ -343,60 +341,6 @@ impl Cpu {
             .get(&self.number)
             .with_context(|| format!("failed to get stat of {self}"))?
             .clone();
-
-        Ok(())
-    }
-
-    fn rescan_temperature(&mut self, cache: &CpuRescanCache) -> anyhow::Result<()> {
-        // OnceCell::get_or_try_init is unstable. Cope:
-        let temperatures = match cache.temperatures.get() {
-            Some(temperature) => temperature,
-
-            None => {
-                const PATH: &str = "/sys/class/hwmon";
-
-                let temperatures = HashMap::new();
-
-                for entry in fs::read_dir(PATH)
-                    .with_context(|| format!("failed to read hardware information from '{PATH}'"))?
-                    .with_context(|| format!("'{PATH}' doesn't exist, are you on linux?"))?
-                {
-                    let entry =
-                        entry.with_context(|| format!("failed to read entry of '{PATH}'"))?;
-
-                    let entry_path = entry.path();
-
-                    let Some(name) = fs::read(entry_path.join("name")).with_context(|| {
-                        format!(
-                            "failed to read name of hardware entry at '{path}'",
-                            path = entry_path.display(),
-                        )
-                    })?
-                    else {
-                        continue;
-                    };
-
-                    match &*name {
-                        // Intel CPU temperature driver
-                        "coretemp" => todo!(),
-
-                        // AMD CPU temperature driver
-                        // TODO: 'zenergy' can also report those stats, I think?
-                        "k10temp" | "zenpower" | "amdgpu" => todo!(),
-
-                        // Other CPU temperature drivers
-                        _ if name.contains("cpu") || name.contains("temp") => todo!(),
-
-                        _ => {}
-                    }
-                }
-
-                cache.temperatures.set(temperatures).unwrap();
-                cache.temperatures.get().unwrap()
-            }
-        };
-
-        self.temperature = temperatures.get(&self.number).copied();
 
         Ok(())
     }

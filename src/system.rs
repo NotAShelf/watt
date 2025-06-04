@@ -1,3 +1,5 @@
+use std::{collections::HashMap, path::Path};
+
 use anyhow::{Context, bail};
 
 use crate::{cpu, fs, power_supply};
@@ -10,6 +12,8 @@ pub struct System {
     pub load_average_15min: f64,
 
     pub cpus: Vec<cpu::Cpu>,
+    pub cpu_temperatures: HashMap<u32, f64>,
+
     pub power_supplies: Vec<power_supply::PowerSupply>,
 }
 
@@ -19,6 +23,8 @@ impl System {
             is_ac: false,
 
             cpus: Vec::new(),
+            cpu_temperatures: HashMap::new(),
+
             power_supplies: Vec::new(),
 
             load_average_1min: 0.0,
@@ -44,6 +50,110 @@ impl System {
             || self.is_desktop()?;
 
         self.rescan_load_average()?;
+
+        Ok(())
+    }
+
+    fn rescan_temperatures(&mut self) -> anyhow::Result<()> {
+        const PATH: &str = "/sys/class/hwmon";
+
+        let mut temperatures = HashMap::new();
+
+        for entry in fs::read_dir(PATH)
+            .with_context(|| format!("failed to read hardware information from '{PATH}'"))?
+            .with_context(|| format!("'{PATH}' doesn't exist, are you on linux?"))?
+        {
+            let entry = entry.with_context(|| format!("failed to read entry of '{PATH}'"))?;
+
+            let entry_path = entry.path();
+
+            let Some(name) = fs::read(entry_path.join("name")).with_context(|| {
+                format!(
+                    "failed to read name of hardware entry at '{path}'",
+                    path = entry_path.display(),
+                )
+            })?
+            else {
+                continue;
+            };
+
+            match &*name {
+                // TODO: 'zenergy' can also report those stats, I think?
+                "coretemp" | "k10temp" | "zenpower" | "amdgpu" => {
+                    Self::get_temperatures(&entry_path, &mut temperatures)?;
+                }
+
+                // Other CPU temperature drivers.
+                _ if name.contains("cpu") || name.contains("temp") => {
+                    Self::get_temperatures(&entry_path, &mut temperatures)?;
+                }
+
+                _ => {}
+            }
+        }
+
+        self.cpu_temperatures = temperatures;
+
+        Ok(())
+    }
+
+    fn get_temperatures(
+        device_path: &Path,
+        temperatures: &mut HashMap<u32, f64>,
+    ) -> anyhow::Result<()> {
+        // Increased range to handle systems with many sensors.
+        for i in 1..=96 {
+            let label_path = device_path.join(format!("temp{i}_label"));
+            let input_path = device_path.join(format!("temp{i}_input"));
+
+            if !label_path.exists() || !input_path.exists() {
+                continue;
+            }
+
+            let Some(label) = fs::read(&label_path).with_context(|| {
+                format!(
+                    "failed to read hardware hardware device label from '{path}'",
+                    path = label_path.display(),
+                )
+            })?
+            else {
+                continue;
+            };
+
+            // Match various common label formats:
+            // "Core X", "core X", "Core-X", "CPU Core X", etc.
+            let number = label
+                .trim_start_matches("cpu")
+                .trim_start_matches("CPU")
+                .trim_start()
+                .trim_start_matches("core")
+                .trim_start_matches("Core")
+                .trim_start()
+                .trim_start_matches("tdie")
+                .trim_start_matches("Tdie")
+                .trim_start()
+                .trim_start_matches("tctl")
+                .trim_start_matches("Tctl")
+                .trim_start()
+                .trim_start_matches("-")
+                .trim();
+
+            let Ok(number) = number.parse::<u32>() else {
+                continue;
+            };
+
+            let Some(temperature_mc) = fs::read_n::<i64>(&input_path).with_context(|| {
+                format!(
+                    "failed to read CPU temperature from '{path}'",
+                    path = input_path.display(),
+                )
+            })?
+            else {
+                continue;
+            };
+
+            temperatures.insert(number, temperature_mc as f64 / 1000.0);
+        }
 
         Ok(())
     }
