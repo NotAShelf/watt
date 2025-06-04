@@ -86,8 +86,8 @@ fn real_main() -> anyhow::Result<()> {
 
     match cli.command {
         Command::Watt { config, .. } => {
-            let config = config::DaemonConfig::load_from(&config)
-                .context("failed to load daemon config file")?;
+            let config =
+                config::DaemonConfig::load_from(&config).context("failed to load daemon config")?;
 
             daemon::run(config)
         }

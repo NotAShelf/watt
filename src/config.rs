@@ -155,33 +155,79 @@ impl PowerDelta {
     }
 }
 
+macro_rules! named {
+    ($variant:ident => $value:literal) => {
+        pub mod $variant {
+            pub fn serialize<S: serde::Serializer>(serializer: S) -> Result<S::Ok, S::Error> {
+                serializer.serialize_str($value)
+            }
+
+            pub fn deserialize<'de, D: serde::Deserializer<'de>>(
+                deserializer: D,
+            ) -> Result<(), D::Error> {
+                struct Visitor;
+
+                impl<'de> serde::de::Visitor<'de> for Visitor {
+                    type Value = ();
+
+                    fn expecting(&self, writer: &mut std::fmt::Formatter) -> std::fmt::Result {
+                        writer.write_str(concat!("\"", $value, "\""))
+                    }
+
+                    fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                        if value != $value {
+                            return Err(E::invalid_value(serde::de::Unexpected::Str(value), &self));
+                        }
+
+                        Ok(())
+                    }
+                }
+
+                deserializer.deserialize_str(Visitor)
+            }
+        }
+    };
+}
+
+mod expression {
+    named!(cpu_usage => "%cpu-usage");
+    named!(cpu_usage_volatility => "$cpu-usage-volatility");
+    named!(cpu_temperature => "$cpu-temperature");
+    named!(cpu_temperature_volatility => "$cpu-temperature-volatility");
+    named!(cpu_idle_seconds => "$cpu-idle-seconds");
+    named!(power_supply_charge => "%power-supply-charge");
+    named!(power_supply_discharge_rate => "%power-supply-discharge-rate");
+    named!(charging => "?charging");
+    named!(on_battery => "?on-battery");
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-#[serde(untagged, rename_all = "kebab-case")]
+#[serde(untagged)]
 pub enum Expression {
-    #[serde(rename = "%cpu-usage")]
+    #[serde(with = "expression::cpu_usage")]
     CpuUsage,
 
-    #[serde(rename = "$cpu-usage-volatility")]
+    #[serde(with = "expression::cpu_usage_volatility")]
     CpuUsageVolatility,
 
-    #[serde(rename = "$cpu-temperature")]
+    #[serde(with = "expression::cpu_temperature")]
     CpuTemperature,
 
-    #[serde(rename = "$cpu-temperature-volatility")]
+    #[serde(with = "expression::cpu_temperature_volatility")]
     CpuTemperatureVolatility,
 
-    #[serde(rename = "$cpu-idle-seconds")]
+    #[serde(with = "expression::cpu_idle_seconds")]
     CpuIdleSeconds,
 
-    #[serde(rename = "%power-supply-charge")]
+    #[serde(with = "expression::power_supply_charge")]
     PowerSupplyCharge,
 
-    #[serde(rename = "%power-supply-discharge-rate")]
+    #[serde(with = "expression::power_supply_discharge_rate")]
     PowerSupplyDischargeRate,
 
-    #[serde(rename = "?charging")]
+    #[serde(with = "expression::charging")]
     Charging,
-    #[serde(rename = "?on-battery")]
+    #[serde(with = "expression::on_battery")]
     OnBattery,
 
     Boolean(bool),
@@ -209,16 +255,18 @@ pub enum Expression {
         divide: Box<Expression>,
     },
 
+    #[serde(rename_all = "kebab-case")]
     LessThan {
         value: Box<Expression>,
         is_less_than: Box<Expression>,
     },
-
+    #[serde(rename_all = "kebab-case")]
     MoreThan {
         value: Box<Expression>,
         is_more_than: Box<Expression>,
     },
 
+    #[serde(rename_all = "kebab-case")]
     Equal {
         value: Box<Expression>,
         is_equal: Box<Expression>,
@@ -297,7 +345,8 @@ impl DaemonConfig {
             format!("failed to read config from '{path}'", path = path.display())
         })?;
 
-        let mut config: Self = toml::from_str(&contents).context("failed to parse config file")?;
+        let mut config: Self = toml::from_str(&contents)
+            .with_context(|| format!("failed to parse file at '{path}'", path = path.display(),))?;
 
         {
             let mut priorities = Vec::with_capacity(config.rules.len());
@@ -312,6 +361,8 @@ impl DaemonConfig {
         }
 
         config.rules.sort_by_key(|rule| rule.priority);
+
+        log::debug!("loaded config: {config:#?}");
 
         Ok(config)
     }

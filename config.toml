@@ -1,2 +1,3 @@
 [[rule]]
 priority = 0
+if = { value = "%cpu-usage", is-more-than = 0.7 }
