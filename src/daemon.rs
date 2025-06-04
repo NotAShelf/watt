@@ -1,5 +1,7 @@
 use std::{
-    collections::VecDeque,
+    cell::LazyCell,
+    collections::{HashMap, VecDeque},
+    ops::Deref,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -347,15 +349,54 @@ pub fn run(config: config::DaemonConfig) -> anyhow::Result<()> {
             discharging: daemon.discharging(),
         };
 
+        let mut cpu_delta_for = HashMap::<u32, config::CpuDelta>::new();
+        let all_cpus = LazyCell::new(|| (0..num_cpus::get() as u32).collect::<Vec<_>>());
+
         for rule in &config.rules {
             let Some(condition) = rule.condition.eval(&state)? else {
                 continue;
             };
 
+            let cpu_for = rule.cpu.for_.as_ref().unwrap_or_else(|| &*all_cpus);
+
+            for cpu in cpu_for {
+                let delta = cpu_delta_for.entry(*cpu).or_default();
+
+                delta.for_ = Some(vec![*cpu]);
+
+                if let Some(governor) = rule.cpu.governor.as_ref() {
+                    delta.governor = Some(governor.clone());
+                }
+
+                if let Some(epp) = rule.cpu.energy_performance_preference.as_ref() {
+                    delta.energy_performance_preference = Some(epp.clone());
+                }
+
+                if let Some(epb) = rule.cpu.energy_performance_bias.as_ref() {
+                    delta.energy_performance_bias = Some(epb.clone());
+                }
+
+                if let Some(mhz_minimum) = rule.cpu.frequency_mhz_minimum {
+                    delta.frequency_mhz_minimum = Some(mhz_minimum);
+                }
+
+                if let Some(mhz_maximum) = rule.cpu.frequency_mhz_maximum {
+                    delta.frequency_mhz_maximum = Some(mhz_maximum);
+                }
+
+                if let Some(turbo) = rule.cpu.turbo {
+                    delta.turbo = Some(turbo);
+                }
+            }
+
+            // TODO: Also merge this into one like CPU.
             if condition.as_boolean()? {
-                rule.cpu.apply()?;
                 rule.power.apply()?;
             }
+        }
+
+        for delta in cpu_delta_for.values() {
+            delta.apply()?;
         }
 
         if let Some(delay) = sleep_until.checked_duration_since(Instant::now()) {
