@@ -139,7 +139,7 @@ impl Daemon {
     /// The discharge rate is averaged per hour.
     /// So a return value of Some(0.3) means the battery has been
     /// discharging 30% per hour.
-    fn power_supply_discharge_rate(&self) -> Option<f64> {
+    fn power_supply_discharge_rate(&mut self) -> Option<f64> {
         let mut last_charge = None;
 
         // A list of increasing charge percentages.
@@ -159,7 +159,9 @@ impl Daemon {
             })
             .collect();
 
-        if discharging.len() < 2 {
+        self.charging = discharging.len() < 2;
+
+        if self.charging {
             return None;
         }
 
