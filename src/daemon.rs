@@ -306,121 +306,6 @@ impl Daemon {
     }
 }
 
-impl Daemon {
-    fn eval(&self, expression: &config::Expression) -> anyhow::Result<Option<config::Expression>> {
-        use config::Expression::*;
-
-        macro_rules! try_ok {
-            ($expression:expr) => {
-                match $expression {
-                    Some(value) => value,
-                    None => return Ok(None),
-                }
-            };
-        }
-
-        Ok(Some(match expression {
-            CpuUsage => Number(self.cpu_log.back().unwrap().usage),
-            CpuUsageVolatility => Number(try_ok!(self.cpu_volatility()).usage),
-            CpuTemperature => Number(self.cpu_log.back().unwrap().temperature),
-            CpuTemperatureVolatility => Number(try_ok!(self.cpu_volatility()).temperature),
-            CpuIdleSeconds => Number(self.last_user_activity.elapsed().as_secs_f64()),
-            PowerSupplyCharge => Number(self.power_supply_log.back().unwrap().charge),
-            PowerSupplyDischargeRate => Number(try_ok!(self.power_supply_discharge_rate())),
-
-            Charging => Boolean(!self.discharging()),
-            OnBattery => Boolean(self.discharging()),
-
-            literal @ Boolean(_) | literal @ Number(_) => literal.clone(),
-
-            Plus { value, plus } => Number(
-                try_ok!(self.eval(value)?).as_number()? + try_ok!(self.eval(plus)?).as_number()?,
-            ),
-            Minus { value, minus } => Number(
-                try_ok!(self.eval(value)?).as_number()? - try_ok!(self.eval(minus)?).as_number()?,
-            ),
-            Multiply { value, multiply } => Number(
-                try_ok!(self.eval(value)?).as_number()?
-                    * try_ok!(self.eval(multiply)?).as_number()?,
-            ),
-            Power { value, power } => Number(
-                try_ok!(self.eval(value)?)
-                    .as_number()?
-                    .powf(try_ok!(self.eval(power)?).as_number()?),
-            ),
-            Divide { value, divide } => Number(
-                try_ok!(self.eval(value)?).as_number()?
-                    / try_ok!(self.eval(divide)?).as_number()?,
-            ),
-
-            LessThan {
-                value,
-                is_less_than,
-            } => Boolean(
-                try_ok!(self.eval(value)?).as_number()?
-                    < try_ok!(self.eval(is_less_than)?).as_number()?,
-            ),
-            MoreThan {
-                value,
-                is_more_than,
-            } => Boolean(
-                try_ok!(self.eval(value)?).as_number()?
-                    > try_ok!(self.eval(is_more_than)?).as_number()?,
-            ),
-            Equal {
-                value,
-                is_equal,
-                leeway,
-            } => {
-                let value = try_ok!(self.eval(value)?).as_number()?;
-                let leeway = try_ok!(self.eval(leeway)?).as_number()?;
-
-                let is_equal = try_ok!(self.eval(is_equal)?).as_number()?;
-
-                let minimum = value - leeway;
-                let maximum = value + leeway;
-
-                Boolean(minimum < is_equal && is_equal < maximum)
-            }
-
-            And { value, and } => Boolean(
-                try_ok!(self.eval(value)?).as_boolean()?
-                    && try_ok!(self.eval(and)?).as_boolean()?,
-            ),
-            All { all } => {
-                let mut result = true;
-
-                for value in all {
-                    result = result && try_ok!(self.eval(value)?).as_boolean()?;
-
-                    if !result {
-                        break;
-                    }
-                }
-
-                Boolean(result)
-            }
-            Or { value, or } => Boolean(
-                try_ok!(self.eval(value)?).as_boolean()? || try_ok!(self.eval(or)?).as_boolean()?,
-            ),
-            Any { any } => {
-                let mut result = false;
-
-                for value in any {
-                    result = result || try_ok!(self.eval(value)?).as_boolean()?;
-
-                    if result {
-                        break;
-                    }
-                }
-
-                Boolean(result)
-            }
-            Not { not } => Boolean(!try_ok!(self.eval(not)?).as_boolean()?),
-        }))
-    }
-}
-
 pub fn run(config: config::DaemonConfig) -> anyhow::Result<()> {
     assert!(config.rules.is_sorted_by_key(|rule| rule.priority));
 
@@ -451,8 +336,19 @@ pub fn run(config: config::DaemonConfig) -> anyhow::Result<()> {
 
         let sleep_until = Instant::now() + daemon.polling_interval();
 
+        let state = config::EvalState {
+            cpu_usage: daemon.cpu_log.back().unwrap().usage,
+            cpu_usage_volatility: daemon.cpu_volatility().map(|vol| vol.usage),
+            cpu_temperature: daemon.cpu_log.back().unwrap().temperature,
+            cpu_temperature_volatility: daemon.cpu_volatility().map(|vol| vol.temperature),
+            cpu_idle_seconds: daemon.last_user_activity.elapsed().as_secs_f64(),
+            power_supply_charge: daemon.power_supply_log.back().unwrap().charge,
+            power_supply_discharge_rate: daemon.power_supply_discharge_rate(),
+            discharging: daemon.discharging(),
+        };
+
         for rule in &config.rules {
-            let Some(condition) = daemon.eval(&rule.if_)? else {
+            let Some(condition) = rule.if_.eval(&state)? else {
                 continue;
             };
 

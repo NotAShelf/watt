@@ -195,10 +195,11 @@ mod expression {
     named!(cpu_temperature => "$cpu-temperature");
     named!(cpu_temperature_volatility => "$cpu-temperature-volatility");
     named!(cpu_idle_seconds => "$cpu-idle-seconds");
+
     named!(power_supply_charge => "%power-supply-charge");
     named!(power_supply_discharge_rate => "%power-supply-discharge-rate");
-    named!(charging => "?charging");
-    named!(on_battery => "?on-battery");
+
+    named!(discharging => "?discharging");
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -225,65 +226,80 @@ pub enum Expression {
     #[serde(with = "expression::power_supply_discharge_rate")]
     PowerSupplyDischargeRate,
 
-    #[serde(with = "expression::charging")]
-    Charging,
-    #[serde(with = "expression::on_battery")]
-    OnBattery,
+    #[serde(with = "expression::discharging")]
+    Discharging,
 
     Boolean(bool),
 
     Number(f64),
 
     Plus {
-        value: Box<Expression>,
-        plus: Box<Expression>,
+        #[serde(rename = "value")]
+        a: Box<Expression>,
+        #[serde(rename = "plus")]
+        b: Box<Expression>,
     },
     Minus {
-        value: Box<Expression>,
-        minus: Box<Expression>,
+        #[serde(rename = "value")]
+        a: Box<Expression>,
+        #[serde(rename = "minus")]
+        b: Box<Expression>,
     },
     Multiply {
-        value: Box<Expression>,
-        multiply: Box<Expression>,
+        #[serde(rename = "value")]
+        a: Box<Expression>,
+        #[serde(rename = "multiply")]
+        b: Box<Expression>,
     },
     Power {
-        value: Box<Expression>,
-        power: Box<Expression>,
+        #[serde(rename = "value")]
+        a: Box<Expression>,
+        #[serde(rename = "power")]
+        b: Box<Expression>,
     },
     Divide {
-        value: Box<Expression>,
-        divide: Box<Expression>,
+        #[serde(rename = "value")]
+        a: Box<Expression>,
+        #[serde(rename = "divide")]
+        b: Box<Expression>,
     },
 
-    #[serde(rename_all = "kebab-case")]
     LessThan {
-        value: Box<Expression>,
-        is_less_than: Box<Expression>,
+        #[serde(rename = "value")]
+        a: Box<Expression>,
+        #[serde(rename = "is-less-than")]
+        b: Box<Expression>,
     },
-    #[serde(rename_all = "kebab-case")]
     MoreThan {
-        value: Box<Expression>,
-        is_more_than: Box<Expression>,
+        #[serde(rename = "value")]
+        a: Box<Expression>,
+        #[serde(rename = "is-more-than")]
+        b: Box<Expression>,
     },
 
-    #[serde(rename_all = "kebab-case")]
     Equal {
-        value: Box<Expression>,
-        is_equal: Box<Expression>,
+        #[serde(rename = "value")]
+        a: Box<Expression>,
+        #[serde(rename = "is-equal")]
+        b: Box<Expression>,
         leeway: Box<Expression>,
     },
 
     And {
-        value: Box<Expression>,
-        and: Box<Expression>,
+        #[serde(rename = "value")]
+        a: Box<Expression>,
+        #[serde(rename = "and")]
+        b: Box<Expression>,
     },
     All {
         all: Vec<Expression>,
     },
 
     Or {
-        value: Box<Expression>,
-        or: Box<Expression>,
+        #[serde(rename = "value")]
+        a: Box<Expression>,
+        #[serde(rename = "or")]
+        b: Box<Expression>,
     },
     Any {
         any: Vec<Expression>,
@@ -315,6 +331,121 @@ impl Expression {
         };
 
         Ok(*boolean)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EvalState {
+    pub cpu_usage: f64,
+    pub cpu_usage_volatility: Option<f64>,
+    pub cpu_temperature: f64,
+    pub cpu_temperature_volatility: Option<f64>,
+    pub cpu_idle_seconds: f64,
+
+    pub power_supply_charge: f64,
+    pub power_supply_discharge_rate: Option<f64>,
+
+    pub discharging: bool,
+}
+
+impl Expression {
+    pub fn eval(&self, state: &EvalState) -> anyhow::Result<Option<Expression>> {
+        use Expression::*;
+
+        macro_rules! try_ok {
+            ($expression:expr) => {
+                match $expression {
+                    Some(value) => value,
+                    None => return Ok(None),
+                }
+            };
+        }
+
+        macro_rules! eval {
+            ($expression:expr) => {
+                try_ok!($expression.eval(state)?)
+            };
+        }
+
+        // [e8dax09]: This may be look inefficient, and it definitely isn't optimal,
+        // but expressions in rules are usually so small that it doesn't matter or
+        // make a perceiveable performance difference.
+        //
+        // We also want to be strict, instead of lazy in binary operations, because
+        // we want to catch type errors immediately.
+        //
+        // FIXME: We currently cannot catch errors that will happen when propagating None.
+        // You can have a type error go uncaught on first startup by using $cpu-usage-volatility
+        // incorrectly, for example.
+        Ok(Some(match self {
+            CpuUsage => Number(state.cpu_usage),
+            CpuUsageVolatility => Number(try_ok!(state.cpu_usage_volatility)),
+            CpuTemperature => Number(state.cpu_temperature),
+            CpuTemperatureVolatility => Number(try_ok!(state.cpu_temperature_volatility)),
+            CpuIdleSeconds => Number(state.cpu_idle_seconds),
+
+            PowerSupplyCharge => Number(state.cpu_idle_seconds),
+            PowerSupplyDischargeRate => Number(try_ok!(state.power_supply_discharge_rate)),
+
+            Discharging => Boolean(state.discharging),
+
+            literal @ (Boolean(_) | Number(_)) => literal.clone(),
+
+            Plus { a, b } => Number(eval!(a).as_number()? + eval!(b).as_number()?),
+            Minus { a, b } => Number(eval!(a).as_number()? - eval!(b).as_number()?),
+            Multiply { a, b } => Number(eval!(a).as_number()? * eval!(b).as_number()?),
+            Power { a, b } => Number(eval!(a).as_number()?.powf(eval!(b).as_number()?)),
+            Divide { a, b } => Number(eval!(a).as_number()? / eval!(b).as_number()?),
+
+            LessThan { a, b } => Boolean(eval!(a).as_number()? < eval!(b).as_number()?),
+            MoreThan { a, b } => Boolean(eval!(a).as_number()? > eval!(b).as_number()?),
+            Equal { a, b, leeway } => {
+                let a = eval!(a).as_number()?;
+                let b = eval!(b).as_number()?;
+                let leeway = eval!(leeway).as_number()?;
+
+                let minimum = a - leeway;
+                let maximum = a + leeway;
+
+                Boolean(minimum < b && b < maximum)
+            }
+
+            And { a, b } => {
+                let a = eval!(a).as_boolean()?;
+                let b = eval!(b).as_boolean()?;
+
+                Boolean(a && b)
+            }
+            All { all } => {
+                let mut result = true;
+
+                for value in all {
+                    let value = eval!(value).as_boolean()?;
+
+                    result = result && value;
+                }
+
+                Boolean(result)
+            }
+            Or { a, b } => {
+                let a = eval!(a).as_boolean()?;
+                let b = eval!(b).as_boolean()?;
+
+                Boolean(a || b)
+            }
+            Any { any } => {
+                let mut result = false;
+
+                for value in any {
+                    let value = eval!(value).as_boolean()?;
+
+                    result = result || value;
+                }
+
+                Boolean(result)
+            }
+            Not { not } => Boolean(!eval!(not).as_boolean()?),
+        }))
     }
 }
 
