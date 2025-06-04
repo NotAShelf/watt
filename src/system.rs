@@ -50,6 +50,7 @@ impl System {
             || self.is_desktop()?;
 
         self.rescan_load_average()?;
+        self.rescan_temperatures()?;
 
         Ok(())
     }

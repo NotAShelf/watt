@@ -155,7 +155,7 @@ impl PowerDelta {
     }
 }
 
-#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(untagged, rename_all = "kebab-case")]
 pub enum Expression {
     #[serde(rename = "%cpu-usage")]
@@ -184,12 +184,7 @@ pub enum Expression {
     #[serde(rename = "?on-battery")]
     OnBattery,
 
-    #[serde(rename = "#false")]
-    False,
-
-    #[default]
-    #[serde(rename = "#true")]
-    True,
+    Boolean(bool),
 
     Number(f64),
 
@@ -251,25 +246,49 @@ pub enum Expression {
     },
 }
 
+impl Default for Expression {
+    fn default() -> Self {
+        Self::Boolean(true)
+    }
+}
+
+impl Expression {
+    pub fn as_number(&self) -> anyhow::Result<f64> {
+        let Self::Number(number) = self else {
+            bail!("tried to cast '{self:?}' to a number, failed")
+        };
+
+        Ok(*number)
+    }
+
+    pub fn as_boolean(&self) -> anyhow::Result<bool> {
+        let Self::Boolean(boolean) = self else {
+            bail!("tried to cast '{self:?}' to a boolean, failed")
+        };
+
+        Ok(*boolean)
+    }
+}
+
 #[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Rule {
-    priority: u8,
+    pub priority: u8,
 
     #[serde(default, rename = "if", skip_serializing_if = "is_default")]
-    if_: Expression,
+    pub if_: Expression,
 
     #[serde(default, skip_serializing_if = "is_default")]
-    cpu: CpuDelta,
+    pub cpu: CpuDelta,
     #[serde(default, skip_serializing_if = "is_default")]
-    power: PowerDelta,
+    pub power: PowerDelta,
 }
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct DaemonConfig {
     #[serde(rename = "rule")]
-    rules: Vec<Rule>,
+    pub rules: Vec<Rule>,
 }
 
 impl DaemonConfig {
@@ -278,7 +297,7 @@ impl DaemonConfig {
             format!("failed to read config from '{path}'", path = path.display())
         })?;
 
-        let config: Self = toml::from_str(&contents).context("failed to parse config file")?;
+        let mut config: Self = toml::from_str(&contents).context("failed to parse config file")?;
 
         {
             let mut priorities = Vec::with_capacity(config.rules.len());
@@ -291,6 +310,8 @@ impl DaemonConfig {
                 priorities.push(rule.priority);
             }
         }
+
+        config.rules.sort_by_key(|rule| rule.priority);
 
         Ok(config)
     }

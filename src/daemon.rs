@@ -5,6 +5,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    thread,
     time::{Duration, Instant},
 };
 
@@ -42,14 +43,64 @@ struct Daemon {
     /// The last computed polling interval.
     last_polling_interval: Option<Duration>,
 
-    /// Whether if we are charging right now.
-    charging: bool,
+    /// The system state.
+    system: system::System,
 
     /// CPU usage and temperature log.
     cpu_log: VecDeque<CpuLog>,
 
     /// Power supply status log.
     power_supply_log: VecDeque<PowerSupplyLog>,
+}
+
+impl Daemon {
+    fn rescan(&mut self) -> anyhow::Result<()> {
+        self.system.rescan()?;
+
+        while self.cpu_log.len() > 99 {
+            self.cpu_log.pop_front();
+        }
+
+        self.cpu_log.push_back(CpuLog {
+            at: Instant::now(),
+
+            usage: self
+                .system
+                .cpus
+                .iter()
+                .map(|cpu| cpu.stat.usage())
+                .sum::<f64>()
+                / self.system.cpus.len() as f64,
+
+            temperature: self.system.cpu_temperatures.values().sum::<f64>()
+                / self.system.cpu_temperatures.len() as f64,
+        });
+
+        let at = Instant::now();
+
+        let (charge_sum, charge_nr) =
+            self.system
+                .power_supplies
+                .iter()
+                .fold((0.0, 0u32), |(sum, count), power_supply| {
+                    if let Some(charge_percent) = power_supply.charge_percent {
+                        (sum + charge_percent, count + 1)
+                    } else {
+                        (sum, count)
+                    }
+                });
+
+        while self.power_supply_log.len() > 99 {
+            self.power_supply_log.pop_front();
+        }
+
+        self.power_supply_log.push_back(PowerSupplyLog {
+            at,
+            charge: charge_sum / charge_nr as f64,
+        });
+
+        Ok(())
+    }
 }
 
 struct CpuLog {
@@ -134,12 +185,19 @@ struct PowerSupplyLog {
 }
 
 impl Daemon {
+    fn discharging(&self) -> bool {
+        self.system
+            .power_supplies
+            .iter()
+            .any(|power_supply| power_supply.charge_state.as_deref() == Some("Discharging"))
+    }
+
     /// Calculates the discharge rate, returns a number between 0 and 1.
     ///
     /// The discharge rate is averaged per hour.
     /// So a return value of Some(0.3) means the battery has been
     /// discharging 30% per hour.
-    fn power_supply_discharge_rate(&mut self) -> Option<f64> {
+    fn power_supply_discharge_rate(&self) -> Option<f64> {
         let mut last_charge = None;
 
         // A list of increasing charge percentages.
@@ -159,9 +217,7 @@ impl Daemon {
             })
             .collect();
 
-        self.charging = discharging.len() < 2;
-
-        if self.charging {
+        if discharging.len() < 2 {
             return None;
         }
 
@@ -183,7 +239,7 @@ impl Daemon {
         let mut interval = Duration::from_secs(5);
 
         // We are on battery, so we must be more conservative with our polling.
-        if !self.charging {
+        if self.discharging() {
             match self.power_supply_discharge_rate() {
                 Some(discharge_rate) => {
                     if discharge_rate > 0.2 {
@@ -244,7 +300,124 @@ impl Daemon {
     }
 }
 
+impl Daemon {
+    fn eval(&self, expression: &config::Expression) -> anyhow::Result<Option<config::Expression>> {
+        use config::Expression::*;
+
+        macro_rules! try_ok {
+            ($expression:expr) => {
+                match $expression {
+                    Some(value) => value,
+                    None => return Ok(None),
+                }
+            };
+        }
+
+        Ok(Some(match expression {
+            CpuUsage => Number(self.cpu_log.back().unwrap().usage),
+            CpuUsageVolatility => Number(try_ok!(self.cpu_volatility()).usage),
+            CpuTemperature => Number(self.cpu_log.back().unwrap().temperature),
+            CpuTemperatureVolatility => Number(try_ok!(self.cpu_volatility()).temperature),
+            CpuIdleSeconds => Number(self.last_user_activity.elapsed().as_secs_f64()),
+            PowerSupplyCharge => Number(self.power_supply_log.back().unwrap().charge),
+            PowerSupplyDischargeRate => Number(try_ok!(self.power_supply_discharge_rate())),
+
+            Charging => Boolean(!self.discharging()),
+            OnBattery => Boolean(self.discharging()),
+
+            literal @ Boolean(_) | literal @ Number(_) => literal.clone(),
+
+            Plus { value, plus } => Number(
+                try_ok!(self.eval(value)?).as_number()? + try_ok!(self.eval(plus)?).as_number()?,
+            ),
+            Minus { value, minus } => Number(
+                try_ok!(self.eval(value)?).as_number()? - try_ok!(self.eval(minus)?).as_number()?,
+            ),
+            Multiply { value, multiply } => Number(
+                try_ok!(self.eval(value)?).as_number()?
+                    * try_ok!(self.eval(multiply)?).as_number()?,
+            ),
+            Power { value, power } => Number(
+                try_ok!(self.eval(value)?)
+                    .as_number()?
+                    .powf(try_ok!(self.eval(power)?).as_number()?),
+            ),
+            Divide { value, divide } => Number(
+                try_ok!(self.eval(value)?).as_number()?
+                    / try_ok!(self.eval(divide)?).as_number()?,
+            ),
+
+            LessThan {
+                value,
+                is_less_than,
+            } => Boolean(
+                try_ok!(self.eval(value)?).as_number()?
+                    < try_ok!(self.eval(is_less_than)?).as_number()?,
+            ),
+            MoreThan {
+                value,
+                is_more_than,
+            } => Boolean(
+                try_ok!(self.eval(value)?).as_number()?
+                    > try_ok!(self.eval(is_more_than)?).as_number()?,
+            ),
+            Equal {
+                value,
+                is_equal,
+                leeway,
+            } => {
+                let value = try_ok!(self.eval(value)?).as_number()?;
+                let leeway = try_ok!(self.eval(leeway)?).as_number()?;
+
+                let is_equal = try_ok!(self.eval(is_equal)?).as_number()?;
+
+                let minimum = value - leeway;
+                let maximum = value + leeway;
+
+                Boolean(minimum < is_equal && is_equal < maximum)
+            }
+
+            And { value, and } => Boolean(
+                try_ok!(self.eval(value)?).as_boolean()?
+                    && try_ok!(self.eval(and)?).as_boolean()?,
+            ),
+            All { all } => {
+                let mut result = true;
+
+                for value in all {
+                    result = result && try_ok!(self.eval(value)?).as_boolean()?;
+
+                    if !result {
+                        break;
+                    }
+                }
+
+                Boolean(result)
+            }
+            Or { value, or } => Boolean(
+                try_ok!(self.eval(value)?).as_boolean()? || try_ok!(self.eval(or)?).as_boolean()?,
+            ),
+            Any { any } => {
+                let mut result = false;
+
+                for value in any {
+                    result = result || try_ok!(self.eval(value)?).as_boolean()?;
+
+                    if result {
+                        break;
+                    }
+                }
+
+                Boolean(result)
+            }
+            Not { not } => Boolean(!try_ok!(self.eval(not)?).as_boolean()?),
+        }))
+    }
+}
+
 pub fn run(config: config::DaemonConfig) -> anyhow::Result<()> {
+    assert!(config.rules.is_sorted_by_key(|rule| rule.priority));
+
     log::info!("starting daemon...");
 
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -256,9 +429,37 @@ pub fn run(config: config::DaemonConfig) -> anyhow::Result<()> {
     })
     .context("failed to set Ctrl-C handler")?;
 
-    let mut system = system::System::new()?;
+    let mut daemon = Daemon {
+        last_user_activity: Instant::now(),
 
-    while !cancelled.load(Ordering::SeqCst) {}
+        last_polling_interval: None,
+
+        system: system::System::new()?,
+
+        cpu_log: VecDeque::new(),
+        power_supply_log: VecDeque::new(),
+    };
+
+    while !cancelled.load(Ordering::SeqCst) {
+        daemon.rescan()?;
+
+        let sleep_until = Instant::now() + daemon.polling_interval();
+
+        for rule in &config.rules {
+            let Some(condition) = daemon.eval(&rule.if_)? else {
+                continue;
+            };
+
+            if condition.as_boolean()? {
+                rule.cpu.apply()?;
+                rule.power.apply()?;
+            }
+        }
+
+        if let Some(delay) = sleep_until.checked_duration_since(Instant::now()) {
+            thread::sleep(delay);
+        }
+    }
 
     log::info!("exiting...");
 
