@@ -10,7 +10,7 @@ use std::{
 
 use anyhow::Context;
 
-use crate::config;
+use crate::{config, system};
 
 /// Calculate the idle time multiplier based on system idle time.
 ///
@@ -253,6 +253,8 @@ pub fn run(config: config::DaemonConfig) -> anyhow::Result<()> {
         cancelled_.store(true, Ordering::SeqCst);
     })
     .context("failed to set Ctrl-C handler")?;
+
+    let mut system = system::System::new()?;
 
     while !cancelled.load(Ordering::SeqCst) {}
 
