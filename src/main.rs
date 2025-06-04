@@ -21,30 +21,52 @@ use yansi::Paint as _;
 #[derive(clap::Parser, Debug)]
 #[clap(author, version, about)]
 struct Cli {
-    #[command(flatten)]
-    verbosity: clap_verbosity_flag::Verbosity,
-
     #[clap(subcommand)]
     command: Command,
 }
 
 #[derive(clap::Parser, Debug)]
+#[clap(multicall = true)]
 enum Command {
-    /// Display information.
-    Info,
+    /// Watt daemon.
+    Watt {
+        #[command(flatten)]
+        verbosity: clap_verbosity_flag::Verbosity,
 
-    /// Start the daemon.
-    Start {
         /// The daemon config path.
         #[arg(long, env = "WATT_CONFIG")]
         config: PathBuf,
     },
 
-    /// Modify CPU attributes.
-    CpuSet(config::CpuDelta),
+    /// CPU metadata and modification utility.
+    Cpu {
+        #[command(flatten)]
+        verbosity: clap_verbosity_flag::Verbosity,
 
+        #[clap(subcommand)]
+        command: CpuCommand,
+    },
+
+    /// Power supply metadata and modification utility.
+    Power {
+        #[command(flatten)]
+        verbosity: clap_verbosity_flag::Verbosity,
+
+        #[clap(subcommand)]
+        command: PowerCommand,
+    },
+}
+
+#[derive(clap::Parser, Debug)]
+enum CpuCommand {
+    /// Modify CPU attributes.
+    Set(config::CpuDelta),
+}
+
+#[derive(clap::Parser, Debug)]
+enum PowerCommand {
     /// Modify power supply attributes.
-    PowerSet(config::PowerDelta),
+    Set(config::PowerDelta),
 }
 
 fn real_main() -> anyhow::Result<()> {
@@ -52,24 +74,33 @@ fn real_main() -> anyhow::Result<()> {
 
     yansi::whenever(yansi::Condition::TTY_AND_COLOR);
 
+    let (Command::Watt { verbosity, .. }
+    | Command::Cpu { verbosity, .. }
+    | Command::Power { verbosity, .. }) = cli.command;
+
     env_logger::Builder::new()
-        .filter_level(cli.verbosity.log_level_filter())
+        .filter_level(verbosity.log_level_filter())
         .format_timestamp(None)
         .format_module_path(false)
         .init();
 
     match cli.command {
-        Command::Info => todo!(),
-
-        Command::Start { config } => {
+        Command::Watt { config, .. } => {
             let config = config::DaemonConfig::load_from(&config)
                 .context("failed to load daemon config file")?;
 
             daemon::run(config)
         }
 
-        Command::CpuSet(delta) => delta.apply(),
-        Command::PowerSet(delta) => delta.apply(),
+        Command::Cpu {
+            command: CpuCommand::Set(delta),
+            ..
+        } => delta.apply(),
+
+        Command::Power {
+            command: PowerCommand::Set(delta),
+            ..
+        } => delta.apply(),
     }
 }
 
