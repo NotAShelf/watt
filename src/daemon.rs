@@ -348,7 +348,7 @@ pub fn run(config: config::DaemonConfig) -> anyhow::Result<()> {
         };
 
         for rule in &config.rules {
-            let Some(condition) = rule.if_.eval(&state)? else {
+            let Some(condition) = rule.condition.eval(&state)? else {
                 continue;
             };
 

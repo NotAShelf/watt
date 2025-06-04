@@ -455,7 +455,7 @@ pub struct Rule {
     pub priority: u8,
 
     #[serde(default, rename = "if", skip_serializing_if = "is_default")]
-    pub if_: Expression,
+    pub condition: Expression,
 
     #[serde(default, skip_serializing_if = "is_default")]
     pub cpu: CpuDelta,
