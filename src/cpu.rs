@@ -1,13 +1,14 @@
 use anyhow::{Context, bail};
 use yansi::Paint as _;
 
-use std::{cell::OnceCell, collections::HashMap, fmt, string::ToString};
+use std::{cell::OnceCell, collections::HashMap, fmt, mem, rc::Rc, string::ToString};
 
 use crate::fs;
 
 #[derive(Default, Debug, Clone, PartialEq)]
 pub struct CpuRescanCache {
     stat: OnceCell<HashMap<u32, CpuStat>>,
+    info: OnceCell<HashMap<u32, Rc<HashMap<String, String>>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +64,7 @@ pub struct Cpu {
     pub epb: Option<String>,
 
     pub stat: CpuStat,
+    pub info: Option<Rc<HashMap<String, String>>>,
 
     pub temperature: Option<f64>,
 }
@@ -104,6 +106,7 @@ impl Cpu {
                 softirq: 0,
                 steal: 0,
             },
+            info: None,
 
             temperature: None,
         };
@@ -171,6 +174,7 @@ impl Cpu {
         }
 
         self.rescan_stat(cache)?;
+        self.rescan_info(cache)?;
 
         Ok(())
     }
@@ -341,6 +345,57 @@ impl Cpu {
             .get(&self.number)
             .with_context(|| format!("failed to get stat of {self}"))?
             .clone();
+
+        Ok(())
+    }
+
+    fn rescan_info(&mut self, cache: &CpuRescanCache) -> anyhow::Result<()> {
+        // OnceCell::get_or_try_init is unstable. Cope:
+        let info = match cache.info.get() {
+            Some(stat) => stat,
+
+            None => {
+                let content = fs::read("/proc/cpuinfo")
+                    .context("failed to read CPU info")?
+                    .context("/proc/cpuinfo does not exist")?;
+
+                let mut info = HashMap::new();
+                let mut current_number = None;
+                let mut current_data = HashMap::new();
+
+                macro_rules! try_save_data {
+                    () => {
+                        if let Some(number) = current_number.take() {
+                            info.insert(number, Rc::new(mem::take(&mut current_data)));
+                        }
+                    };
+                }
+
+                for line in content.lines() {
+                    let parts = line.splitn(2, ':').collect::<Vec<_>>();
+
+                    if parts.len() == 2 {
+                        let key = parts[0].trim();
+                        let value = parts[1].trim();
+
+                        if key == "processor" {
+                            try_save_data!();
+
+                            current_number = value.parse::<u32>().ok();
+                        } else {
+                            current_data.insert(key.to_owned(), value.to_owned());
+                        }
+                    }
+                }
+
+                try_save_data!();
+
+                cache.info.set(info).unwrap();
+                cache.info.get().unwrap()
+            }
+        };
+
+        self.info = info.get(&self.number).cloned();
 
         Ok(())
     }

@@ -1,15 +1,3 @@
-use crate::config::AppConfig;
-use crate::core::{BatteryInfo, CpuCoreInfo, CpuGlobalInfo, SystemInfo, SystemLoad, SystemReport};
-use std::{
-    collections::HashMap,
-    fs,
-    path::{Path, PathBuf},
-    str::FromStr,
-    thread,
-    time::Duration,
-    time::SystemTime,
-};
-
 // Try /sys/devices/platform paths for thermal zones as a last resort
 // if temperature_celsius.is_none() {
 //     if let Ok(thermal_zones) = fs::read_dir("/sys/devices/virtual/thermal") {
@@ -34,22 +22,3 @@ use std::{
 //         }
 //     }
 // }
-
-pub fn get_cpu_model() -> anyhow::Result<String> {
-    let path = Path::new("/proc/cpuinfo");
-    let content = fs::read_to_string(path).map_err(|_| {
-        SysMonitorError::ReadError(format!("Cannot read contents of {}.", path.display()))
-    })?;
-
-    for line in content.lines() {
-        if line.starts_with("model name") {
-            if let Some(val) = line.split(':').nth(1) {
-                let cpu_model = val.trim().to_string();
-                return Ok(cpu_model);
-            }
-        }
-    }
-    Err(SysMonitorError::ParseError(
-        "Could not find CPU model name in /proc/cpuinfo.".to_string(),
-    ))
-}
