@@ -1,5 +1,5 @@
 [package]
-name = "superfreq"
+name = "watt"
 description = "Modern CPU frequency and power management utility for Linux"
 version = "0.3.2"
 edition = "2024"

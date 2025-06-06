@@ -32,26 +32,26 @@ pub fn load_config_from_path(specific_path: Option<&str>) -> Result<AppConfig, C
         )));
     }
 
-    // Check for SUPERFREQ_CONFIG environment variable
-    if let Ok(env_path) = std::env::var("SUPERFREQ_CONFIG") {
+    // Check for WATT_CONFIG environment variable
+    if let Ok(env_path) = std::env::var("WATT_CONFIG") {
         let env_path = Path::new(&env_path);
         if env_path.exists() {
             println!(
-                "Loading config from SUPERFREQ_CONFIG: {}",
+                "Loading config from WATT_CONFIG: {}",
                 env_path.display()
             );
             return load_and_parse_config(env_path);
         }
         eprintln!(
-            "Warning: Config file specified by SUPERFREQ_CONFIG not found: {}",
+            "Warning: Config file specified by WATT_CONFIG not found: {}",
             env_path.display()
         );
     }
 
     // System-wide paths
     let config_paths = vec![
-        PathBuf::from("/etc/xdg/superfreq/config.toml"),
-        PathBuf::from("/etc/superfreq.toml"),
+        PathBuf::from("/etc/xdg/watt/config.toml"),
+        PathBuf::from("/etc/watt.toml"),
     ];
 
     for path in config_paths {

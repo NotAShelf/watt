@@ -228,7 +228,7 @@ pub fn determine_and_apply_settings(
                     manage_auto_turbo(report, selected_profile_config, on_ac_power)?;
                 } else {
                     debug!(
-                        "Superfreq's dynamic turbo management is disabled by configuration. Ensuring system uses its default behavior for automatic turbo control."
+                        "Watt's dynamic turbo management is disabled by configuration. Ensuring system uses its default behavior for automatic turbo control."
                     );
                     // Make sure the system is set to its default automatic turbo mode.
                     // This is important if turbo was previously forced off.
