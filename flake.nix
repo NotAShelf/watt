@@ -14,16 +14,16 @@
       });
   in {
     overlays = {
-      superfreq = final: _: {
-        superfreq = final.callPackage ./nix/package.nix {};
+      watt = final: _: {
+        watt = final.callPackage ./nix/package.nix {};
       };
-      default = self.overlays.superfreq;
+      default = self.overlays.watt;
     };
 
     packages =
       nixpkgs.lib.mapAttrs (system: pkgs: {
-        inherit (pkgs) superfreq;
-        default = self.packages.${system}.superfreq;
+        inherit (pkgs) watt;
+        default = self.packages.${system}.watt;
       })
       pkgsForEach;
 
@@ -34,8 +34,8 @@
       pkgsForEach;
 
     nixosModules = {
-      superfreq = import ./nix/module.nix inputs;
-      default = self.nixosModules.superfreq;
+      watt = import ./nix/module.nix inputs;
+      default = self.nixosModules.watt;
     };
 
     formatter = forAllSystems (system: nixpkgs.legacyPackages.${system}.alejandra);

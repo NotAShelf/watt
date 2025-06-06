@@ -10,32 +10,32 @@ inputs: {
   inherit (lib.lists) optional;
   inherit (lib.meta) getExe;
 
-  cfg = config.services.superfreq;
+  cfg = config.services.watt;
 
   format = pkgs.formats.toml {};
-  cfgFile = format.generate "superfreq-config.toml" cfg.settings;
+  cfgFile = format.generate "watt-config.toml" cfg.settings;
 in {
-  options.services.superfreq = {
+  options.services.watt = {
     enable = mkEnableOption "Automatic CPU speed & power optimizer for Linux";
-    package = mkPackageOption inputs.self.packages.${pkgs.stdenv.system} "superfreq" {
+    package = mkPackageOption inputs.self.packages.${pkgs.stdenv.system} "watt" {
       pkgsText = "self.packages.\${pkgs.stdenv.system}";
     };
 
     settings = mkOption {
       default = {};
       type = submodule {freeformType = format.type;};
-      description = "Configuration for Superfreq.";
+      description = "Configuration for Watt.";
     };
   };
 
   config = mkIf cfg.enable {
     environment.systemPackages = [cfg.package];
 
-    # This is necessary for the Superfreq CLI. The environment variable
+    # This is necessary for the Watt CLI. The environment variable
     # passed to the systemd service will take priority in read order.
-    environment.etc."superfreq.toml".source = cfgFile;
+    environment.etc."watt.toml".source = cfgFile;
 
-    systemd.services.superfreq = {
+    systemd.services.watt = {
       wantedBy = ["multi-user.target"];
       conflicts = [
         "auto-cpufreq.service"
@@ -45,12 +45,12 @@ in {
         "thermald.service"
       ];
       serviceConfig = {
-        Environment = optional (cfg.settings != {}) ["SUPERFREQ_CONFIG=${cfgFile}"];
+        Environment = optional (cfg.settings != {}) ["WATT_CONFIG=${cfgFile}"];
         WorkingDirectory = "";
         ExecStart = "${getExe cfg.package} daemon --verbose";
         Restart = "on-failure";
 
-        RuntimeDirectory = "superfreq";
+        RuntimeDirectory = "watt";
         RuntimeDirectoryMode = "0755";
       };
     };
@@ -60,14 +60,14 @@ in {
         assertion = !config.services.power-profiles-daemon.enable;
         message = ''
           You have set services.power-profiles-daemon.enable = true;
-          which conflicts with Superfreq.
+          which conflicts with Watt.
         '';
       }
       {
         assertion = !config.services.auto-cpufreq.enable;
         message = ''
           You have set services.auto-cpufreq.enable = true;
-          which conflicts with Superfreq.
+          which conflicts with Watt.
         '';
       }
     ];
