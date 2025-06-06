@@ -110,7 +110,7 @@ struct CpuLog {
     /// CPU usage between 0-1, a percentage.
     usage: f64,
 
-    /// CPU temperature in celcius.
+    /// CPU temperature in celsius.
     temperature: f64,
 }
 
@@ -261,7 +261,7 @@ impl Daemon {
                     }
                 }
 
-                // If we can't deterine the discharge rate, that means that
+                // If we can't determine the discharge rate, that means that
                 // we were very recently started. Which is user activity.
                 None => {
                     interval *= 2;

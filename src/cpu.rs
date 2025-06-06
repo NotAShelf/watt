@@ -441,7 +441,7 @@ impl Cpu {
 
         if !epps.iter().any(|avail_epp| avail_epp == epp) {
             bail!(
-                "EPP value '{epp}' is not availabile for {self}. available EPP values: {epps}",
+                "EPP value '{epp}' is not available for {self}. available EPP values: {epps}",
                 epps = epps.join(", "),
             );
         }
