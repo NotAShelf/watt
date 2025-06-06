@@ -421,7 +421,7 @@ pub fn run_daemon(config: AppConfig, verbose: bool) -> Result<(), AppError> {
     // Update the log level filter if needed, without re-initializing the logger
     log::set_max_level(level_filter);
 
-    info!("Starting Watt daemon...");
+    info!("Starting superfreq daemon...");
 
     // Validate critical configuration values before proceeding
     if let Err(err) = validate_poll_intervals(
