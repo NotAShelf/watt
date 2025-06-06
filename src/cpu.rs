@@ -152,7 +152,7 @@ fn get_available_governors() -> Result<Vec<String>> {
     // First try the traditional path with cpu0. This is the most common case
     // and will usually catch early, but we should try to keep the code to handle
     // "edge" cases lightweight, for the (albeit smaller) number of users that
-    // run Superfreq on unusual systems.
+    // run Watt on unusual systems.
     let cpu0_path = "/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors";
     if Path::new(cpu0_path).exists() {
         let content = fs::read_to_string(cpu0_path).map_err(|e| {
@@ -546,12 +546,12 @@ pub fn get_platform_profiles() -> Result<Vec<String>> {
 }
 
 /// Path for storing the governor override state
-const GOVERNOR_OVERRIDE_PATH: &str = "/etc/xdg/superfreq/governor_override";
+const GOVERNOR_OVERRIDE_PATH: &str = "/etc/xdg/watt/governor_override";
 
 /// Force a specific CPU governor or reset to automatic mode
 pub fn force_governor(mode: GovernorOverrideMode) -> Result<()> {
     // Create directory if it doesn't exist
-    let dir_path = Path::new("/etc/xdg/superfreq");
+    let dir_path = Path::new("/etc/xdg/watt");
     if !dir_path.exists() {
         fs::create_dir_all(dir_path).map_err(|e| {
             if e.kind() == io::ErrorKind::PermissionDenied {
@@ -605,7 +605,7 @@ pub fn force_governor(mode: GovernorOverrideMode) -> Result<()> {
             println!(
                 "Governor override set to '{governor}'. This setting will persist across reboots."
             );
-            println!("To reset, use: superfreq force-governor reset");
+            println!("To reset, use: watt force-governor reset");
             Ok(())
         }
     }

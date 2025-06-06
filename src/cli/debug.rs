@@ -8,7 +8,7 @@ use std::time::Duration;
 
 /// Prints comprehensive debug information about the system
 pub fn run_debug(config: &AppConfig) -> Result<(), AppError> {
-    println!("=== SUPERFREQ DEBUG INFORMATION ===");
+    println!("=== WATT DEBUG INFORMATION ===");
     println!("Version: {}", env!("CARGO_PKG_VERSION"));
 
     // Current date and time
@@ -190,11 +190,11 @@ pub fn run_debug(config: &AppConfig) -> Result<(), AppError> {
 
             println!("\n--- DAEMON STATUS ---");
             // Simple check for daemon status - can be expanded later
-            let daemon_status = fs::metadata("/var/run/superfreq.pid").is_ok();
+            let daemon_status = fs::metadata("/var/run/watt.pid").is_ok();
             println!("Daemon Running: {daemon_status}");
 
             // Check for systemd service status
-            if let Ok(systemd_status) = is_systemd_service_active("superfreq") {
+            if let Ok(systemd_status) = is_systemd_service_active("watt") {
                 println!("Systemd Service Active: {systemd_status}");
             }
 

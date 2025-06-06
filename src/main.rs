@@ -413,7 +413,7 @@ fn main() -> Result<(), AppError> {
         Some(Commands::Daemon { verbose }) => daemon::run_daemon(config, verbose),
         Some(Commands::Debug) => cli::debug::run_debug(&config),
         None => {
-            info!("Welcome to superfreq! Use --help for commands.");
+            info!("Welcome to Watt! Use --help for commands.");
             debug!("Current effective configuration: {config:?}");
             Ok(())
         }

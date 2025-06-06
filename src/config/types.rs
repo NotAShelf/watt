@@ -1,4 +1,4 @@
-// Configuration types and structures for superfreq
+// Configuration types and structures for Watt
 use crate::core::TurboSetting;
 use serde::{Deserialize, Serialize};
 use std::convert::TryFrom;
