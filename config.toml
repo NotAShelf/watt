@@ -37,11 +37,11 @@ cpu.governor = "performance"
 cpu.energy-performance-preference = "performance"
 cpu.turbo = true
 
-# Performance mode when charging.
+# Performance mode when not discharging.
 [[rule]]
 priority = 70
 if.all = [
-  "?charging",
+  { not = "?discharging" },
   { value = "%cpu-usage", is-more-than = 0.1 },
   { value = "$cpu-temperature", is-less-than = 80.0 },
 ]

@@ -35,7 +35,7 @@ enum Command {
 
         /// The daemon config path.
         #[arg(long, env = "WATT_CONFIG")]
-        config: PathBuf,
+        config: Option<PathBuf>,
     },
 
     /// CPU metadata and modification utility.
@@ -86,8 +86,8 @@ fn real_main() -> anyhow::Result<()> {
 
     match cli.command {
         Command::Watt { config, .. } => {
-            let config =
-                config::DaemonConfig::load_from(&config).context("failed to load daemon config")?;
+            let config = config::DaemonConfig::load_from(config.as_deref())
+                .context("failed to load daemon config")?;
 
             daemon::run(config)
         }

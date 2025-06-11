@@ -471,13 +471,21 @@ pub struct DaemonConfig {
 }
 
 impl DaemonConfig {
-    pub fn load_from(path: &Path) -> anyhow::Result<Self> {
-        let contents = fs::read_to_string(path).with_context(|| {
-            format!("failed to read config from '{path}'", path = path.display())
-        })?;
+    pub fn load_from(path: Option<&Path>) -> anyhow::Result<Self> {
+        let contents = if let Some(path) = path {
+            &fs::read_to_string(path).with_context(|| {
+                format!("failed to read config from '{path}'", path = path.display())
+            })?
+        } else {
+            include_str!("../config.toml")
+        };
 
-        let mut config: Self = toml::from_str(&contents)
-            .with_context(|| format!("failed to parse file at '{path}'", path = path.display(),))?;
+        let mut config: Self = toml::from_str(contents).with_context(|| {
+            path.map_or(
+                "failed to parse builtin default config, this is a bug".to_owned(),
+                |p| format!("failed to parse file at '{path}'", path = p.display()),
+            )
+        })?;
 
         {
             let mut priorities = Vec::with_capacity(config.rules.len());
