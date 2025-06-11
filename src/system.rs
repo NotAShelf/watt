@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::Path};
+use std::{collections::HashMap, path::Path, time::Instant};
 
 use anyhow::{Context, bail};
 
@@ -39,19 +39,72 @@ impl System {
     }
 
     pub fn rescan(&mut self) -> anyhow::Result<()> {
-        self.cpus = cpu::Cpu::all().context("failed to scan CPUs")?;
+        log::debug!("rescanning view of system hardware...");
 
-        self.power_supplies =
-            power_supply::PowerSupply::all().context("failed to scan power supplies")?;
+        {
+            let start = Instant::now();
+            self.cpus = cpu::Cpu::all().context("failed to scan CPUs")?;
+            log::debug!(
+                "rescanned all CPUs in {millis}ms",
+                millis = start.elapsed().as_millis(),
+            );
+        }
+
+        {
+            let start = Instant::now();
+            self.power_supplies =
+                power_supply::PowerSupply::all().context("failed to scan power supplies")?;
+            log::debug!(
+                "rescanned all power supplies in {millis}ms",
+                millis = start.elapsed().as_millis(),
+            );
+        }
 
         self.is_ac = self
             .power_supplies
             .iter()
             .any(|power_supply| power_supply.is_ac())
-            || self.is_desktop()?;
+            || {
+                log::debug!(
+                    "checking whether if this device is a desktop to determine if it is AC as no power supplies are"
+                );
 
-        self.rescan_load_average()?;
-        self.rescan_temperatures()?;
+                let start = Instant::now();
+                let is_desktop = self.is_desktop()?;
+                log::debug!(
+                    "checked if is a desktop in {millis}ms",
+                    millis = start.elapsed().as_millis(),
+                );
+
+                log::debug!(
+                    "scan result: {elaborate}",
+                    elaborate = if is_desktop {
+                        "is a desktop, therefore is AC"
+                    } else {
+                        "not a desktop, and not AC"
+                    },
+                );
+
+                is_desktop
+            };
+
+        {
+            let start = Instant::now();
+            self.rescan_load_average()?;
+            log::debug!(
+                "rescanned load average in {millis}ms",
+                millis = start.elapsed().as_millis(),
+            );
+        }
+
+        {
+            let start = Instant::now();
+            self.rescan_temperatures()?;
+            log::debug!(
+                "rescanned temperatures in {millis}ms",
+                millis = start.elapsed().as_millis(),
+            );
+        }
 
         Ok(())
     }
@@ -109,8 +162,19 @@ impl System {
             let input_path = device_path.join(format!("temp{i}_input"));
 
             if !label_path.exists() || !input_path.exists() {
+                log::debug!(
+                    "{label_path} or {input_path} doesn't exist, skipping temp label",
+                    label_path = label_path.display(),
+                    input_path = input_path.display(),
+                );
                 continue;
             }
+
+            log::debug!(
+                "{label_path} or {input_path} exists, scanning temp label...",
+                label_path = label_path.display(),
+                input_path = input_path.display(),
+            );
 
             let Some(label) = fs::read(&label_path).with_context(|| {
                 format!(
@@ -121,6 +185,7 @@ impl System {
             else {
                 continue;
             };
+            log::debug!("label content: {number}");
 
             // Match various common label formats:
             // "Core X", "core X", "Core-X", "CPU Core X", etc.
@@ -139,9 +204,16 @@ impl System {
                 .trim_start_matches("-")
                 .trim();
 
+            log::debug!("stripped 'Core' or similar identifier prefix of label content: {number}");
+
             let Ok(number) = number.parse::<u32>() else {
+                log::debug!("stripped content not a valid number, skipping");
                 continue;
             };
+            log::debug!("stripped content is a valid number, taking it as the core number");
+            log::debug!(
+                "it is fine if this number doesn't seem accurate due to CPU binning, see a more detailed explanation at: https://rgbcu.be/blog/why-cores"
+            );
 
             let Some(temperature_mc) = fs::read_n::<i64>(&input_path).with_context(|| {
                 format!(
@@ -152,6 +224,10 @@ impl System {
             else {
                 continue;
             };
+            log::debug!(
+                "temperature content: {celcius} celcius",
+                celcius = temperature_mc as f64 / 1000.0
+            );
 
             temperatures.insert(number, temperature_mc as f64 / 1000.0);
         }
@@ -160,6 +236,7 @@ impl System {
     }
 
     fn is_desktop(&mut self) -> anyhow::Result<bool> {
+        log::debug!("checking chassis type to determine if we are a desktop");
         if let Some(chassis_type) =
             fs::read("/sys/class/dmi/id/chassis_type").context("failed to read chassis type")?
         {
@@ -170,16 +247,18 @@ impl System {
             match chassis_type.trim() {
                 // Desktop form factors.
                 "3" | "4" | "5" | "6" | "7" | "15" | "16" | "17" => {
+                    log::debug!("chassis is a desktop form factor, short circuting true");
                     return Ok(true);
                 }
 
                 // Laptop form factors.
                 "9" | "10" | "14" | "31" => {
+                    log::debug!("chassis is a laptop form factor, short circuting false");
                     return Ok(false);
                 }
 
                 // Unknown, continue with other checks
-                _ => {}
+                _ => log::debug!("unknown chassis type"),
             }
         }
 
@@ -190,21 +269,26 @@ impl System {
             "/proc/acpi/battery",
         ];
 
+        log::debug!("checking existence of ACPI paths");
         for path in laptop_acpi_paths {
             if fs::exists(path) {
+                log::debug!("path '{path}' exists, short circuting false");
                 return Ok(false); // Likely a laptop.
             }
         }
 
+        log::debug!("checking if power saving paths exists");
         // Check CPU power policies, desktops often don't have these
         let power_saving_exists = fs::exists("/sys/module/intel_pstate/parameters/no_hwp")
             || fs::exists("/sys/devices/system/cpu/cpufreq/conservative");
 
         if !power_saving_exists {
+            log::debug!("power saving paths do not exist, short circuting true");
             return Ok(true); // Likely a desktop.
         }
 
         // Default to assuming desktop if we can't determine.
+        log::debug!("cannot determine whether if we are a desktop, defaulting to true");
         Ok(true)
     }
 

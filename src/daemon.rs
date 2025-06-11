@@ -56,9 +56,9 @@ struct Daemon {
 
 impl Daemon {
     fn rescan(&mut self) -> anyhow::Result<()> {
-        log::debug!("rescanning daemon view of system hardware...");
-
         self.system.rescan()?;
+
+        log::debug!("appending daemon logs...");
 
         let at = Instant::now();
 
