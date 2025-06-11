@@ -471,13 +471,22 @@ pub struct DaemonConfig {
 }
 
 impl DaemonConfig {
+    const DEFAULT: &str = include_str!("../config.toml");
+
     pub fn load_from(path: Option<&Path>) -> anyhow::Result<Self> {
         let contents = if let Some(path) = path {
+            log::debug!("loading config from '{path}'", path = path.display());
+
             &fs::read_to_string(path).with_context(|| {
                 format!("failed to read config from '{path}'", path = path.display())
             })?
         } else {
-            include_str!("../config.toml")
+            log::debug!(
+                "loading default config from embedded toml:\n{config}",
+                config = Self::DEFAULT,
+            );
+
+            Self::DEFAULT
         };
 
         let mut config: Self = toml::from_str(contents).with_context(|| {
@@ -496,6 +505,15 @@ impl DaemonConfig {
                 }
 
                 priorities.push(rule.priority);
+            }
+        }
+
+        // This is just for debug traces.
+        if log::max_level() >= log::LevelFilter::Debug {
+            if config.rules.is_sorted_by_key(|rule| rule.priority) {
+                log::debug!("config rules are sorted by increasing priority, not doing anything");
+            } else {
+                log::debug!("config rules aren't sorted by priority, sorting");
             }
         }
 
