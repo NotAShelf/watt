@@ -36,6 +36,7 @@ fn idle_multiplier(idle_for: Duration) -> f64 {
     (1.0 + factor).clamp(1.0, 5.0)
 }
 
+#[derive(Debug)]
 struct Daemon {
     /// Last time when there was user activity.
     last_user_activity: Instant,
@@ -55,14 +56,19 @@ struct Daemon {
 
 impl Daemon {
     fn rescan(&mut self) -> anyhow::Result<()> {
+        log::debug!("rescanning daemon view of system hardware...");
+
         self.system.rescan()?;
 
-        while self.cpu_log.len() > 99 {
+        let at = Instant::now();
+
+        while self.cpu_log.len() > 100 {
+            log::debug!("daemon CPU log was too long, popping element");
             self.cpu_log.pop_front();
         }
 
-        self.cpu_log.push_back(CpuLog {
-            at: Instant::now(),
+        let cpu_log = CpuLog {
+            at,
 
             usage: self
                 .system
@@ -74,35 +80,40 @@ impl Daemon {
 
             temperature: self.system.cpu_temperatures.values().sum::<f64>()
                 / self.system.cpu_temperatures.len() as f64,
-        });
+        };
+        log::debug!("appending CPU log item: {cpu_log:?}");
+        self.cpu_log.push_back(cpu_log);
 
-        let at = Instant::now();
-
-        let (charge_sum, charge_nr) =
-            self.system
-                .power_supplies
-                .iter()
-                .fold((0.0, 0u32), |(sum, count), power_supply| {
-                    if let Some(charge_percent) = power_supply.charge_percent {
-                        (sum + charge_percent, count + 1)
-                    } else {
-                        (sum, count)
-                    }
-                });
-
-        while self.power_supply_log.len() > 99 {
+        while self.power_supply_log.len() > 100 {
+            log::debug!("daemon power supply log was too long, popping element");
             self.power_supply_log.pop_front();
         }
 
-        self.power_supply_log.push_back(PowerSupplyLog {
+        let power_supply_log = PowerSupplyLog {
             at,
-            charge: charge_sum / charge_nr as f64,
-        });
+            charge: {
+                let (charge_sum, charge_nr) = self.system.power_supplies.iter().fold(
+                    (0.0, 0u32),
+                    |(sum, count), power_supply| {
+                        if let Some(charge_percent) = power_supply.charge_percent {
+                            (sum + charge_percent, count + 1)
+                        } else {
+                            (sum, count)
+                        }
+                    },
+                );
+
+                charge_sum / charge_nr as f64
+            },
+        };
+        log::debug!("appending power supply log item: {power_supply_log:?}");
+        self.power_supply_log.push_back(power_supply_log);
 
         Ok(())
     }
 }
 
+#[derive(Debug)]
 struct CpuLog {
     at: Instant,
 
@@ -113,6 +124,7 @@ struct CpuLog {
     temperature: f64,
 }
 
+#[derive(Debug)]
 struct CpuVolatility {
     usage: f64,
 
@@ -184,6 +196,7 @@ impl Daemon {
     }
 }
 
+#[derive(Debug)]
 struct PowerSupplyLog {
     at: Instant,
 

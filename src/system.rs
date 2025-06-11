@@ -4,6 +4,7 @@ use anyhow::{Context, bail};
 
 use crate::{cpu, fs, power_supply};
 
+#[derive(Debug)]
 pub struct System {
     pub is_ac: bool,
 
