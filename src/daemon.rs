@@ -1,7 +1,6 @@
 use std::{
     cell::LazyCell,
     collections::{HashMap, VecDeque},
-    ops::Deref,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -33,7 +32,7 @@ fn idle_multiplier(idle_for: Duration) -> f64 {
         }
     };
 
-    // Clamp the multiplier to avoid excessive intervals.
+    // Clamp the multiplier to avoid excessive delays.
     (1.0 + factor).clamp(1.0, 5.0)
 }
 
@@ -41,8 +40,8 @@ struct Daemon {
     /// Last time when there was user activity.
     last_user_activity: Instant,
 
-    /// The last computed polling interval.
-    last_polling_interval: Option<Duration>,
+    /// The last computed polling delay.
+    last_polling_delay: Option<Duration>,
 
     /// The system state.
     system: system::System,
@@ -243,28 +242,28 @@ impl Daemon {
 }
 
 impl Daemon {
-    fn polling_interval(&mut self) -> Duration {
-        let mut interval = Duration::from_secs(5);
+    fn polling_delay(&mut self) -> Duration {
+        let mut delay = Duration::from_secs(5);
 
         // We are on battery, so we must be more conservative with our polling.
         if self.discharging() {
             match self.power_supply_discharge_rate() {
                 Some(discharge_rate) => {
                     if discharge_rate > 0.2 {
-                        interval *= 3;
+                        delay *= 3;
                     } else if discharge_rate > 0.1 {
-                        interval *= 2;
+                        delay *= 2;
                     } else {
                         // *= 1.5;
-                        interval /= 2;
-                        interval *= 3;
+                        delay /= 2;
+                        delay *= 3;
                     }
                 }
 
                 // If we can't determine the discharge rate, that means that
                 // we were very recently started. Which is user activity.
                 None => {
-                    interval *= 2;
+                    delay *= 2;
                 }
             }
         }
@@ -281,30 +280,30 @@ impl Daemon {
                     minutes = idle_for.as_secs() / 60,
                 );
 
-                interval = Duration::from_secs_f64(interval.as_secs_f64() * factor);
+                delay = Duration::from_secs_f64(delay.as_secs_f64() * factor);
             }
         }
 
         if let Some(volatility) = self.cpu_volatility() {
             if volatility.usage > 0.1 || volatility.temperature > 0.02 {
-                interval = (interval / 2).max(Duration::from_secs(1));
+                delay = (delay / 2).max(Duration::from_secs(1));
             }
         }
 
-        let interval = match self.last_polling_interval {
-            Some(last_interval) => Duration::from_secs_f64(
-                // 30% of current computed interval, 70% of last interval.
-                interval.as_secs_f64() * 0.3 + last_interval.as_secs_f64() * 0.7,
+        let delay = match self.last_polling_delay {
+            Some(last_delay) => Duration::from_secs_f64(
+                // 30% of current computed delay, 70% of last delay.
+                delay.as_secs_f64() * 0.3 + last_delay.as_secs_f64() * 0.7,
             ),
 
-            None => interval,
+            None => delay,
         };
 
-        let interval = Duration::from_secs_f64(interval.as_secs_f64().clamp(1.0, 30.0));
+        let delay = Duration::from_secs_f64(delay.as_secs_f64().clamp(1.0, 30.0));
 
-        self.last_polling_interval = Some(interval);
+        self.last_polling_delay = Some(delay);
 
-        interval
+        delay
     }
 }
 
@@ -315,17 +314,18 @@ pub fn run(config: config::DaemonConfig) -> anyhow::Result<()> {
 
     let cancelled = Arc::new(AtomicBool::new(false));
 
+    log::debug!("setting ctrl-c handler...");
     let cancelled_ = Arc::clone(&cancelled);
     ctrlc::set_handler(move || {
         log::info!("received shutdown signal");
         cancelled_.store(true, Ordering::SeqCst);
     })
-    .context("failed to set Ctrl-C handler")?;
+    .context("failed to set ctrl-c handler")?;
 
     let mut daemon = Daemon {
         last_user_activity: Instant::now(),
 
-        last_polling_interval: None,
+        last_polling_delay: None,
 
         system: system::System::new()?,
 
@@ -336,7 +336,16 @@ pub fn run(config: config::DaemonConfig) -> anyhow::Result<()> {
     while !cancelled.load(Ordering::SeqCst) {
         daemon.rescan()?;
 
-        let sleep_until = Instant::now() + daemon.polling_interval();
+        let delay = daemon.polling_delay();
+        log::info!(
+            "next poll will be in {seconds} seconds or {minutes} minutes, possibly delayed if application of rules takes more than the polling delay",
+            seconds = delay.as_secs_f64(),
+            minutes = delay.as_secs_f64() / 60.0,
+        );
+
+        log::debug!("filtering rules and applying them...");
+
+        let start = Instant::now();
 
         let state = config::EvalState {
             cpu_usage: daemon.cpu_log.back().unwrap().usage,
@@ -399,12 +408,17 @@ pub fn run(config: config::DaemonConfig) -> anyhow::Result<()> {
             delta.apply()?;
         }
 
-        if let Some(delay) = sleep_until.checked_duration_since(Instant::now()) {
-            thread::sleep(delay);
-        }
+        let elapsed = start.elapsed();
+        log::info!(
+            "filtered and applied rules in {seconds} seconds or {minutes} minutes",
+            seconds = elapsed.as_secs_f64(),
+            minutes = elapsed.as_secs_f64() / 60.0,
+        );
+
+        thread::sleep(delay.saturating_sub(elapsed));
     }
 
-    log::info!("exiting...");
+    log::info!("stopping polling loop and thus daemon...");
 
     Ok(())
 }
