@@ -115,7 +115,7 @@ impl System {
         let mut temperatures = HashMap::new();
 
         for entry in fs::read_dir(PATH)
-            .with_context(|| format!("failed to read hardware information from '{PATH}'"))?
+            .context("failed to read hardware information")?
             .with_context(|| format!("'{PATH}' doesn't exist, are you on linux?"))?
         {
             let entry = entry.with_context(|| format!("failed to read entry of '{PATH}'"))?;
@@ -144,6 +144,64 @@ impl System {
                 }
 
                 _ => {}
+            }
+        }
+
+        if temperatures.is_empty() {
+            const PATH: &str = "/sys/devices/virtual/thermal";
+
+            log::debug!(
+                "failed to get CPU temperature information by using hwmon, falling back to '{PATH}'"
+            );
+
+            let Some(thermal_zones) =
+                fs::read_dir(PATH).context("failed to read thermal information")?
+            else {
+                return Ok(());
+            };
+
+            for entry in thermal_zones {
+                let entry = entry.with_context(|| format!("failed to read entry of '{PATH}'"))?;
+
+                let entry_path = entry.path();
+
+                let entry_name = entry.file_name();
+                let entry_name = entry_name.to_string_lossy();
+
+                if !entry_name.starts_with("thermal_zone") {
+                    return Ok(());
+                }
+
+                let Some(entry_type) = fs::read(entry_path.join("type")).with_context(|| {
+                    format!(
+                        "failed to read type of zone at '{path}'",
+                        path = entry_path.display(),
+                    )
+                })?
+                else {
+                    return Ok(());
+                };
+
+                if !entry_type.contains("cpu")
+                    && !entry_type.contains("x86")
+                    && !entry_type.contains("core")
+                {
+                    return Ok(());
+                }
+
+                let Some(temperature_mc) = fs::read_n::<i64>(entry_path.join("temp"))
+                    .with_context(|| {
+                        format!(
+                            "failed to read temperature of zone at '{path}'",
+                            path = entry_path.display(),
+                        )
+                    })?
+                else {
+                    return Ok(());
+                };
+
+                // Magic value to see that it is from the thermal zones.
+                temperatures.insert(777, temperature_mc as f64 / 1000.0);
             }
         }
 
@@ -185,7 +243,7 @@ impl System {
             else {
                 continue;
             };
-            log::debug!("label content: {number}");
+            log::debug!("label content: {label}");
 
             // Match various common label formats:
             // "Core X", "core X", "Core-X", "CPU Core X", etc.

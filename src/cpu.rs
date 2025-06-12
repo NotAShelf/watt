@@ -123,7 +123,7 @@ impl Cpu {
         let cache = CpuRescanCache::default();
 
         for entry in fs::read_dir(PATH)
-            .with_context(|| format!("failed to read CPU entries from '{PATH}'"))?
+            .context("failed to read CPU entries")?
             .with_context(|| format!("'{PATH}' doesn't exist, are you on linux?"))?
         {
             let entry = entry.with_context(|| format!("failed to read entry of '{PATH}'"))?;
