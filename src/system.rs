@@ -160,6 +160,8 @@ impl System {
                 return Ok(());
             };
 
+            let mut counter = 0;
+
             for entry in thermal_zones {
                 let entry = entry.with_context(|| format!("failed to read entry of '{PATH}'"))?;
 
@@ -169,7 +171,7 @@ impl System {
                 let entry_name = entry_name.to_string_lossy();
 
                 if !entry_name.starts_with("thermal_zone") {
-                    return Ok(());
+                    continue;
                 }
 
                 let Some(entry_type) = fs::read(entry_path.join("type")).with_context(|| {
@@ -179,14 +181,14 @@ impl System {
                     )
                 })?
                 else {
-                    return Ok(());
+                    continue;
                 };
 
                 if !entry_type.contains("cpu")
                     && !entry_type.contains("x86")
                     && !entry_type.contains("core")
                 {
-                    return Ok(());
+                    continue;
                 }
 
                 let Some(temperature_mc) = fs::read_n::<i64>(entry_path.join("temp"))
@@ -197,11 +199,12 @@ impl System {
                         )
                     })?
                 else {
-                    return Ok(());
+                    continue;
                 };
 
                 // Magic value to see that it is from the thermal zones.
-                temperatures.insert(777, temperature_mc as f64 / 1000.0);
+                temperatures.insert(777 + counter, temperature_mc as f64 / 1000.0);
+                counter += 1;
             }
         }
 
