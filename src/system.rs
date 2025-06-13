@@ -320,7 +320,7 @@ impl System {
   }
 
   fn is_desktop(&mut self) -> anyhow::Result<bool> {
-    log::debug!("checking chassis type to determine if we are a desktop");
+    log::debug!("checking chassis type to determine if system is a desktop");
     if let Some(chassis_type) = fs::read("/sys/class/dmi/id/chassis_type")
       .context("failed to read chassis type")?
     {
