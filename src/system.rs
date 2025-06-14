@@ -295,8 +295,8 @@ impl System {
         "stripped content is a valid number, taking it as the core number"
       );
       log::debug!(
-                "it is fine if this number doesn't seem accurate due to CPU binning, see a more detailed explanation at: https://rgbcu.be/blog/why-cores"
-            );
+        "it is fine if this number doesn't seem accurate due to CPU binning, see a more detailed explanation at: https://rgbcu.be/blog/why-cores"
+      );
 
       let Some(temperature_mc) =
         fs::read_n::<i64>(&input_path).with_context(|| {

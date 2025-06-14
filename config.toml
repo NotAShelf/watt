@@ -5,28 +5,27 @@
 
 # Emergency thermal protection (highest priority).
 [[rule]]
+if       = { value = "$cpu-temperature", is-more-than = 85.0 }
+priority = 100
+
 cpu.energy-performance-preference = "power"
 cpu.frequency-mhz-maximum         = 2000
 cpu.governor                      = "powersave"
 cpu.turbo                         = false
-if                                = { value = "$cpu-temperature", is-more-than = 85.0 }
-priority                          = 100
 
 # Critical battery preservation.
 [[rule]]
+if.all   = [ "?discharging", { value = "%power-supply-charge", is-less-than = 0.3 } ]
+priority = 90
+
 cpu.energy-performance-preference = "power"
-cpu.frequency-mhz-maximum         = 800                                                                        # More aggressive below critical threshold.
+cpu.frequency-mhz-maximum         = 800         # More aggressive below critical threshold.
 cpu.governor                      = "powersave"
 cpu.turbo                         = false
-if.all                            = [ "?discharging", { value = "%power-supply-charge", is-less-than = 0.3 } ]
 power.platform-profile            = "low-power"
-priority                          = 90
 
 # High performance mode for sustained high load.
 [[rule]]
-cpu.energy-performance-preference = "performance"
-cpu.governor = "performance"
-cpu.turbo = true
 if.all = [
   { value = "%cpu-usage", is-more-than = 0.8 },
   { value = "$cpu-idle-seconds", is-less-than = 30.0 },
@@ -34,12 +33,12 @@ if.all = [
 ]
 priority = 80
 
+cpu.energy-performance-preference = "performance"
+cpu.governor                      = "performance"
+cpu.turbo                         = true
+
 # Performance mode when not discharging.
 [[rule]]
-cpu.energy-performance-bias = "balance_performance"
-cpu.energy-performance-preference = "performance"
-cpu.governor = "performance"
-cpu.turbo = true
 if.all = [
   { not = "?discharging" },
   { value = "%cpu-usage", is-more-than = 0.1 },
@@ -47,56 +46,66 @@ if.all = [
 ]
 priority = 70
 
+cpu.energy-performance-bias       = "balance_performance"
+cpu.energy-performance-preference = "performance"
+cpu.governor                      = "performance"
+cpu.turbo                         = true
+
 # Moderate performance for medium load.
 [[rule]]
-cpu.energy-performance-preference = "balance_performance"
-cpu.governor = "schedutil"
 if.all = [
   { value = "%cpu-usage", is-more-than = 0.4 },
   { value = "%cpu-usage", is-less-than = 0.8 },
 ]
 priority = 60
 
+cpu.energy-performance-preference = "balance_performance"
+cpu.governor                      = "schedutil"
+
 # Power saving during low activity.
 [[rule]]
-cpu.energy-performance-preference = "power"
-cpu.governor = "powersave"
-cpu.turbo = false
 if.all = [
   { value = "%cpu-usage", is-less-than = 0.2 },
   { value = "$cpu-idle-seconds", is-more-than = 60.0 },
 ]
 priority = 50
 
+cpu.energy-performance-preference = "power"
+cpu.governor                      = "powersave"
+cpu.turbo                         = false
+
 # Extended idle power optimization.
 [[rule]]
+if       = { value = "$cpu-idle-seconds", is-more-than = 300.0 }
+priority = 40
+
 cpu.energy-performance-preference = "power"
 cpu.frequency-mhz-maximum         = 1600
 cpu.governor                      = "powersave"
 cpu.turbo                         = false
-if                                = { value = "$cpu-idle-seconds", is-more-than = 300.0 }
-priority                          = 40
 
 # Battery conservation when discharging.
 [[rule]]
+if.all   = [ "?discharging", { value = "%power-supply-charge", is-less-than = 0.5 } ]
+priority = 30
+
 cpu.energy-performance-preference = "power"
 cpu.frequency-mhz-maximum         = 2000
 cpu.governor                      = "powersave"
 cpu.turbo                         = false
-if.all                            = [ "?discharging", { value = "%power-supply-charge", is-less-than = 0.5 } ]
 power.platform-profile            = "low-power"
-priority                          = 30
 
 # General battery mode.
 [[rule]]
+if       = "?discharging"
+priority = 20
+
 cpu.energy-performance-bias       = "balance_power"
 cpu.energy-performance-preference = "power"
 cpu.frequency-mhz-maximum         = 1800
 cpu.frequency-mhz-minimum         = 200
 cpu.governor                      = "powersave"
 cpu.turbo                         = false
-if                                = "?discharging"
-priority                          = 20
 
 # Balanced performance for general use. Default fallback rule.
 [[rule]]

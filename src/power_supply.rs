@@ -227,10 +227,13 @@ impl PowerSupply {
         }
       }
       // Check for model name that indicates a peripheral
-      if let Some(model) = fs::read(self.path.join("model_name"))
+      if let Some(model_name) = fs::read(self.path.join("model_name"))
         .with_context(|| format!("failed to read the model name of {self}"))?
       {
-        if model.contains("bluetooth") || model.contains("wireless") {
+        let model_name_lower = model_name.to_lowercase();
+        if model_name_lower.contains("bluetooth")
+          || model_name_lower.contains("wireless")
+        {
           break 'is_from_peripheral true;
         }
       }
