@@ -1,5 +1,3 @@
-# Taken from https://github.com/cull-os/carcass.
-
 [formatting]
 align_entries         = true
 column_width          = 100
