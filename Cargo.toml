@@ -1,12 +1,17 @@
-[package]
-name         = "watt"
-description  = "Modern CPU frequency and power management utility for Linux"
-version      = "0.4.0"
-edition      = "2024"
-authors      = [ "NotAShelf <raf@notashelf.dev>", "RGBCube <git@rgbcu.be>" ]
-rust-version = "1.85"
+[workspace]
+members  = [ "watt" ]
+resolver = "3"
 
-[dependencies]
+[workspace.package]
+authors      = [ "NotAShelf <raf@notashelf.dev>", "RGBCube <git@rgbcu.be>" ]
+description  = "Modern CPU frequency and power management utility for Linux"
+edition      = "2024"                                                        # Keep in sync with .rustfmt.toml.
+license      = "MPL-2.0"
+repository   = "https://github.com/notashelf/watt"
+rust-version = "1.85"
+version      = "0.4.0"
+
+[workspace.dependencies]
 anyhow              = "1.0"
 clap                = { version = "4.0", features = [ "derive", "env" ] }
 clap-verbosity-flag = "3.0.2"

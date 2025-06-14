@@ -523,7 +523,7 @@ pub struct DaemonConfig {
 }
 
 impl DaemonConfig {
-  const DEFAULT: &str = include_str!("../config.toml");
+  const DEFAULT: &str = include_str!("config.toml");
 
   pub fn load_from(path: Option<&Path>) -> anyhow::Result<Self> {
     let contents = if let Some(path) = path {
