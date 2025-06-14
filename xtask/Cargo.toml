@@ -1,0 +1,19 @@
+[package]
+name                   = "xtask"
+description.workspace  = true
+version.workspace      = true
+edition.workspace      = true
+authors.workspace      = true
+rust-version.workspace = true
+publish                = false
+
+[[bin]]
+name = "xtask"
+path = "main.rs"
+
+[dependencies]
+watt.path = "../watt"
+
+clap.workspace                  = true
+clap_complete.workspace         = true
+clap_complete_nushell.workspace = true

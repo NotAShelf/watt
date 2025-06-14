@@ -27,9 +27,8 @@ pub enum Command {
     #[command(flatten)]
     verbosity: clap_verbosity_flag::Verbosity,
 
-    /// The daemon config path.
-    #[arg(long, env = "WATT_CONFIG")]
-    config: Option<PathBuf>,
+    #[clap(flatten)]
+    command: WattCommand,
   },
 
   /// CPU metadata and modification utility.
@@ -49,6 +48,13 @@ pub enum Command {
     #[clap(subcommand)]
     command: PowerCommand,
   },
+}
+
+#[derive(clap::Parser, Debug)]
+pub struct WattCommand {
+  /// The daemon config path.
+  #[arg(long, env = "WATT_CONFIG")]
+  config: Option<PathBuf>,
 }
 
 #[derive(clap::Parser, Debug)]
@@ -79,7 +85,10 @@ pub fn main() -> anyhow::Result<()> {
     .init();
 
   match cli.command {
-    Command::Watt { config, .. } => {
+    Command::Watt {
+      command: WattCommand { config },
+      ..
+    } => {
       let config = config::DaemonConfig::load_from(config.as_deref())
         .context("failed to load daemon config")?;
 
