@@ -1,18 +1,18 @@
 {
   mkShell,
-  rust-analyzer-unwrapped,
-  rustfmt,
-  clippy,
   cargo,
   rustc,
+  rustfmt,
+  clippy,
+  rust-analyzer-unwrapped,
   rustPlatform,
 }:
 mkShell {
   packages = [
     cargo
-    clippy
     rustc
-    rustfmt
+    clippy # lints
+    (rustfmt.override {asNightly = true;})
     rust-analyzer-unwrapped
   ];
 
