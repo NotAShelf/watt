@@ -41,7 +41,7 @@ pub fn read(path: impl AsRef<Path>) -> anyhow::Result<Option<String>> {
 
     Err(error) => {
       Err(error)
-        .context(format!("failed to read '{path}", path = path.display()))
+        .context(format!("failed to read '{path}'", path = path.display()))
     },
   }
 }
