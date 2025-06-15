@@ -1,6 +1,23 @@
+<!-- markdownlint-disable MD033-->
+
 <h1 id="header" align="center">
-  Watt
+    <pre>Watt</pre>
 </h1>
+
+<div align="center">
+    <a alt="CI" href="https://github.com/NotAShelf/watt/actions">
+        <img
+          src="https://github.com/NotAShelf/watt/actions/workflows/build.yml/badge.svg"
+          alt="Build Status"
+        />
+    </a>
+    <a alt="Docs" href="https://notashelf.github.io/watt/watt/index.html">
+        <img
+          src="https://github.com/NotAShelf/watt/actions/workflows/docs.yml/badge.svg"
+          alt="Documentation Status"
+        />
+    </a>
+</div>
 
 <div align="center">
   Modern, transparent and intelligent utility for CPU management on Linux.
@@ -16,14 +33,22 @@
 
 ## What is Watt
 
-Watt is a modern CPU frequency and power management utility for Linux systems.
-It provides intelligent control of CPU governors, frequencies, and power-saving
-features, helping optimize both performance and battery life.
+Watt is a modern, low-overhead CPU frequency and power management utility for
+Linux systems. It provides intelligent control of your CPU, governors,
+frequencies and power-saving features to help optimize performance and battery
+life overall.
 
 It is greatly inspired by auto-cpufreq, but rewritten from ground up to provide
 a smoother experience with a more efficient and more correct codebase. Some
 features are omitted, and it is _not_ a drop-in replacement for auto-cpufreq,
 but most common usecases are already implemented.
+
+Watt is written in Rust, because "languages such as JS and Python should never
+be used for system level daemons" [^1] Overhead is little to none, and
+performance is as high as it can be, which should be a standard for all system
+daemons.
+
+[^1]: [Wise words](https://github.com/flukejones/asusctl)
 
 ## Features
 
@@ -47,77 +72,64 @@ but most common usecases are already implemented.
 ### Basic Commands
 
 ```bash
-# Show current system information
-watt info
-
-# Run as a daemon in the background
-sudo watt daemon
+# Run as a daemon in the background with default configuration
+sudo watt
 
 # Run with verbose logging
-sudo watt daemon --verbose
+sudo watt --verbose # or --quiet for decreased verbosity
 
-# Display comprehensive debug information
-watt debug
+# Run with a custom configuration file
+sudo watt --config /path/to/config.toml
 ```
 
-### CPU Governor Control
+### CPU Management
+
+Watt operates primarily as a daemon that automatically manages CPU and power
+settings based on the configuration rules. For manual CPU management, you can
+use the `cpu` command (requires the `cpu` binary to be available):
 
 ```bash
 # Set CPU governor for all cores
-sudo watt set-governor performance
+sudo cpu set --governor performance
 
-# Set CPU governor for a specific core
-sudo watt set-governor powersave --core-id 0
+# Set CPU governor for specific cores
+sudo cpu set --governor powersave --for 0,1,2
 
-# Force a specific governor mode persistently
-sudo watt force-governor performance
-```
-
-### Turbo Boost Management
-
-```bash
-# Always enable turbo boost
-sudo watt set-turbo always
-
-# Disable turbo boost
-sudo watt set-turbo never
-
-# Let Watt manage turbo boost based on conditions
-sudo watt set-turbo auto
-```
-
-### Power and Performance Settings
-
-```bash
 # Set Energy Performance Preference (EPP)
-sudo watt set-epp performance
+sudo cpu set --energy-performance-preference performance
 
 # Set Energy Performance Bias (EPB)
-sudo watt set-epb 4
+sudo cpu set --energy-performance-bias balance_performance
 
-# Set ACPI platform profile
-sudo watt set-platform-profile balanced
+# Set frequency limits
+sudo cpu set --frequency-mhz-minimum 800 --frequency-mhz-maximum 3000
+
+# Enable/disable turbo boost
+sudo cpu set --turbo true
+sudo cpu set --turbo false
+
+# Apply multiple settings at once
+sudo cpu set --governor schedutil --energy-performance-preference balance_performance --turbo true
 ```
 
-### Frequency Control
+> [!NOTE]
+> The `cpu` and `power` commands require the watt binary to be installed and
+> available as symlinks or copies with those names. Package managers typically
+> handle this setup automatically.
 
-```bash
-# Set minimum CPU frequency (in MHz)
-sudo watt set-min-freq 800
+### Power Management
 
-# Set maximum CPU frequency (in MHz)
-sudo watt set-max-freq 3000
-
-# Set per-core frequency limits
-sudo watt set-min-freq 1200 --core-id 0
-sudo watt set-max-freq 2800 --core-id 1
-```
-
-### Battery Management
+For manual power management, you can use the `power` command:
 
 ```bash
 # Set battery charging thresholds to extend battery lifespan
-sudo watt set-battery-thresholds 40 80  # Start charging at 40%, stop at 80%
+sudo power set --charge-threshold-start 40 --charge-threshold-end 80
+
+# Set ACPI platform profile
+sudo power set --platform-profile low-power
+
+# Apply power settings to specific power supplies
+sudo power set --for BAT0 --charge-threshold-start 30 --charge-threshold-end 70
 ```
 
 Battery charging thresholds help extend battery longevity by preventing constant
@@ -129,173 +141,258 @@ but Watt attempts to support multiple vendor implementations including:
 - Huawei laptops
 - Other devices using the standard Linux power_supply API
 
-Note that battery management is sensitive, and that your mileage may vary.
-Please open an issue if your vendor is not supported, but patches would help
-more than issue reports, as supporting hardware _needs_ hardware.
+> [!NOTE]
+> Battery management is sensitive, and your mileage may vary. Please open an
+> issue if your vendor is not supported, but patches would help more than issue
+> reports, as supporting hardware _needs_ hardware.
+
+### Advanced Configuration Examples
+
+#### Complex Condition Logic
+
+```toml
+# High performance for sustained workloads with thermal protection
+[[rule]]
+if.all = [
+  { value = "%cpu-usage", is-more-than = 0.8 },
+  { value = "$cpu-idle-seconds", is-less-than = 30.0 },
+  { value = "$cpu-temperature", is-less-than = 75.0 },
+]
+priority = 80
+
+cpu.governor = "performance"
+cpu.energy-performance-preference = "performance"
+cpu.turbo = true
+```
+
+#### Battery Conservation with Multiple Thresholds
+
+```toml
+# Critical battery preservation
+[[rule]]
+if.all = [
+  "?discharging",
+  { value = "%power-supply-charge", is-less-than = 0.3 }
+]
+priority = 90
+
+cpu.governor = "powersave"
+cpu.energy-performance-preference = "power"
+cpu.frequency-mhz-maximum = 800
+cpu.turbo = false
+power.platform-profile = "low-power"
+
+# Moderate battery conservation
+[[rule]]
+if.all = [
+  "?discharging",
+  { value = "%power-supply-charge", is-less-than = 0.5 }
+]
+priority = 30
+
+cpu.governor = "powersave"
+cpu.frequency-mhz-maximum = 2000
+cpu.turbo = false
+```
+
+#### Using Arithmetic Expressions
+
+```toml
+# Adaptive frequency scaling based on temperature
+[[rule]]
+if = {
+  value = { value = "$cpu-temperature", minus = 50.0 },
+  is-more-than = 10.0
+}
+priority = 60
+
+cpu.frequency-mhz-maximum = 2400
+cpu.governor = "schedutil"
+```
 
 ## Configuration
 
-Watt uses TOML configuration files. Default locations:
+Watt uses a rule-based TOML configuration system that allows you to define
+intelligent power management policies. The daemon evaluates rules by priority
+and applies the first matching rule's settings.
 
-- `/etc/xdg/watt/config.toml`
-- `/etc/watt.toml`
+### Configuration Locations
 
-You can also specify a custom path by setting the `WATT_CONFIG` environment
-variable.
+Default configuration locations (in order of precedence):
 
-### Sample Configuration
+- Custom path via `WATT_CONFIG` environment variable
+- Built-in default configuration (if no custom path is specified)
+
+If no configuration file is found, Watt uses a built-in default configuration.
+
+### Rule-Based Configuration
+
+Rules are the core of Watt's configuration system. Each rule can specify:
+
+- **Conditions**: When the rule should apply (using the expression DSL)
+- **Priority**: Higher numbers take precedence (0-255)
+- **Actions**: CPU and power management settings to apply
+
+### Expression DSL
+
+Watt includes a powerful expression language for defining conditions:
+
+#### System Variables
+
+- `%cpu-usage` - Current CPU usage percentage (0.0-1.0)
+- `$cpu-usage-volatility` - CPU usage volatility measurement
+- `$cpu-temperature` - CPU temperature in Celsius
+- `$cpu-temperature-volatility` - CPU temperature volatility
+- `$cpu-idle-seconds` - Seconds since last significant CPU activity
+- `%power-supply-charge` - Battery charge percentage (0.0-1.0)
+- `%power-supply-discharge-rate` - Current discharge rate
+- `?discharging` - Boolean indicating if system is on battery power
+
+#### Operators
+
+- **Comparison**: `is-less-than`, `is-more-than`, `is-equal` (with `leeway`
+  parameter)
+- **Logical**: `and`, `or`, `not`, `all`, `any`
+- **Arithmetic**: `plus`, `minus`, `multiply`, `divide`, `power`
+
+#### Basic Configuration Example
 
 ```toml
-# Settings for when connected to a power source
-[charger]
-# CPU governor to use
-governor = "performance"
-# Turbo boost setting: "always", "auto", or "never"
-turbo = "auto"
-# Enable or disable automatic turbo management (when turbo = "auto")
-enable_auto_turbo = true
-# Custom thresholds for auto turbo management
-turbo_auto_settings = {
-    load_threshold_high = 70.0,
-    load_threshold_low = 30.0,
-    temp_threshold_high = 75.0,
-    initial_turbo_state = false,  # whether turbo should be initially enabled (false = disabled)
-}
-# Energy Performance Preference
-epp = "performance"
-# Energy Performance Bias (0-15 scale or named value)
-epb = "balance_performance"
-# Platform profile (if supported)
-platform_profile = "performance"
-# Min/max frequency in MHz (optional)
-min_freq_mhz = 800
-max_freq_mhz = 3500
-# Optional: Profile-specific battery charge thresholds (overrides global setting)
-# battery_charge_thresholds = [40, 80]  # Start at 40%, stop at 80%
+# Emergency thermal protection (highest priority)
+[[rule]]
+if = { value = "$cpu-temperature", is-more-than = 85.0 }
+priority = 100
 
-# Settings for when on battery power
-[battery]
-governor = "powersave"
-turbo = "auto"
-# More conservative auto turbo settings on battery
-enable_auto_turbo = true
-turbo_auto_settings = {
-    load_threshold_high = 80.0,
-    load_threshold_low = 40.0,
-    temp_threshold_high = 70.0,
-    initial_turbo_state = false,  # start with turbo disabled on battery for power savings
-}
-epp = "power"
-epb = "balance_power"
-platform_profile = "low-power"
-min_freq_mhz = 800
-max_freq_mhz = 2500
-# Optional: Profile-specific battery charge thresholds (overrides global setting)
-# battery_charge_thresholds = [60, 80]  # Start at 60%, stop at 80% (more conservative)
+cpu.energy-performance-preference = "power"
+cpu.frequency-mhz-maximum = 2000
+cpu.governor = "powersave"
+cpu.turbo = false
 
-# Global battery charging thresholds (applied to both profiles unless overridden)
-# Start charging at 40%, stop at 80% - extends battery lifespan
-# NOTE: Profile-specific thresholds (in [charger] or [battery] sections)
-# take precedence over this global setting
-battery_charge_thresholds = [40, 80]
+# Critical battery preservation
+[[rule]]
+if.all = [ "?discharging", { value = "%power-supply-charge", is-less-than = 0.3 } ]
+priority = 90
 
-# Daemon configuration
-[daemon]
-# Base polling interval in seconds
-poll_interval_sec = 5
-# Enable adaptive polling that changes with system state
-adaptive_interval = true
-# Minimum polling interval for adaptive polling (seconds)
-min_poll_interval_sec = 1
-# Maximum polling interval for adaptive polling (seconds)
-max_poll_interval_sec = 30
-# Double the polling interval when on battery to save power
-throttle_on_battery = true
-# Logging level: Error, Warning, Info, Debug
-log_level = "Info"
-# Optional stats file path
-stats_file_path = "/var/run/watt-stats"
+cpu.energy-performance-preference = "power"
+cpu.frequency-mhz-maximum = 800
+cpu.governor = "powersave"
+cpu.turbo = false
+power.platform-profile = "low-power"
 
-# Optional: List of power supplies to ignore
-[power_supply_ignore_list]
-mouse_battery = "hid-12:34:56:78:90:ab-battery"
-# Add other devices to ignore here
+# High performance mode for sustained high load
+[[rule]]
+if.all = [
+  { value = "%cpu-usage", is-more-than = 0.8 },
+  { value = "$cpu-idle-seconds", is-less-than = 30.0 },
+  { value = "$cpu-temperature", is-less-than = 75.0 },
+]
+priority = 80
+
+cpu.energy-performance-preference = "performance"
+cpu.governor = "performance"
+cpu.turbo = true
+
+# Performance mode when not discharging
+[[rule]]
+if.all = [
+  { not = "?discharging" },
+  { value = "%cpu-usage", is-more-than = 0.1 },
+  { value = "$cpu-temperature", is-less-than = 80.0 },
+]
+priority = 70
+
+cpu.energy-performance-bias = "balance_performance"
+cpu.energy-performance-preference = "performance"
+cpu.governor = "performance"
+cpu.turbo = true
+
+# Moderate performance for medium load
+[[rule]]
+if.all = [
+  { value = "%cpu-usage", is-more-than = 0.4 },
+  { value = "%cpu-usage", is-less-than = 0.8 },
+]
+priority = 60
+
+cpu.energy-performance-preference = "balance_performance"
+cpu.governor = "schedutil"
+
+# Power saving during low activity
+[[rule]]
+if.all = [
+  { value = "%cpu-usage", is-less-than = 0.2 },
+  { value = "$cpu-idle-seconds", is-more-than = 60.0 },
+]
+priority = 50
+
+cpu.energy-performance-preference = "power"
+cpu.governor = "powersave"
+cpu.turbo = false
+
+# Extended idle power optimization
+[[rule]]
+if = { value = "$cpu-idle-seconds", is-more-than = 300.0 }
+priority = 40
+
+cpu.energy-performance-preference = "power"
+cpu.frequency-mhz-maximum = 1600
+cpu.governor = "powersave"
+cpu.turbo = false
+
+# Battery conservation when discharging
+[[rule]]
+if.all = [ "?discharging", { value = "%power-supply-charge", is-less-than = 0.5 } ]
+priority = 30
+
+cpu.energy-performance-preference = "power"
+cpu.frequency-mhz-maximum = 2000
+cpu.governor = "powersave"
+cpu.turbo = false
+power.platform-profile = "low-power"
+
+# General battery mode
+[[rule]]
+if = "?discharging"
+priority = 20
+
+cpu.energy-performance-bias = "balance_power"
+cpu.energy-performance-preference = "power"
+cpu.frequency-mhz-maximum = 1800
+cpu.frequency-mhz-minimum = 200
+cpu.governor = "powersave"
+cpu.turbo = false
+
+# Balanced performance for general use - Default fallback rule
+[[rule]]
+priority = 0
+cpu.energy-performance-preference = "balance_performance"
+cpu.governor = "schedutil"
 ```
 
-## Advanced Features
+### CPU Settings
 
-Those are the more advanced features of Watt that some users might be more
-inclined to use than others. If you have a use-case that is not covered, please
-create an issue.
+Available CPU configuration options:
 
-### Dynamic Turbo Boost Management
+- `governor` - CPU frequency governor (`performance`, `powersave`, `schedutil`,
+  etc.)
+- `energy-performance-preference` - EPP setting (`performance`,
+  `balance_performance`, `balance_power`, `power`)
+- `energy-performance-bias` - EPB setting (`performance`, `balance_performance`,
+  `balance_power`, `power`)
+- `frequency-mhz-minimum` - Minimum CPU frequency in MHz
+- `frequency-mhz-maximum` - Maximum CPU frequency in MHz
+- `turbo` - Enable/disable turbo boost (boolean)
+- `for` - Apply settings to specific CPU cores (array of core IDs)
 
-When using `turbo = "auto"` with `enable_auto_turbo = true`, Watt dynamically
-controls CPU turbo boost based on:
+### Power Settings
 
-- **CPU Load Thresholds**: Enables turbo when load exceeds `load_threshold_high`
-  (default 70%), disables when below `load_threshold_low` (default 30%)
-- **Temperature Protection**: Automatically disables turbo when CPU temperature
-  exceeds `temp_threshold_high` (default 75°C)
-- **Hysteresis Control**: Prevents rapid toggling by maintaining previous state
-  when load is between thresholds
-- **Configurable Initial State**: Sets the initial turbo state via
-  `initial_turbo_state` (default: disabled) before system load data is available
-- **Profile-Specific Settings**: Configure different thresholds for battery vs.
-  AC power
+Available power management options:
 
-This feature optimizes performance and power consumption by providing maximum
-performance for demanding tasks while conserving energy during light workloads.
-
-> [!TIP]
-> You can disable this logic with `enable_auto_turbo = false` to let the system
-> handle turbo boost natively when `turbo = "auto"`.
-
-#### Turbo Boost Behavior Table
-
-The table below explains how different combinations of `turbo` and
-`enable_auto_turbo` settings affect CPU turbo behavior:
-
-| Setting            | `enable_auto_turbo = true`                                                                          | `enable_auto_turbo = false`                                                                                  |
-| ------------------ | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `turbo = "always"` | **Always enabled**<br>Turbo is always active regardless of CPU load or temperature                  | **Always enabled**<br>Turbo is always active regardless of CPU load or temperature                           |
-| `turbo = "never"`  | **Always disabled**<br>Turbo is always disabled regardless of CPU load or temperature               | **Always disabled**<br>Turbo is always disabled regardless of CPU load or temperature                        |
-| `turbo = "auto"`   | **Dynamically managed**<br>Watt enables/disables turbo based on CPU load and temperature thresholds | **System default**<br>Turbo is reset to system's default enabled state and is managed by the hardware/kernel |
-
-> [!NOTE]
-> When `turbo = "auto"` and `enable_auto_turbo = false`, Watt ensures that any
-> previous turbo state restrictions are removed, allowing the hardware/kernel to
-> manage turbo behavior according to its default algorithms.
-
-### Adaptive Polling
-
-Watt includes a "sophisticated" (euphemism for complicated) adaptive polling
-system to try and maximize power efficiency
-
-- **Battery Discharge Analysis** - Automatically adjusts polling frequency based
-  on the battery discharge rate, reducing system activity when battery is
-  draining quickly
-- **System Activity Pattern Recognition** - Monitors CPU usage and temperature
-  patterns to identify system stability
-- **Dynamic Interval Calculation** - Uses multiple factors to determine optimal
-  polling intervals - up to 3x longer on battery with minimal user impact
-- **Idle Detection** - Significantly reduces polling frequency during extended
-  idle periods to minimize power consumption
-- **Gradual Transition** - Smooth transitions between polling rates to avoid
-  performance spikes
-- **Progressive Back-off** - Implements logarithmic back-off during idle periods
-  (1min -> 1.5x, 2min -> 2x, 4min -> 3x, 8min -> 4x, 16min -> 5x)
-- **Battery Discharge Protection** - Includes safeguards against measurement
-  noise to prevent erratic polling behavior
-
-When enabled, this intelligent polling system provides substantial power savings
-over conventional fixed-interval approaches, especially during low-activity or
-idle periods, while maintaining responsiveness when needed.
-
-### Power Supply Filtering
-
-Configure Watt to ignore certain power supplies (like peripheral batteries) that
-might interfere with power state detection.
+- `platform-profile` - ACPI platform profile (`performance`, `balanced`,
+  `low-power`)
+- `charge-threshold-start` - Battery charge level to start charging (0-100%)
+- `charge-threshold-end` - Battery charge level to stop charging (0-100%)
+- `for` - Apply settings to specific power supplies (array of supply names)
 
 ## Troubleshooting
 
@@ -319,7 +416,8 @@ Not all features are available on all hardware:
 2. **CPU frequencies fluctuating**: May be due to thermal throttling
 3. **Missing CPU information**: Verify kernel module support for your CPU
 
-While reporting issues, please attach the results from `watt debug`.
+While reporting issues, please include your system information and any relevant
+logs.
 
 ## Contributing
 
