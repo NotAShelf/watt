@@ -426,7 +426,7 @@ impl Expression {
       },
       CpuIdleSeconds => Number(state.cpu_idle_seconds),
 
-      PowerSupplyCharge => Number(state.cpu_idle_seconds),
+      PowerSupplyCharge => Number(state.power_supply_charge),
       PowerSupplyDischargeRate => {
         Number(try_ok!(state.power_supply_discharge_rate))
       },
