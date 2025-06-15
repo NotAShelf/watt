@@ -5,8 +5,8 @@
   fs = lib.fileset;
 in
   rustPlatform.buildRustPackage (finalAttrs: {
-    pname = "watt";
-    version = (builtins.fromTOML (builtins.readFile ../Cargo.toml)).package.version;
+    pname = "superfreq";
+    version = "0.1.0";
 
     src = fs.toSource {
       root = ../.;
@@ -24,14 +24,14 @@ in
     meta = {
       description = "Automatic CPU speed & power optimizer for Linux";
       longDescription = ''
-        Watt is a CPU speed & power optimizer for Linux. It uses
+        Superfreq is a CPU speed & power optimizer for Linux. It uses
         the CPU frequency scaling driver to set the CPU frequency
         governor and the CPU power management driver to set the CPU
         power management mode.
 
       '';
-      homepage = "https://github.com/NotAShelf/watt";
-      mainProgram = "watt";
+      homepage = "https://github.com/NotAShelf/superfreq";
+      mainProgram = "superfreq";
       license = lib.licenses.mpl20;
       platforms = lib.platforms.linux;
     };
