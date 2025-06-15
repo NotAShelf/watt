@@ -1,0 +1,28 @@
+[package]
+name                   = "watt"
+description.workspace  = true
+version.workspace      = true
+edition.workspace      = true
+authors.workspace      = true
+rust-version.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[[bin]]
+name = "watt"
+path = "main.rs"
+
+[dependencies]
+anyhow.workspace              = true
+clap.workspace                = true
+clap-verbosity-flag.workspace = true
+ctrlc.workspace               = true
+derive_more.workspace         = true
+env_logger.workspace          = true
+log.workspace                 = true
+num_cpus.workspace            = true
+serde.workspace               = true
+thiserror.workspace           = true
+toml.workspace                = true
+yansi.workspace               = true

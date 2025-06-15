@@ -1,5 +1,5 @@
 <h1 id="header" align="center">
-  Superfreq
+  Watt
 </h1>
 
 <div align="center">
@@ -8,17 +8,17 @@
 
 <div align="center">
   <br/>
-  <a href="#what-is-superfreq">Synopsis</a><br/>
+  <a href="#what-is-watt">Synopsis</a><br/>
   <a href="#features">Features</a> | <a href="#usage">Usage</a><br/>
   <a href="#contributing">Contributing</a>
   <br/>
 </div>
 
-## What is Superfreq
+## What is Watt
 
-Superfreq is a modern CPU frequency and power management utility for Linux
-systems. It provides intelligent control of CPU governors, frequencies, and
-power-saving features, helping optimize both performance and battery life.
+Watt is a modern CPU frequency and power management utility for Linux systems.
+It provides intelligent control of CPU governors, frequencies, and power-saving
+features, helping optimize both performance and battery life.
 
 It is greatly inspired by auto-cpufreq, but rewritten from ground up to provide
 a smoother experience with a more efficient and more correct codebase. Some
@@ -48,81 +48,81 @@ but most common usecases are already implemented.
 
 ```bash
 # Show current system information
-superfreq info
+watt info
 
 # Run as a daemon in the background
-sudo superfreq daemon
+sudo watt daemon
 
 # Run with verbose logging
-sudo superfreq daemon --verbose
+sudo watt daemon --verbose
 
 # Display comprehensive debug information
-superfreq debug
+watt debug
 ```
 
 ### CPU Governor Control
 
 ```bash
 # Set CPU governor for all cores
-sudo superfreq set-governor performance
+sudo watt set-governor performance
 
 # Set CPU governor for a specific core
-sudo superfreq set-governor powersave --core-id 0
+sudo watt set-governor powersave --core-id 0
 
 # Force a specific governor mode persistently
-sudo superfreq force-governor performance
+sudo watt force-governor performance
 ```
 
 ### Turbo Boost Management
 
 ```bash
 # Always enable turbo boost
-sudo superfreq set-turbo always
+sudo watt set-turbo always
 
 # Disable turbo boost
-sudo superfreq set-turbo never
+sudo watt set-turbo never
 
-# Let Superfreq manage turbo boost based on conditions
-sudo superfreq set-turbo auto
+# Let Watt manage turbo boost based on conditions
+sudo watt set-turbo auto
 ```
 
 ### Power and Performance Settings
 
 ```bash
 # Set Energy Performance Preference (EPP)
-sudo superfreq set-epp performance
+sudo watt set-epp performance
 
 # Set Energy Performance Bias (EPB)
-sudo superfreq set-epb 4
+sudo watt set-epb 4
 
 # Set ACPI platform profile
-sudo superfreq set-platform-profile balanced
+sudo watt set-platform-profile balanced
 ```
 
 ### Frequency Control
 
 ```bash
 # Set minimum CPU frequency (in MHz)
-sudo superfreq set-min-freq 800
+sudo watt set-min-freq 800
 
 # Set maximum CPU frequency (in MHz)
-sudo superfreq set-max-freq 3000
+sudo watt set-max-freq 3000
 
 # Set per-core frequency limits
-sudo superfreq set-min-freq 1200 --core-id 0
-sudo superfreq set-max-freq 2800 --core-id 1
+sudo watt set-min-freq 1200 --core-id 0
+sudo watt set-max-freq 2800 --core-id 1
 ```
 
 ### Battery Management
 
 ```bash
 # Set battery charging thresholds to extend battery lifespan
-sudo superfreq set-battery-thresholds 40 80  # Start charging at 40%, stop at 80%
+sudo watt set-battery-thresholds 40 80  # Start charging at 40%, stop at 80%
 ```
 
 Battery charging thresholds help extend battery longevity by preventing constant
 charging to 100%. Different laptop vendors implement this feature differently,
-but Superfreq attempts to support multiple vendor implementations including:
+but Watt attempts to support multiple vendor implementations including:
 
 - Lenovo ThinkPad/IdeaPad (Standard implementation)
 - ASUS laptops
@@ -135,12 +135,12 @@ more than issue reports, as supporting hardware _needs_ hardware.
 
 ## Configuration
 
-Superfreq uses TOML configuration files. Default locations:
+Watt uses TOML configuration files. Default locations:
 
-- `/etc/xdg/superfreq/config.toml`
-- `/etc/superfreq.toml`
+- `/etc/xdg/watt/config.toml`
+- `/etc/watt.toml`
 
-You can also specify a custom path by setting the `SUPERFREQ_CONFIG` environment
+You can also specify a custom path by setting the `WATT_CONFIG` environment
 variable.
 
 ### Sample Configuration
@@ -214,7 +214,7 @@ throttle_on_battery = true
 # Logging level: Error, Warning, Info, Debug
 log_level = "Info"
 # Optional stats file path
-stats_file_path = "/var/run/superfreq-stats"
+stats_file_path = "/var/run/watt-stats"
 
 # Optional: List of power supplies to ignore
 [power_supply_ignore_list]
@@ -224,14 +224,14 @@ mouse_battery = "hid-12:34:56:78:90:ab-battery"
 
 ## Advanced Features
 
-Those are the more advanced features of Superfreq that some users might be more
+Those are the more advanced features of Watt that some users might be more
 inclined to use than others. If you have a use-case that is not covered, please
 create an issue.
 
 ### Dynamic Turbo Boost Management
 
-When using `turbo = "auto"` with `enable_auto_turbo = true`, Superfreq
-dynamically controls CPU turbo boost based on:
+When using `turbo = "auto"` with `enable_auto_turbo = true`, Watt dynamically
+controls CPU turbo boost based on:
 
 - **CPU Load Thresholds**: Enables turbo when load exceeds `load_threshold_high`
   (default 70%), disables when below `load_threshold_low` (default 30%)
@@ -256,21 +256,21 @@ performance for demanding tasks while conserving energy during light workloads.
 The table below explains how different combinations of `turbo` and
 `enable_auto_turbo` settings affect CPU turbo behavior:
 
-| Setting            | `enable_auto_turbo = true`                                                                               | `enable_auto_turbo = false`                                                                                  |
-| ------------------ | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `turbo = "always"` | **Always enabled**<br>Turbo is always active regardless of CPU load or temperature                       | **Always enabled**<br>Turbo is always active regardless of CPU load or temperature                           |
-| `turbo = "never"`  | **Always disabled**<br>Turbo is always disabled regardless of CPU load or temperature                    | **Always disabled**<br>Turbo is always disabled regardless of CPU load or temperature                        |
-| `turbo = "auto"`   | **Dynamically managed**<br>Superfreq enables/disables turbo based on CPU load and temperature thresholds | **System default**<br>Turbo is reset to system's default enabled state and is managed by the hardware/kernel |
+| Setting            | `enable_auto_turbo = true`                                                                          | `enable_auto_turbo = false`                                                                                  |
+| ------------------ | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `turbo = "always"` | **Always enabled**<br>Turbo is always active regardless of CPU load or temperature                  | **Always enabled**<br>Turbo is always active regardless of CPU load or temperature                           |
+| `turbo = "never"`  | **Always disabled**<br>Turbo is always disabled regardless of CPU load or temperature               | **Always disabled**<br>Turbo is always disabled regardless of CPU load or temperature                        |
+| `turbo = "auto"`   | **Dynamically managed**<br>Watt enables/disables turbo based on CPU load and temperature thresholds | **System default**<br>Turbo is reset to system's default enabled state and is managed by the hardware/kernel |
 
 > [!NOTE]
-> When `turbo = "auto"` and `enable_auto_turbo = false`, Superfreq ensures that
-> any previous turbo state restrictions are removed, allowing the
-> hardware/kernel to manage turbo behavior according to its default algorithms.
+> When `turbo = "auto"` and `enable_auto_turbo = false`, Watt ensures that any
+> previous turbo state restrictions are removed, allowing the hardware/kernel to
+> manage turbo behavior according to its default algorithms.
 
 ### Adaptive Polling
 
-Superfreq includes a "sophisticated" (euphemism for complicated) adaptive
-polling system to try and maximize power efficiency
+Watt includes a "sophisticated" (euphemism for complicated) adaptive polling
+system to try and maximize power efficiency
 
 - **Battery Discharge Analysis** - Automatically adjusts polling frequency based
   on the battery discharge rate, reducing system activity when battery is
@@ -294,8 +294,8 @@ idle periods, while maintaining responsiveness when needed.
 
 ### Power Supply Filtering
 
-Configure Superfreq to ignore certain power supplies (like peripheral batteries)
-that might interfere with power state detection.
+Configure Watt to ignore certain power supplies (like peripheral batteries) that
+might interfere with power state detection.
 
 ## Troubleshooting
 
@@ -319,11 +319,11 @@ Not all features are available on all hardware:
 2. **CPU frequencies fluctuating**: May be due to thermal throttling
 3. **Missing CPU information**: Verify kernel module support for your CPU
 
-While reporting issues, please attach the results from `superfreq debug`.
+While reporting issues, please attach the results from `watt debug`.
 
 ## Contributing
 
-Contributions to Superfreq are always welcome! Whether it's bug reports, feature
+Contributions to Watt are always welcome! Whether it's bug reports, feature
 requests, or code contributions, please feel free to contribute.
 
 > [!NOTE]
@@ -357,5 +357,5 @@ before committing to catch possible code smell early.
 
 ## License
 
-Superfreq is available under [Mozilla Public License v2.0](LICENSE) for your
+Watt is available under [Mozilla Public License v2.0](LICENSE) for your
 convenience, and at our expense. Please see the license file for more details.
