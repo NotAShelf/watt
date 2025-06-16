@@ -13,7 +13,6 @@ pub mod config;
 pub mod daemon;
 
 #[derive(clap::Parser, Debug)]
-#[clap(author, version, about)]
 pub struct Cli {
   #[clap(subcommand)]
   command: Command,
@@ -51,6 +50,7 @@ pub enum Command {
 }
 
 #[derive(clap::Parser, Debug)]
+#[clap(version)]
 pub struct WattCommand {
   /// The daemon config path.
   #[arg(long, env = "WATT_CONFIG")]
@@ -58,12 +58,14 @@ pub struct WattCommand {
 }
 
 #[derive(clap::Parser, Debug)]
+#[clap(version)]
 pub enum CpuCommand {
   /// Modify CPU attributes.
   Set(config::CpuDelta),
 }
 
 #[derive(clap::Parser, Debug)]
+#[clap(version)]
 pub enum PowerCommand {
   /// Modify power supply attributes.
   Set(config::PowerDelta),
