@@ -75,8 +75,16 @@ daemons.
 # Run as a daemon in the background with default configuration
 sudo watt
 
-# Run with verbose logging
-sudo watt --verbose # or --quiet for decreased verbosity
+# Run with adjusted logging
+#
+# You can also use the logform options
+# --quiet and --verbose, and repeat them.
+sudo watt -qqq # Log level: OFF   (won't log)
+sudo watt -qq  # Log level: ERROR (will log only ERROR)
+sudo watt -q   # Log level: WARN  (will log ERROR and up)
+sudo watt      # Log level: INFO  (will log INFO and up)
+sudo watt -v   # Log level: DEBUG (will log DEBUG and up)
+sudo watt -vv  # Log level: TRACE (will log everything)
 
 # Run with a custom configuration file
 sudo watt --config /path/to/config.toml

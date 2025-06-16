@@ -70,7 +70,7 @@ impl Daemon {
   fn rescan(&mut self) -> anyhow::Result<()> {
     self.system.rescan()?;
 
-    log::debug!("appending daemon logs...");
+    log::debug!("appending to daemon logs...");
 
     let at = Instant::now();
 
@@ -372,7 +372,7 @@ pub fn run(config: config::DaemonConfig) -> anyhow::Result<()> {
       minutes = delay.as_secs_f64() / 60.0,
     );
 
-    log::debug!("filtering rules and applying them...");
+    log::info!("filtering rules and applying them...");
 
     let start = Instant::now();
 

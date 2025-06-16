@@ -25,7 +25,7 @@ pub enum Command {
   /// Watt daemon.
   Watt {
     #[command(flatten)]
-    verbosity: clap_verbosity_flag::Verbosity,
+    verbosity: clap_verbosity_flag::Verbosity<clap_verbosity_flag::InfoLevel>,
 
     #[clap(flatten)]
     command: WattCommand,
@@ -34,7 +34,7 @@ pub enum Command {
   /// CPU metadata and modification utility.
   Cpu {
     #[command(flatten)]
-    verbosity: clap_verbosity_flag::Verbosity,
+    verbosity: clap_verbosity_flag::Verbosity<clap_verbosity_flag::InfoLevel>,
 
     #[clap(subcommand)]
     command: CpuCommand,
@@ -43,7 +43,7 @@ pub enum Command {
   /// Power supply metadata and modification utility.
   Power {
     #[command(flatten)]
-    verbosity: clap_verbosity_flag::Verbosity,
+    verbosity: clap_verbosity_flag::Verbosity<clap_verbosity_flag::InfoLevel>,
 
     #[clap(subcommand)]
     command: PowerCommand,
@@ -79,7 +79,7 @@ pub fn main() -> anyhow::Result<()> {
   | Command::Power { verbosity, .. }) = cli.command;
 
   env_logger::Builder::new()
-    .filter_level(verbosity.log_level_filter())
+    .filter_level(dbg!(verbosity.log_level_filter()))
     .format_timestamp(None)
     .format_module_path(false)
     .init();

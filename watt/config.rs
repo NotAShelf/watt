@@ -527,16 +527,13 @@ impl DaemonConfig {
 
   pub fn load_from(path: Option<&Path>) -> anyhow::Result<Self> {
     let contents = if let Some(path) = path {
-      log::debug!("loading config from '{path}'", path = path.display());
+      log::info!("loading config from '{path}'", path = path.display());
 
       &fs::read_to_string(path).with_context(|| {
         format!("failed to read config from '{path}'", path = path.display())
       })?
     } else {
-      log::debug!(
-        "loading default config from embedded toml:\n{config}",
-        config = Self::DEFAULT,
-      );
+      log::info!("loading default config");
 
       Self::DEFAULT
     };

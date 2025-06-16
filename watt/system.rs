@@ -50,12 +50,12 @@ impl System {
   }
 
   pub fn rescan(&mut self) -> anyhow::Result<()> {
-    log::debug!("rescanning view of system hardware...");
+    log::info!("rescanning view of system hardware...");
 
     {
       let start = Instant::now();
       self.cpus = cpu::Cpu::all().context("failed to scan CPUs")?;
-      log::debug!(
+      log::info!(
         "rescanned all CPUs in {millis}ms",
         millis = start.elapsed().as_millis(),
       );
@@ -65,7 +65,7 @@ impl System {
       let start = Instant::now();
       self.power_supplies = power_supply::PowerSupply::all()
         .context("failed to scan power supplies")?;
-      log::debug!(
+      log::info!(
         "rescanned all power supplies in {millis}ms",
         millis = start.elapsed().as_millis(),
       );
@@ -103,7 +103,7 @@ impl System {
     {
       let start = Instant::now();
       self.rescan_load_average()?;
-      log::debug!(
+      log::info!(
         "rescanned load average in {millis}ms",
         millis = start.elapsed().as_millis(),
       );
@@ -112,7 +112,7 @@ impl System {
     {
       let start = Instant::now();
       self.rescan_temperatures()?;
-      log::debug!(
+      log::info!(
         "rescanned temperatures in {millis}ms",
         millis = start.elapsed().as_millis(),
       );
@@ -164,7 +164,7 @@ impl System {
     if temperatures.is_empty() {
       const PATH: &str = "/sys/devices/virtual/thermal";
 
-      log::debug!(
+      log::warn!(
         "failed to get CPU temperature information by using hwmon, falling \
          back to '{PATH}'"
       );
@@ -342,7 +342,7 @@ impl System {
         },
 
         // Unknown, continue with other checks
-        _ => log::debug!("unknown chassis type"),
+        unknown => log::debug!("unknown chassis type: '{unknown}'"),
       }
     }
 
