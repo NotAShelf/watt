@@ -214,7 +214,8 @@ cpu.governor = "schedutil"
 
 Watt uses a rule-based TOML configuration system that allows you to define
 intelligent power management policies. The daemon evaluates rules by priority
-and applies the first matching rule's settings.
+and applies the all matching rules. Rule settings with higher priority shadow
+ones with lower priority.
 
 ### Configuration Locations
 
