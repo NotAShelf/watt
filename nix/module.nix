@@ -47,7 +47,7 @@ in {
       serviceConfig = {
         Environment = optional (cfg.settings != {}) ["WATT_CONFIG=${cfgFile}"];
         WorkingDirectory = "";
-        ExecStart = "${getExe cfg.package} daemon --verbose";
+        ExecStart = "${getExe cfg.package} --verbose";
         Restart = "on-failure";
 
         RuntimeDirectory = "watt";

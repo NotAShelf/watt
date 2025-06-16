@@ -1,17 +1,21 @@
 {
   lib,
+  stdenv,
   rustPlatform,
+  versionCheckHook,
 }: let
   fs = lib.fileset;
 in
   rustPlatform.buildRustPackage (finalAttrs: {
     pname = "watt";
-    version = "0.1.0";
+    version = (builtins.fromTOML (builtins.readFile ../Cargo.toml)).workspace.package.version;
 
     src = fs.toSource {
       root = ../.;
       fileset = fs.unions [
-        (fs.fileFilter (file: builtins.any file.hasExt ["rs"]) ../src)
+        ../.cargo
+        ../watt
+        ../xtask
         ../Cargo.lock
         ../Cargo.toml
       ];
@@ -21,6 +25,24 @@ in
     useFetchCargoVendor = true;
     enableParallelBuilding = true;
 
+    # xtask doesn't support passing --targe
+    # but nix hooks expect the folder structure from when it's set
+    env.CARGO_BUILD_TARGET = stdenv.hostPlatform.rust.cargoShortTarget;
+
+    # FIXME: --version is currently missing in the watt daemon
+    # nativeInstallCheckInputs = [versionCheckHook];
+    # versionCheckProgram = "${placeholder "out"}/bin/${finalAttrs.meta.mainProgram}";
+    # versionCheckProgramArg = "--version";
+    doInstallCheck = true;
+
+    postInstall = ''
+      # Install required files with the 'dist' task
+      cargo xtask dist \
+        --completions-dir $out/share/completions \
+        --bin-dir $out/bin \
+        --watt-binary $out/bin/watt
+    '';
+
     meta = {
       description = "Automatic CPU speed & power optimizer for Linux";
       longDescription = ''
@@ -28,10 +50,10 @@ in
         the CPU frequency scaling driver to set the CPU frequency
         governor and the CPU power management driver to set the CPU
         power management mode.
-
       '';
       homepage = "https://github.com/NotAShelf/watt";
       mainProgram = "watt";
+      maintainers = [lib.maintainers.NotAShelf];
       license = lib.licenses.mpl20;
       platforms = lib.platforms.linux;
     };
