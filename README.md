@@ -53,25 +53,25 @@ daemons.
 ## Features
 
 - **Real-time CPU Management**: Monitor and control CPU governors, frequencies,
-  and turbo boost
+  and turbo boost.
 - **Intelligent Power Management**: Different profiles for AC and battery
-  operation
+  operation.
 - **Dynamic Turbo Boost Control**: Automatically enables/disables turbo based on
-  CPU load and temperature
+  CPU load and temperature.
 - **Fine-tuned Controls**: Adjust energy performance preferences, biases, and
-  frequency limits
-- **Per-core Control**: Apply settings globally or to specific CPU cores
-- **Battery Management**: Monitor battery status and power consumption
-- **System Load Tracking**: Track system load and make intelligent decisions
-- **Daemon Mode**: Run in background with adaptive polling to minimize overhead
+  frequency limits.
+- **Per-core Control**: Apply settings globally or to specific CPU cores.
+- **Battery Management**: Monitor battery status and power consumption.
+- **System Load Tracking**: Track system load and make intelligent decisions.
+- **Daemon Mode**: Run in background with adaptive polling to minimize overhead.
 - **Conflict Detection**: Identifies and warns about conflicts with other power
-  management tools
+  management tools.
 
 ## Usage
 
 ### Basic Commands
 
-```bash
+```sh
 # Run as a daemon in the background with default configuration
 sudo watt
 
@@ -88,7 +88,7 @@ Watt operates primarily as a daemon that automatically manages CPU and power
 settings based on the configuration rules. For manual CPU management, you can
 use the `cpu` command (requires the `cpu` binary to be available):
 
-```bash
+```sh
 # Set CPU governor for all cores
 sudo cpu set --governor performance
 
@@ -121,7 +121,7 @@ sudo cpu set --governor schedutil --energy-performance-preference balance_perfor
 
 For manual power management, you can use the `power` command:
 
-```bash
+```sh
 # Set battery charging thresholds to extend battery lifespan
 sudo power set --charge-threshold-start 40 --charge-threshold-end 80
 
@@ -219,10 +219,11 @@ ones with lower priority.
 
 ### Configuration Locations
 
-Default configuration locations (in order of precedence):
+Configuration locations (in order of precedence):
 
-- Custom path via `WATT_CONFIG` environment variable
-- Built-in default configuration (if no custom path is specified)
+- Custom path via `--config` flag.
+- Custom path via `WATT_CONFIG` environment variable (if no flag is specified).
+- Built-in default configuration (if no custom path is specified).
 
 If no configuration file is found, Watt uses a built-in default configuration.
 
@@ -230,24 +231,32 @@ If no configuration file is found, Watt uses a built-in default configuration.
 
 Rules are the core of Watt's configuration system. Each rule can specify:
 
-- **Conditions**: When the rule should apply (using the expression DSL)
-- **Priority**: Higher numbers take precedence (0-255)
-- **Actions**: CPU and power management settings to apply
+- **Conditions**: When the rule should apply (using the expression DSL). If not
+  specified, always applies (defaults to `true`).
+- **Priority**: Higher numbers take precedence (0-65535).
+- **Actions**: CPU and power management settings to apply.
 
 ### Expression DSL
 
 Watt includes a powerful expression language for defining conditions:
 
+#### Constants
+
+- `true`, `false` - Booleans
+- `123.456`, `42` - 64-bit Floats
+
 #### System Variables
 
-- `%cpu-usage` - Current CPU usage percentage (0.0-1.0)
-- `$cpu-usage-volatility` - CPU usage volatility measurement
-- `$cpu-temperature` - CPU temperature in Celsius
-- `$cpu-temperature-volatility` - CPU temperature volatility
-- `$cpu-idle-seconds` - Seconds since last significant CPU activity
-- `%power-supply-charge` - Battery charge percentage (0.0-1.0)
-- `%power-supply-discharge-rate` - Current discharge rate
-- `?discharging` - Boolean indicating if system is on battery power
+- `"%cpu-usage"` - Current CPU usage percentage (0.0-1.0)
+- `"$cpu-usage-volatility"` - CPU usage volatility measurement
+- `"$cpu-temperature"` - CPU temperature in Celsius
+- `"$cpu-temperature-volatility"` - CPU temperature volatility
+- `"$cpu-idle-seconds"` - Seconds since last significant CPU activity
+- `"%power-supply-charge"` - Battery charge percentage (0.0-1.0)
+- `"%power-supply-discharge-rate"` - Current discharge rate
+- `"?discharging"` - Boolean indicating if system is on battery power
+
+The expression language only has boolean and 64-bit float values.
 
 #### Operators
 
@@ -256,7 +265,22 @@ Watt includes a powerful expression language for defining conditions:
 - **Logical**: `and`, `or`, `not`, `all`, `any`
 - **Arithmetic**: `plus`, `minus`, `multiply`, `divide`, `power`
 
-#### Basic Configuration Example
+You can use operators with TOML attribute sets:
+
+```toml
+[[rule]]
+if = { value = <expression>, <operator> = <parameter> }
+```
+
+However, `all` and `any` do not take a `value` argument, but instead take a list
+of expressions as the parameter:
+
+```toml
+[[rule]]
+if = { all = [ <expression>, <expression2> ] }
+```
+
+### Basic Configuration Example
 
 ```toml
 # Emergency thermal protection (highest priority)
@@ -383,7 +407,7 @@ Available CPU configuration options:
 - `frequency-mhz-minimum` - Minimum CPU frequency in MHz
 - `frequency-mhz-maximum` - Maximum CPU frequency in MHz
 - `turbo` - Enable/disable turbo boost (boolean)
-- `for` - Apply settings to specific CPU cores (array of core IDs)
+- `for` - Apply settings to specific CPU cores (list of core IDs)
 
 ### Power Settings
 
@@ -393,7 +417,7 @@ Available power management options:
   `low-power`)
 - `charge-threshold-start` - Battery charge level to start charging (0-100%)
 - `charge-threshold-end` - Battery charge level to stop charging (0-100%)
-- `for` - Apply settings to specific power supplies (array of supply names)
+- `for` - Apply settings to specific power supplies (list of supply names)
 
 ## Troubleshooting
 
@@ -439,7 +463,7 @@ required.
 A `.envrc` is provided, and it's usage is encouraged for Nix users.
 Alternatively, you may use Nix for a reproducible developer environment
 
-```bash
+```sh
 nix develop
 ```
 
@@ -448,8 +472,9 @@ manager, or using something like Rustup.
 
 ### Formatting & Lints
 
-Please make sure to run _at least_ `cargo fmt` inside the repository to make
-sure all of your code is properly formatted. For Nix code, please use Alejandra.
+Please make sure to run _at least_ `cargo fmt` (and `taplo format` if you have
+modified any TOML) inside the repository to make sure all of your code is
+properly formatted. For Nix code, please use Alejandra.
 
 Clippy lints are not _required_ as of now, but a good rule of thumb to run them
 before committing to catch possible code smell early.

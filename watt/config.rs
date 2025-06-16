@@ -504,7 +504,7 @@ impl Expression {
 #[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Rule {
-  pub priority: u8,
+  pub priority: u16,
 
   #[serde(default, rename = "if", skip_serializing_if = "is_default")]
   pub condition: Expression,
