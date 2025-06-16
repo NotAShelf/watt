@@ -1,7 +1,12 @@
 use std::{
+  error,
   fs,
   io,
-  path::Path,
+  path::{
+    Path,
+    PathBuf,
+  },
+  process,
 };
 
 use clap::{
@@ -28,17 +33,17 @@ enum Command {
 
   /// Create distribution-ready files (completions and multicall binaries).
   Dist {
-    /// Directory to install shell completions
+    /// Directory to install shell completions.
     #[arg(long, default_value = "completions")]
-    completions_dir: String,
+    completions_dir: PathBuf,
 
-    /// Directory to install multicall binaries
+    /// Directory to install multicall binaries.
     #[arg(long, default_value = "bin")]
-    bin_dir: String,
+    bin_dir: PathBuf,
 
-    /// Path to the watt binary
+    /// Path to the watt binary.
     #[arg(long, default_value = "target/release/watt")]
-    watt_binary: String,
+    watt_binary: PathBuf,
   },
 }
 
@@ -107,7 +112,11 @@ fn main() {
 
   match cli.command {
     Command::GenerateCompletions { shell, binary } => {
-      generate_completion(shell, binary);
+      let mut command = binary.command();
+      command.set_bin_name(binary.name());
+      command.build();
+
+      shell.generator().generate(&command, &mut io::stdout());
     },
 
     Command::Dist {
@@ -115,41 +124,39 @@ fn main() {
       bin_dir,
       watt_binary,
     } => {
-      if let Err(e) =
+      if let Err(error) =
         create_dist_files(&completions_dir, &bin_dir, &watt_binary)
       {
-        eprintln!("Error creating distribution files: {e}");
-        std::process::exit(1);
+        eprintln!("error creating distribution files: {error}");
+        process::exit(1);
       }
     },
   }
 }
 
-fn generate_completion(shell: Shell, binary: Binary) {
-  let mut command = binary.command();
-  command.set_bin_name(binary.name());
-  command.build();
-
-  shell.generator().generate(&command, &mut io::stdout());
-}
-
-/// Create distribution files
+/// Create distribution files.
 fn create_dist_files(
-  completions_dir: &str,
-  bin_dir: &str,
-  watt_binary: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-  println!("Creating distribution files...");
+  completions_dir: &Path,
+  bin_dir: &Path,
+  watt_path: &Path,
+) -> Result<(), Box<dyn error::Error>> {
+  println!("creating distribution files...");
 
-  // Create directories if they don't exist
+  // Create directories if they don't exist.
   fs::create_dir_all(completions_dir)?;
   fs::create_dir_all(bin_dir)?;
 
-  if !Path::new(watt_binary).exists() {
-    return Err(format!("Watt binary not found at: {watt_binary}").into());
+  if !watt_path.exists() {
+    return Err(
+      format!(
+        "watt binary not found at: {path}",
+        path = watt_path.display(),
+      )
+      .into(),
+    );
   }
 
-  println!("Generating shell completions...");
+  println!("generating shell completions...");
 
   let shells = [
     Shell::Bash,
@@ -162,30 +169,34 @@ fn create_dist_files(
 
   let binaries = [Binary::Watt, Binary::Cpu, Binary::Power];
 
-  for &shell in &shells {
-    for &binary in &binaries {
+  for shell in shells {
+    for binary in binaries {
+      let (prefix, ext) = shell.file_parts();
+      let mut path =
+        completions_dir.join(format!("{prefix}{name}", name = binary.name()));
+      path.set_extension(ext);
+
+      let mut file = fs::File::create(&path)?;
+
       let mut command = binary.command();
       command.set_bin_name(binary.name());
       command.build();
 
-      let (prefix, ext) = shell.file_parts();
-      let filename = match ext {
-        "" => format!("{prefix}{}", binary.name()),
-        ext => format!("{prefix}{}.{ext}", binary.name()),
-      };
-
-      let completion_file = Path::new(completions_dir).join(filename);
-      let mut file = fs::File::create(&completion_file)?;
       shell.generator().generate(&command, &mut file);
 
-      println!("  Created: {}", completion_file.display());
+      println!("  created: {path}", path = path.display());
     }
   }
 
   // Create multicall binaries (hardlinks or copies)
   // Ime softlinks work too but cube said hardlinks reeeee
-  // and all that jazz.
-  println!("Creating multicall binaries...");
+  // and all that jazz. - raf
+  //
+  // Since hard links don't occupy any extra space and prevent
+  // stupid programs from canonicalizing their way into wrong
+  // behaviour, they should be used. xcode-select on MacOS does
+  // it, uutils-coreutils does it, busybox does it. - Cube
+  println!("creating multicall binaries...");
 
   let multicall_binaries = [Binary::Cpu, Binary::Power];
   let bin_path = Path::new(bin_dir);
@@ -197,39 +208,45 @@ fn create_dist_files(
       fs::remove_file(&target_path)?;
     }
 
-    match fs::hard_link(watt_binary, &target_path) {
+    match fs::hard_link(watt_path, &target_path) {
       Ok(()) => {
         println!(
-          "  Created hardlink: {} -> {}", // XXX: is this confusing?
-          target_path.display(),
-          watt_binary
+          "  created hardlink: {target} points to {watt}",
+          target = target_path.display(),
+          watt = watt_path.display(),
         );
       },
       Err(e) => {
         eprintln!(
-          "  Warning: Could not create hardlink for {}: {e}",
-          binary.name()
+          "  warning: could not create hardlink for {binary}: {e}",
+          binary = binary.name(),
         );
-        eprintln!("  Falling back to copying binary...");
+        eprintln!("  warning: falling back to copying binary...");
 
-        // Fallback: copy the binary
-        fs::copy(watt_binary, &target_path)?;
+        // Fallback: copy the binary.
+        fs::copy(watt_path, &target_path)?;
 
-        // ...and make it executable
+        // ...and make it executable.
         use std::os::unix::fs::PermissionsExt;
         let mut perms = fs::metadata(&target_path)?.permissions();
         perms.set_mode(perms.mode() | 0o755);
         fs::set_permissions(&target_path, perms)?;
 
-        println!("  Created copy: {}", target_path.display());
+        println!("  created copy: {}", target_path.display());
       },
     }
   }
 
-  println!("Distribution files created successfully!");
+  println!("distribution files created successfully!");
   println!();
-  println!("Shell completions are in: {completions_dir}/");
-  println!("Multicall binaries are in: {bin_dir}/");
+  println!(
+    "shell completions are in: {completions_dir}",
+    completions_dir = completions_dir.display(),
+  );
+  println!(
+    "multicall binaries are in: {bin_dir}",
+    bin_dir = bin_dir.display(),
+  );
   println!();
 
   Ok(())
