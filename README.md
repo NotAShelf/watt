@@ -25,13 +25,13 @@
 
 <div align="center">
   <br/>
-  <a href="#what-is-watt">Synopsis</a><br/>
+  <a href="#watt-is-it">Synopsis</a><br/>
   <a href="#features">Features</a> | <a href="#usage">Usage</a><br/>
   <a href="#contributing">Contributing</a>
   <br/>
 </div>
 
-## What is Watt
+## Watt Is It?
 
 Watt is a modern, low-overhead CPU frequency and power management utility for
 Linux systems. It provides intelligent control of your CPU, governors,
