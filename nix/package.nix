@@ -29,10 +29,9 @@ in
     # but nix hooks expect the folder structure from when it's set
     env.CARGO_BUILD_TARGET = stdenv.hostPlatform.rust.cargoShortTarget;
 
-    # FIXME: --version is currently missing in the watt daemon
-    # nativeInstallCheckInputs = [versionCheckHook];
-    # versionCheckProgram = "${placeholder "out"}/bin/${finalAttrs.meta.mainProgram}";
-    # versionCheckProgramArg = "--version";
+    nativeInstallCheckInputs = [versionCheckHook];
+    versionCheckProgram = "${placeholder "out"}/bin/${finalAttrs.meta.mainProgram}";
+    versionCheckProgramArg = "--version";
     doInstallCheck = true;
 
     postInstall = ''
