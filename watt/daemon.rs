@@ -455,7 +455,7 @@ pub fn run(config: config::DaemonConfig) -> anyhow::Result<()> {
       }
 
       // TODO: Also merge this into one like CPU.
-      if condition.as_boolean()? {
+      if condition.try_into_boolean()? {
         rule.power.apply()?;
       }
     }

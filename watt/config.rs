@@ -393,7 +393,7 @@ pub enum Expression {
 }
 
 impl Expression {
-  pub fn as_number(&self) -> anyhow::Result<f64> {
+  pub fn try_into_number(&self) -> anyhow::Result<f64> {
     let Self::Number(number) = self else {
       bail!("tried to cast '{self:?}' to a number, failed")
     };
@@ -401,7 +401,7 @@ impl Expression {
     Ok(*number)
   }
 
-  pub fn as_boolean(&self) -> anyhow::Result<bool> {
+  pub fn try_into_boolean(&self) -> anyhow::Result<bool> {
     let Self::Boolean(boolean) = self else {
       bail!("tried to cast '{self:?}' to a boolean, failed")
     };
@@ -409,12 +409,20 @@ impl Expression {
     Ok(*boolean)
   }
 
-  pub fn as_string(&self) -> anyhow::Result<&String> {
+  pub fn try_into_string(&self) -> anyhow::Result<&String> {
     let Self::String(string) = self else {
       bail!("tried to cast '{self:?}' to a string, failed")
     };
 
     Ok(string)
+  }
+
+  pub fn try_into_list(&self) -> anyhow::Result<&Vec<Expression>> {
+    let Self::List(list) = self else {
+      bail!("tried to cast '{self:?}' to a list, failed")
+    };
+
+    Ok(list)
   }
 }
 
@@ -495,26 +503,36 @@ impl Expression {
         List(result)
       },
 
-      Plus { a, b } => Number(eval!(a).as_number()? + eval!(b).as_number()?),
-      Minus { a, b } => Number(eval!(a).as_number()? - eval!(b).as_number()?),
+      Plus { a, b } => {
+        Number(eval!(a).try_into_number()? + eval!(b).try_into_number()?)
+      },
+      Minus { a, b } => {
+        Number(eval!(a).try_into_number()? - eval!(b).try_into_number()?)
+      },
       Multiply { a, b } => {
-        Number(eval!(a).as_number()? * eval!(b).as_number()?)
+        Number(eval!(a).try_into_number()? * eval!(b).try_into_number()?)
       },
       Power { a, b } => {
-        Number(eval!(a).as_number()?.powf(eval!(b).as_number()?))
+        Number(
+          eval!(a)
+            .try_into_number()?
+            .powf(eval!(b).try_into_number()?),
+        )
       },
-      Divide { a, b } => Number(eval!(a).as_number()? / eval!(b).as_number()?),
+      Divide { a, b } => {
+        Number(eval!(a).try_into_number()? / eval!(b).try_into_number()?)
+      },
 
       LessThan { a, b } => {
-        Boolean(eval!(a).as_number()? < eval!(b).as_number()?)
+        Boolean(eval!(a).try_into_number()? < eval!(b).try_into_number()?)
       },
       MoreThan { a, b } => {
-        Boolean(eval!(a).as_number()? > eval!(b).as_number()?)
+        Boolean(eval!(a).try_into_number()? > eval!(b).try_into_number()?)
       },
       Equal { a, b, leeway } => {
-        let a = eval!(a).as_number()?;
-        let b = eval!(b).as_number()?;
-        let leeway = eval!(leeway).as_number()?;
+        let a = eval!(a).try_into_number()?;
+        let b = eval!(b).try_into_number()?;
+        let leeway = eval!(leeway).try_into_number()?;
 
         let minimum = a - leeway;
         let maximum = a + leeway;
@@ -527,7 +545,7 @@ impl Expression {
         consequence,
         alternative,
       } => {
-        if eval!(condition).as_boolean()? {
+        if eval!(condition).try_into_boolean()? {
           eval!(consequence)
         } else if let Some(alternative) = alternative {
           eval!(alternative)
@@ -538,7 +556,9 @@ impl Expression {
 
       IsUnset { a } => Boolean(a.eval(state)?.is_none()),
 
-      And { a, b } => Boolean(eval!(a).as_boolean()? && eval!(b).as_boolean()?),
+      And { a, b } => {
+        Boolean(eval!(a).try_into_boolean()? && eval!(b).try_into_boolean()?)
+      },
       All { all } => {
         let mut all = all.iter();
 
@@ -547,12 +567,14 @@ impl Expression {
             break Boolean(true);
           };
 
-          if !eval!(value).as_boolean()? {
+          if !eval!(value).try_into_boolean()? {
             break Boolean(false);
           }
         }
       },
-      Or { a, b } => Boolean(eval!(a).as_boolean()? || eval!(b).as_boolean()?),
+      Or { a, b } => {
+        Boolean(eval!(a).try_into_boolean()? || eval!(b).try_into_boolean()?)
+      },
       Any { any } => {
         let mut any = any.iter();
 
@@ -561,12 +583,12 @@ impl Expression {
             break Boolean(false);
           };
 
-          if eval!(value).as_boolean()? {
+          if eval!(value).try_into_boolean()? {
             break Boolean(true);
           }
         }
       },
-      Not { not } => Boolean(!eval!(not).as_boolean()?),
+      Not { not } => Boolean(!eval!(not).try_into_boolean()?),
     }))
   }
 }
