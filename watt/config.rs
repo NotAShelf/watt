@@ -392,12 +392,6 @@ pub enum Expression {
   },
 }
 
-impl Default for Expression {
-  fn default() -> Self {
-    Self::Boolean(true)
-  }
-}
-
 impl Expression {
   pub fn as_number(&self) -> anyhow::Result<f64> {
     let Self::Number(number) = self else {
@@ -577,18 +571,41 @@ impl Expression {
   }
 }
 
-#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
+fn expression_true() -> Expression {
+  Expression::Boolean(true)
+}
+
+fn expression_is_true(expression: &Expression) -> bool {
+  expression == &expression_true()
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Rule {
   pub priority: u16,
 
-  #[serde(default, rename = "if", skip_serializing_if = "is_default")]
+  #[serde(
+    default = "expression_true",
+    rename = "if",
+    skip_serializing_if = "expression_is_true"
+  )]
   pub condition: Expression,
 
   #[serde(default, skip_serializing_if = "is_default")]
   pub cpu:   CpuDelta,
   #[serde(default, skip_serializing_if = "is_default")]
   pub power: PowerDelta,
+}
+
+impl Default for Rule {
+  fn default() -> Self {
+    Self {
+      priority:  u16::default(),
+      condition: expression_true(),
+      cpu:       CpuDelta::default(),
+      power:     PowerDelta::default(),
+    }
+  }
 }
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
