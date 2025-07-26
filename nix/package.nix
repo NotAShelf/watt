@@ -3,16 +3,14 @@
   stdenv,
   rustPlatform,
   versionCheckHook,
-}: let
-  fs = lib.fileset;
-in
-  rustPlatform.buildRustPackage (finalAttrs: {
+}:
+rustPlatform.buildRustPackage (finalAttrs: {
     pname = "watt";
     version = (builtins.fromTOML (builtins.readFile ../Cargo.toml)).workspace.package.version;
 
-    src = fs.toSource {
+    src = lib.fileset.toSource {
       root = ../.;
-      fileset = fs.unions [
+      fileset = lib.fileset.unions [
         ../.cargo
         ../watt
         ../xtask
@@ -24,7 +22,7 @@ in
     cargoLock.lockFile = "${finalAttrs.src}/Cargo.lock";
     enableParallelBuilding = true;
 
-    # xtask doesn't support passing --targe
+    # xtask doesn't support passing --target
     # but nix hooks expect the folder structure from when it's set
     env.CARGO_BUILD_TARGET = stdenv.hostPlatform.rust.cargoShortTarget;
 
@@ -35,13 +33,10 @@ in
 
     postInstall = ''
       # Install required files with the 'dist' task
-      $out/bin/xtask dist \
-        --completions-dir $out/share/completions \
-        --bin-dir $out/bin \
-        --watt-binary $out/bin/watt
+      $out/bin/xtask dist --completions-dir $out/share/completions
 
       # Avoid populating PATH with an 'xtask' cmd
-      rm -rf $out/bin/xtask
+      rm $out/bin/xtask
     '';
 
     meta = {
