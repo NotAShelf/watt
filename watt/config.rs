@@ -5,6 +5,7 @@ use std::{
 
 use anyhow::{
   Context,
+  anyhow,
   bail,
 };
 use serde::{
@@ -21,60 +22,79 @@ fn is_default<T: Default + PartialEq>(value: &T) -> bool {
   *value == T::default()
 }
 
-#[derive(
-  Serialize, Deserialize, clap::Parser, Default, Debug, Clone, PartialEq, Eq,
-)]
+#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
 pub struct CpuDelta {
   /// The CPUs to apply the changes to. When unspecified, will be applied to
   /// all CPUs.
-  #[arg(short = 'c', long = "for")]
+  ///
+  /// Type: `Vec<u32>`.
   #[serde(rename = "for", skip_serializing_if = "is_default")]
-  pub for_: Option<Vec<u32>>,
+  pub for_: Option<Expression>,
 
   /// Set the CPU governor.
-  #[arg(short = 'g', long)]
+  ///
+  /// Type: `String`.
   #[serde(skip_serializing_if = "is_default")]
-  pub governor: Option<String>, /* TODO: Validate with clap for available
-                                 * governors. */
+  pub governor: Option<Expression>,
 
   /// Set CPU Energy Performance Preference (EPP). Short form: --epp.
-  #[arg(short = 'p', long, alias = "epp")]
+  ///
+  /// Type: `String`.
   #[serde(skip_serializing_if = "is_default")]
-  pub energy_performance_preference: Option<String>, /* TODO: Validate with
-                                                      * clap for available
-                                                      * governors. */
-
+  pub energy_performance_preference: Option<Expression>,
   /// Set CPU Energy Performance Bias (EPB). Short form: --epb.
-  #[arg(short = 'b', long, alias = "epb")]
+  ///
+  /// Type: `String`.
   #[serde(skip_serializing_if = "is_default")]
-  pub energy_performance_bias: Option<String>, /* TODO: Validate with clap for available governors. */
+  pub energy_performance_bias:       Option<Expression>,
 
   /// Set minimum CPU frequency in MHz. Short form: --freq-min.
-  #[arg(short = 'f', long, alias = "freq-min", value_parser = clap::value_parser!(u64).range(1..=10_000))]
+  ///
+  /// Type: `u64`.
   #[serde(skip_serializing_if = "is_default")]
-  pub frequency_mhz_minimum: Option<u64>,
-
+  pub frequency_mhz_minimum: Option<Expression>,
   /// Set maximum CPU frequency in MHz. Short form: --freq-max.
-  #[arg(short = 'F', long, alias = "freq-max", value_parser = clap::value_parser!(u64).range(1..=10_000))]
+  ///
+  /// Type: `u64`.
   #[serde(skip_serializing_if = "is_default")]
-  pub frequency_mhz_maximum: Option<u64>,
+  pub frequency_mhz_maximum: Option<Expression>,
 
   /// Set turbo boost behaviour. Has to be for all CPUs.
-  #[arg(short = 't', long, conflicts_with = "for_")]
+  ///
+  /// Type: `bool`.
   #[serde(skip_serializing_if = "is_default")]
-  pub turbo: Option<bool>,
+  pub turbo: Option<Expression>,
 }
 
 impl CpuDelta {
-  pub fn apply(&self) -> anyhow::Result<()> {
+  pub fn apply(&self, state: &EvalState) -> anyhow::Result<()> {
     let mut cpus = match &self.for_ {
       Some(numbers) => {
+        let numbers = numbers
+          .eval(state)?
+          .ok_or_else(|| anyhow!("`cpu.for` resolved to undefined"))?;
+        let numbers = numbers
+          .try_into_list()
+          .context("`cpu.for` was not a list")?;
+
         let mut cpus = Vec::with_capacity(numbers.len());
         let cache = cpu::CpuRescanCache::default();
 
-        for &number in numbers {
-          cpus.push(cpu::Cpu::new(number, &cache)?);
+        for number in numbers {
+          let number = number
+            .try_into_number()
+            .context("`cpu.for` item was not a number")?;
+
+          if number.fract() != 0.0 {
+            bail!("invalid CPU in `cpu.for`: {number}");
+          }
+
+          if number > u32::MAX as f64 {
+            bail!("CPU in `cpu.for` too big: {number}");
+          }
+
+          cpus.push(cpu::Cpu::new(number as u32, &cache)?);
         }
 
         cpus
@@ -86,28 +106,82 @@ impl CpuDelta {
     };
 
     for cpu in &mut cpus {
-      if let Some(governor) = self.governor.as_ref() {
+      if let Some(governor) = self.governor.as_ref()
+        && let Some(governor) = governor.eval(state)?
+      {
+        let governor = governor
+          .try_into_string()
+          .context("`cpu.governor` was not a string")?;
+
         cpu.set_governor(governor)?;
       }
 
-      if let Some(epp) = self.energy_performance_preference.as_ref() {
+      if let Some(epp) = &self.energy_performance_preference
+        && let Some(epp) = epp.eval(state)?
+      {
+        let epp = epp
+          .try_into_string()
+          .context("`cpu.energy-performance-preference` was not a string")?;
+
         cpu.set_epp(epp)?;
       }
 
-      if let Some(epb) = self.energy_performance_bias.as_ref() {
+      if let Some(epb) = &self.energy_performance_bias
+        && let Some(epb) = epb.eval(state)?
+      {
+        let epb = epb
+          .try_into_string()
+          .context("`cpu.energy-performance-bias` was not a string")?;
+
         cpu.set_epb(epb)?;
       }
 
-      if let Some(mhz_minimum) = self.frequency_mhz_minimum {
-        cpu.set_frequency_mhz_minimum(mhz_minimum)?;
+      if let Some(mhz_minimum) = &self.frequency_mhz_minimum
+        && let Some(mhz_minimum) = mhz_minimum.eval(state)?
+      {
+        let mhz_minimum = mhz_minimum
+          .try_into_number()
+          .context("`cpu.frequency-mhz-minimum` was not a number")?;
+
+        if mhz_minimum.fract() != 0.0 {
+          bail!(
+            "invalid number for `cpu.frequency-mhz-minimum`: {mhz_minimum}"
+          );
+        }
+
+        if mhz_minimum > u64::MAX as f64 {
+          bail!("`cpu.frequency-mhz-minimum` too big: {mhz_minimum}");
+        }
+
+        cpu.set_frequency_mhz_minimum(mhz_minimum as u64)?;
       }
 
-      if let Some(mhz_maximum) = self.frequency_mhz_maximum {
-        cpu.set_frequency_mhz_maximum(mhz_maximum)?;
+      if let Some(mhz_maximum) = &self.frequency_mhz_maximum
+        && let Some(mhz_maximum) = mhz_maximum.eval(state)?
+      {
+        let mhz_maximum = mhz_maximum
+          .try_into_number()
+          .context("`cpu.frequency-mhz-maximum` was not a number")?;
+
+        if mhz_maximum.fract() != 0.0 {
+          bail!(
+            "invalid number for `cpu.frequency-mhz-maximum`: {mhz_maximum}"
+          );
+        }
+
+        if mhz_maximum > u64::MAX as f64 {
+          bail!("`cpu.frequency-mhz-maximum` too big: {mhz_maximum}");
+        }
+
+        cpu.set_frequency_mhz_maximum(mhz_maximum as u64)?;
       }
     }
 
-    if let Some(turbo) = self.turbo {
+    if let Some(turbo) = &self.turbo {
+      let turbo = turbo
+        .try_into_boolean()
+        .context("`cpu.turbo` was not a boolean")?;
+
       cpu::Cpu::set_turbo(turbo)?;
     }
 
@@ -115,30 +189,24 @@ impl CpuDelta {
   }
 }
 
-#[derive(
-  Serialize, Deserialize, clap::Parser, Default, Debug, Clone, PartialEq, Eq,
-)]
+#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
 pub struct PowerDelta {
   /// The power supplies to apply the changes to. When unspecified, will be
   /// applied to all power supplies.
-  #[arg(short = 'p', long = "for")]
   #[serde(rename = "for", skip_serializing_if = "is_default")]
   pub for_: Option<Vec<String>>,
 
   /// Set the percentage that the power supply has to drop under for charging
   /// to start. Short form: --charge-start.
-  #[arg(short = 'c', long, alias = "charge-start", value_parser = clap::value_parser!(u8).range(0..=100))]
   #[serde(skip_serializing_if = "is_default")]
   pub charge_threshold_start: Option<u8>,
 
   /// Set the percentage where charging will stop. Short form: --charge-end.
-  #[arg(short = 'C', long, alias = "charge-end", value_parser = clap::value_parser!(u8).range(0..=100))]
   #[serde(skip_serializing_if = "is_default")]
   pub charge_threshold_end: Option<u8>,
 
   /// Set ACPI platform profile. Has to be for all power supplies.
-  #[arg(short = 'f', long, alias = "profile", conflicts_with = "for_")]
   #[serde(skip_serializing_if = "is_default")]
   pub platform_profile: Option<String>,
 }
