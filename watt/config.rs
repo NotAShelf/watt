@@ -296,6 +296,8 @@ pub enum Expression {
 
   String(String),
 
+  List(Vec<Expression>),
+
   // NUMBER OPERATIONS
   Plus {
     #[serde(rename = "value")]
@@ -488,6 +490,16 @@ impl Expression {
       Discharging => Boolean(state.discharging),
 
       literal @ (Boolean(_) | Number(_) | String(_)) => literal.clone(),
+
+      List(items) => {
+        let mut result = Vec::with_capacity(items.len());
+
+        for item in items {
+          result.push(eval!(item));
+        }
+
+        List(result)
+      },
 
       Plus { a, b } => Number(eval!(a).as_number()? + eval!(b).as_number()?),
       Minus { a, b } => Number(eval!(a).as_number()? - eval!(b).as_number()?),
