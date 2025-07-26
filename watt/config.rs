@@ -230,6 +230,12 @@ macro_rules! named {
 }
 
 mod expression {
+  named!(governor_available => "?governor-available");
+  named!(energy_performance_preference_available => "?energy-performance-preference-available");
+  named!(energy_performance_bias_available => "?energy-performance-bias-available");
+  named!(frequency_available => "?frequency-available");
+  named!(turbo_available => "?turbo-available");
+
   named!(cpu_usage => "%cpu-usage");
   named!(cpu_usage_volatility => "$cpu-usage-volatility");
   named!(cpu_temperature => "$cpu-temperature");
@@ -245,6 +251,21 @@ mod expression {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(untagged)]
 pub enum Expression {
+  #[serde(with = "expression::governor_available")]
+  GovernorAvailable,
+
+  #[serde(with = "expression::energy_performance_preference_available")]
+  EnergyPerformancePreferenceAvailable,
+
+  #[serde(with = "expression::energy_performance_bias_available")]
+  EnergyPerformanceBiasAvailable,
+
+  #[serde(with = "expression::frequency_available")]
+  FrequencyAvailable,
+
+  #[serde(with = "expression::turbo_available")]
+  TurboAvailable,
+
   #[serde(with = "expression::cpu_usage")]
   CpuUsage,
 
@@ -273,6 +294,9 @@ pub enum Expression {
 
   Number(f64),
 
+  String(String),
+
+  // NUMBER OPERATIONS
   Plus {
     #[serde(rename = "value")]
     a: Box<Expression>,
@@ -317,12 +341,19 @@ pub enum Expression {
     b: Box<Expression>,
   },
 
-  Equal {
-    #[serde(rename = "value")]
-    a:      Box<Expression>,
-    #[serde(rename = "is-equal")]
-    b:      Box<Expression>,
-    leeway: Box<Expression>,
+  // BOOLEAN OPERATIONS
+  IfElse {
+    #[serde(rename = "if")]
+    condition:   Box<Expression>,
+    #[serde(rename = "then")]
+    consequence: Box<Expression>,
+    #[serde(default, rename = "else", skip_serializing_if = "is_default")]
+    alternative: Option<Box<Expression>>,
+  },
+
+  IsUnset {
+    #[serde(rename = "is-unset")]
+    a: Box<Expression>,
   },
 
   And {
@@ -348,6 +379,15 @@ pub enum Expression {
   Not {
     not: Box<Expression>,
   },
+
+  // OTHER OPERATIONS
+  Equal {
+    #[serde(rename = "value")]
+    a:      Box<Expression>,
+    #[serde(rename = "is-equal")]
+    b:      Box<Expression>,
+    leeway: Box<Expression>,
+  },
 }
 
 impl Default for Expression {
@@ -372,10 +412,24 @@ impl Expression {
 
     Ok(*boolean)
   }
+
+  pub fn as_string(&self) -> anyhow::Result<&String> {
+    let Self::String(string) = self else {
+      bail!("tried to cast '{self:?}' to a string, failed")
+    };
+
+    Ok(string)
+  }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct EvalState {
+  pub governor_available:                      bool,
+  pub energy_performance_preference_available: bool,
+  pub energy_performance_bias_available:       bool,
+  pub frequency_available:                     bool,
+  pub turbo_available:                         bool,
+
   pub cpu_usage:                  f64,
   pub cpu_usage_volatility:       Option<f64>,
   pub cpu_temperature:            f64,
@@ -407,17 +461,17 @@ impl Expression {
       };
     }
 
-    // [e8dax09]: This may be look inefficient, and it definitely isn't optimal,
-    // but expressions in rules are usually so small that it doesn't matter or
-    // make a perceiveable performance difference.
-    //
-    // We also want to be strict, instead of lazy in binary operations, because
-    // we want to catch type errors immediately.
-    //
-    // FIXME: We currently cannot catch errors that will happen when propagating
-    // None. You can have a type error go uncaught on first startup by using
-    // $cpu-usage-volatility incorrectly, for example.
     Ok(Some(match self {
+      GovernorAvailable => Boolean(state.governor_available),
+      EnergyPerformancePreferenceAvailable => {
+        Boolean(state.energy_performance_preference_available)
+      },
+      EnergyPerformanceBiasAvailable => {
+        Boolean(state.energy_performance_bias_available)
+      },
+      FrequencyAvailable => Boolean(state.frequency_available),
+      TurboAvailable => Boolean(state.turbo_available),
+
       CpuUsage => Number(state.cpu_usage),
       CpuUsageVolatility => Number(try_ok!(state.cpu_usage_volatility)),
       CpuTemperature => Number(state.cpu_temperature),
@@ -433,7 +487,7 @@ impl Expression {
 
       Discharging => Boolean(state.discharging),
 
-      literal @ (Boolean(_) | Number(_)) => literal.clone(),
+      literal @ (Boolean(_) | Number(_) | String(_)) => literal.clone(),
 
       Plus { a, b } => Number(eval!(a).as_number()? + eval!(b).as_number()?),
       Minus { a, b } => Number(eval!(a).as_number()? - eval!(b).as_number()?),
@@ -462,39 +516,49 @@ impl Expression {
         Boolean(minimum < b && b < maximum)
       },
 
-      And { a, b } => {
-        let a = eval!(a).as_boolean()?;
-        let b = eval!(b).as_boolean()?;
-
-        Boolean(a && b)
+      IfElse {
+        condition,
+        consequence,
+        alternative,
+      } => {
+        if eval!(condition).as_boolean()? {
+          eval!(consequence)
+        } else if let Some(alternative) = alternative {
+          eval!(alternative)
+        } else {
+          return Ok(None);
+        }
       },
+
+      IsUnset { a } => Boolean(a.eval(state)?.is_none()),
+
+      And { a, b } => Boolean(eval!(a).as_boolean()? && eval!(b).as_boolean()?),
       All { all } => {
-        let mut result = true;
+        let mut all = all.iter();
 
-        for value in all {
-          let value = eval!(value).as_boolean()?;
+        loop {
+          let Some(value) = all.next() else {
+            break Boolean(true);
+          };
 
-          result = result && value;
+          if !eval!(value).as_boolean()? {
+            break Boolean(false);
+          }
         }
-
-        Boolean(result)
       },
-      Or { a, b } => {
-        let a = eval!(a).as_boolean()?;
-        let b = eval!(b).as_boolean()?;
-
-        Boolean(a || b)
-      },
+      Or { a, b } => Boolean(eval!(a).as_boolean()? || eval!(b).as_boolean()?),
       Any { any } => {
-        let mut result = false;
+        let mut any = any.iter();
 
-        for value in any {
-          let value = eval!(value).as_boolean()?;
+        loop {
+          let Some(value) = any.next() else {
+            break Boolean(false);
+          };
 
-          result = result || value;
+          if eval!(value).as_boolean()? {
+            break Boolean(true);
+          }
         }
-
-        Boolean(result)
       },
       Not { not } => Boolean(!eval!(not).as_boolean()?),
     }))

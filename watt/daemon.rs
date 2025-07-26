@@ -377,23 +377,40 @@ pub fn run(config: config::DaemonConfig) -> anyhow::Result<()> {
     let start = Instant::now();
 
     let state = config::EvalState {
-      cpu_usage:                   daemon.cpu_log.back().unwrap().usage,
-      cpu_usage_volatility:        daemon.cpu_volatility().map(|vol| vol.usage),
-      cpu_temperature:             daemon.cpu_log.back().unwrap().temperature,
-      cpu_temperature_volatility:  daemon
+      // TODO: Actually perform checking.
+      governor_available:                      true,
+      energy_performance_preference_available: true,
+      energy_performance_bias_available:       true,
+      frequency_available:                     true,
+      turbo_available:                         true,
+      cpu_usage:                               daemon
+        .cpu_log
+        .back()
+        .unwrap()
+        .usage,
+      cpu_usage_volatility:                    daemon
+        .cpu_volatility()
+        .map(|vol| vol.usage),
+      cpu_temperature:                         daemon
+        .cpu_log
+        .back()
+        .unwrap()
+        .temperature,
+      cpu_temperature_volatility:              daemon
         .cpu_volatility()
         .map(|vol| vol.temperature),
-      cpu_idle_seconds:            daemon
+      cpu_idle_seconds:                        daemon
         .last_user_activity
         .elapsed()
         .as_secs_f64(),
-      power_supply_charge:         daemon
+      power_supply_charge:                     daemon
         .power_supply_log
         .back()
         .unwrap()
         .charge,
-      power_supply_discharge_rate: daemon.power_supply_discharge_rate(),
-      discharging:                 daemon.discharging(),
+      power_supply_discharge_rate:             daemon
+        .power_supply_discharge_rate(),
+      discharging:                             daemon.discharging(),
     };
 
     let mut cpu_delta_for = HashMap::<u32, config::CpuDelta>::new();
