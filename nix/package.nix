@@ -22,7 +22,6 @@ in
     };
 
     cargoLock.lockFile = "${finalAttrs.src}/Cargo.lock";
-    useFetchCargoVendor = true;
     enableParallelBuilding = true;
 
     # xtask doesn't support passing --targe
@@ -36,10 +35,13 @@ in
 
     postInstall = ''
       # Install required files with the 'dist' task
-      cargo xtask dist \
+      $out/bin/xtask dist \
         --completions-dir $out/share/completions \
         --bin-dir $out/bin \
         --watt-binary $out/bin/watt
+
+      # Avoid populating PATH with an 'xtask' cmd
+      rm -rf $out/bin/xtask
     '';
 
     meta = {
