@@ -1,56 +1,39 @@
 use std::{
   fmt::Write as _,
-  io,
-  io::Write as _,
   process,
 };
-
-use yansi::Paint as _;
 
 fn main() {
   let Err(error) = watt::main() else {
     return;
   };
-
-  let mut err = io::stderr();
-
   let mut message = String::new();
-  let mut chain = error.chain().rev().peekable();
 
-  while let Some(error) = chain.next() {
-    let _ = write!(
-      err,
-      "{header} ",
-      header = if chain.peek().is_none() {
-        "error:"
-      } else {
-        "cause:"
-      }
-      .red()
-      .bold(),
-    );
+  for (index, error) in error.chain().enumerate() {
+    message.clear();
 
-    String::clear(&mut message);
-    let _ = write!(message, "{error}");
+    if index > 0 {
+      message.push_str("cause: ");
+    }
 
-    let mut chars = message.char_indices();
+    let error = error.to_string();
+    let mut chars = error.char_indices();
 
-    let _ = match (chars.next(), chars.next()) {
-      (Some((_, first)), Some((second_start, second)))
-        if second.is_lowercase() =>
-      {
-        writeln!(
-          err,
-          "{first_lowercase}{rest}",
-          first_lowercase = first.to_lowercase(),
-          rest = &message[second_start..],
-        )
-      },
-
-      _ => {
-        writeln!(err, "{message}")
-      },
+    if let Some((_, first)) = chars.next()
+      && let Some((second_start, second)) = chars.next()
+      && second.is_lowercase()
+    {
+      let _ = write!(
+        message,
+        "{first_lowercase}{rest}",
+        first_lowercase = first.to_lowercase(),
+        rest = &error[second_start..],
+      );
+    } else {
+      message.push_str(&error);
     };
+
+    log::error!("{message}");
   }
 
   process::exit(1);
