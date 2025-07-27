@@ -420,7 +420,7 @@ pub fn run(config: config::DaemonConfig) -> anyhow::Result<()> {
 
       if condition {
         rule.cpu.apply(&state)?;
-        rule.power.apply()?;
+        rule.power.apply(&state)?;
       }
     }
 

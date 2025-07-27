@@ -106,7 +106,7 @@ impl CpuDelta {
     };
 
     for cpu in &mut cpus {
-      if let Some(governor) = self.governor.as_ref()
+      if let Some(governor) = &self.governor
         && let Some(governor) = governor.eval(state)?
       {
         let governor = governor
@@ -189,35 +189,54 @@ impl CpuDelta {
   }
 }
 
-#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
 pub struct PowerDelta {
   /// The power supplies to apply the changes to. When unspecified, will be
   /// applied to all power supplies.
+  ///
+  /// Type: `Vec<String>`.
   #[serde(rename = "for", skip_serializing_if = "is_default")]
-  pub for_: Option<Vec<String>>,
+  pub for_: Option<Expression>,
 
   /// Set the percentage that the power supply has to drop under for charging
   /// to start. Short form: --charge-start.
+  ///
+  /// Type: `u8`.
   #[serde(skip_serializing_if = "is_default")]
-  pub charge_threshold_start: Option<u8>,
+  pub charge_threshold_start: Option<Expression>,
 
   /// Set the percentage where charging will stop. Short form: --charge-end.
+  ///
+  /// Type: `u8`.
   #[serde(skip_serializing_if = "is_default")]
-  pub charge_threshold_end: Option<u8>,
+  pub charge_threshold_end: Option<Expression>,
 
   /// Set ACPI platform profile. Has to be for all power supplies.
+  ///
+  /// Type: `String`.
   #[serde(skip_serializing_if = "is_default")]
-  pub platform_profile: Option<String>,
+  pub platform_profile: Option<Expression>,
 }
 
 impl PowerDelta {
-  pub fn apply(&self) -> anyhow::Result<()> {
+  pub fn apply(&self, state: &EvalState) -> anyhow::Result<()> {
     let mut power_supplies = match &self.for_ {
       Some(names) => {
+        let names = names
+          .eval(state)?
+          .ok_or_else(|| anyhow!("`power.for` resolved to undefined"))?;
+        let names = names
+          .try_into_list()
+          .context("`power.for` was not a list")?;
+
         let mut power_supplies = Vec::with_capacity(names.len());
 
         for name in names {
+          let name = name
+            .try_into_string()
+            .context("`power.for` item was not a string")?;
+
           power_supplies
             .push(power_supply::PowerSupply::from_name(name.clone())?);
         }
@@ -234,17 +253,34 @@ impl PowerDelta {
     };
 
     for power_supply in &mut power_supplies {
-      if let Some(threshold_start) = self.charge_threshold_start {
-        power_supply
-          .set_charge_threshold_start(threshold_start as f64 / 100.0)?;
+      if let Some(threshold_start) = &self.charge_threshold_start
+        && let Some(threshold_start) = threshold_start.eval(state)?
+      {
+        let threshold_start = threshold_start
+          .try_into_number()
+          .context("`power.charge-threshold-start` was not a number")?;
+
+        power_supply.set_charge_threshold_start(threshold_start / 100.0)?;
       }
 
-      if let Some(threshold_end) = self.charge_threshold_end {
-        power_supply.set_charge_threshold_end(threshold_end as f64 / 100.0)?;
+      if let Some(threshold_end) = &self.charge_threshold_end
+        && let Some(threshold_end) = threshold_end.eval(state)?
+      {
+        let threshold_end = threshold_end
+          .try_into_number()
+          .context("`power.charge-threshold-end` was not a number")?;
+
+        power_supply.set_charge_threshold_end(threshold_end / 100.0)?;
       }
     }
 
-    if let Some(platform_profile) = self.platform_profile.as_ref() {
+    if let Some(platform_profile) = &self.platform_profile
+      && let Some(platform_profile) = platform_profile.eval(state)?
+    {
+      let platform_profile = platform_profile
+        .try_into_string()
+        .context("`power.platform-profile` was not a string")?;
+
       power_supply::PowerSupply::set_platform_profile(platform_profile)?;
     }
 

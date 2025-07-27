@@ -87,7 +87,7 @@ impl fmt::Display for PowerSupply {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     write!(f, "power supply '{name}'", name = self.name.yellow())?;
 
-    if let Some(config) = self.threshold_config.as_ref() {
+    if let Some(config) = &self.threshold_config {
       write!(
         f,
         " from manufacturer '{manufacturer}'",
