@@ -18,7 +18,6 @@ in
     };
 
     cargoLock.lockFile = "${finalAttrs.src}/Cargo.lock";
-    useFetchCargoVendor = true;
     enableParallelBuilding = true;
 
     meta = {
