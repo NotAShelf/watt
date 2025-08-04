@@ -1,3 +1,5 @@
 target*
 result*
-.direnv
+.direnv/
+bin/
+completions/

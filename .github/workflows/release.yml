@@ -100,4 +100,3 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           files: SHA256SUMS
-

@@ -1,20 +1,29 @@
-[package]
-name = "watt"
-description = "Modern CPU frequency and power management utility for Linux"
-version = "0.3.2"
-edition = "2024"
-authors = ["NotAShelf <raf@notashelf.dev>"]
-rust-version = "1.85"
+[workspace]
+members  = [ "watt", "xtask" ]
+resolver = "3"
 
-[dependencies]
-serde = { version = "1.0", features = ["derive"] }
-toml = "0.8"
-dirs = "6.0"
-clap = { version = "4.0", features = ["derive"] }
-num_cpus = "1.16"
-ctrlc = "3.4"
-log = "0.4"
-env_logger = "0.11"
-thiserror = "2.0"
-anyhow = "1.0"
-jiff = "0.2.13"
+[workspace.package]
+authors      = [ "NotAShelf <raf@notashelf.dev>", "RGBCube <git@rgbcu.be>" ]
+description  = "Modern CPU frequency and power management utility for Linux"
+edition      = "2024"                                                        # Keep in sync with .rustfmt.toml.
+license      = "MPL-2.0"
+readme       = true
+repository   = "https://github.com/notashelf/watt"
+rust-version = "1.85"
+version      = "0.4.0"
+
+[workspace.dependencies]
+anyhow                = "1.0"
+clap                  = { version = "4.0", features = [ "derive", "env" ] }
+clap-verbosity-flag   = "3.0.2"
+clap_complete         = "4.5.54"
+clap_complete_nushell = "4.5.7"
+ctrlc                 = "3.4"
+derive_more           = { version = "2.0.1", features = [ "full" ] }
+env_logger            = "0.11"
+log                   = "0.4"
+num_cpus              = "1.16"
+serde                 = { version = "1.0", features = [ "derive" ] }
+thiserror             = "2.0"
+toml                  = "0.8"
+yansi                 = { version = "1.0.1", features = [ "detect-env", "detect-tty" ] }
