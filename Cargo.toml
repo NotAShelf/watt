@@ -9,21 +9,21 @@ edition      = "2024"                                                        # K
 license      = "MPL-2.0"
 readme       = true
 repository   = "https://github.com/notashelf/watt"
-rust-version = "1.85"
+rust-version = "1.88"
 version      = "0.4.0"
 
 [workspace.dependencies]
-anyhow                = "1.0"
-clap                  = { version = "4.0", features = [ "derive", "env" ] }
-clap-verbosity-flag   = "3.0.2"
-clap_complete         = "4.5.54"
-clap_complete_nushell = "4.5.7"
-ctrlc                 = "3.4"
+anyhow                = "1.0.99"
+clap                  = { version = "4.5.45", features = [ "derive", "env" ] }
+clap-verbosity-flag   = "3.0.3"
+clap_complete         = "4.5.57"
+clap_complete_nushell = "4.5.8"
+ctrlc                 = "3.4.7"
 derive_more           = { version = "2.0.1", features = [ "full" ] }
-env_logger            = "0.11"
-log                   = "0.4"
-num_cpus              = "1.16"
-serde                 = { version = "1.0", features = [ "derive" ] }
-thiserror             = "2.0"
-toml                  = "0.8"
+env_logger            = "0.11.8"
+log                   = "0.4.27"
+num_cpus              = "1.17.0"
+serde                 = { version = "1.0.219", features = [ "derive" ] }
+thiserror             = "2.0.14"
+toml                  = "0.9.5"
 yansi                 = { version = "1.0.1", features = [ "detect-env", "detect-tty" ] }
