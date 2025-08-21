@@ -281,8 +281,17 @@ impl Cpu {
   fn rescan_epb(&mut self) -> anyhow::Result<()> {
     let Self { number, .. } = self;
 
-    self.available_epbs = if self.has_cpufreq {
-      vec![
+    if !self.has_cpufreq {
+      return Ok(());
+    }
+
+    self.epb = fs::read(format!(
+      "/sys/devices/system/cpu/cpu{number}/cpufreq/energy_performance_bias"
+    ))
+    .with_context(|| format!("failed to read {self} EPB"))?;
+
+    if self.epb.is_some() {
+      self.available_epbs = vec![
         "1".to_owned(),
         "2".to_owned(),
         "3".to_owned(),
@@ -304,18 +313,8 @@ impl Cpu {
         "balance-power".to_owned(),
         "balance_power".to_owned(), // Alternative form with underscore.
         "power".to_owned(),
-      ]
-    } else {
-      Vec::new()
-    };
-
-    self.epb = Some(
-      fs::read(format!(
-        "/sys/devices/system/cpu/cpu{number}/cpufreq/energy_performance_bias"
-      ))
-      .with_context(|| format!("failed to read {self} EPB"))?
-      .with_context(|| format!("failed to find {self} EPB"))?,
-    );
+      ];
+    }
 
     Ok(())
   }

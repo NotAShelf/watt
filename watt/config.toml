@@ -11,7 +11,7 @@ priority = 100
 cpu.energy-performance-preference = "power"
 cpu.frequency-mhz-maximum         = 2000
 cpu.governor                      = "powersave"
-cpu.turbo                         = false
+cpu.turbo                         = { if = "?turbo-available", then = false }
 
 # Critical battery preservation.
 [[rule]]
@@ -21,7 +21,7 @@ priority = 90
 cpu.energy-performance-preference = "power"
 cpu.frequency-mhz-maximum         = 800         # More aggressive below critical threshold.
 cpu.governor                      = "powersave"
-cpu.turbo                         = false
+cpu.turbo                         = { if = "?turbo-available", then = false }
 power.platform-profile            = "low-power"
 
 # High performance mode for sustained high load.
@@ -35,7 +35,7 @@ priority = 80
 
 cpu.energy-performance-preference = "performance"
 cpu.governor                      = "performance"
-cpu.turbo                         = true
+cpu.turbo                         = { if = "?turbo-available", then = true }
 
 # Performance mode when not discharging.
 [[rule]]
@@ -49,7 +49,7 @@ priority = 70
 cpu.energy-performance-bias       = "balance_performance"
 cpu.energy-performance-preference = "performance"
 cpu.governor                      = "performance"
-cpu.turbo                         = true
+cpu.turbo                         = { if = "?turbo-available", then = true }
 
 # Moderate performance for medium load.
 [[rule]]
@@ -72,7 +72,7 @@ priority = 50
 
 cpu.energy-performance-preference = "power"
 cpu.governor                      = "powersave"
-cpu.turbo                         = false
+cpu.turbo                         = { if = "?turbo-available", then = false }
 
 # Extended idle power optimization.
 [[rule]]
@@ -82,7 +82,7 @@ priority = 40
 cpu.energy-performance-preference = "power"
 cpu.frequency-mhz-maximum         = 1600
 cpu.governor                      = "powersave"
-cpu.turbo                         = false
+cpu.turbo                         = { if = "?turbo-available", then = false }
 
 # Battery conservation when discharging.
 [[rule]]
@@ -92,7 +92,7 @@ priority = 30
 cpu.energy-performance-preference = "power"
 cpu.frequency-mhz-maximum         = 2000
 cpu.governor                      = "powersave"
-cpu.turbo                         = false
+cpu.turbo                         = { if = "?turbo-available", then = false }
 power.platform-profile            = "low-power"
 
 # General battery mode.
@@ -105,7 +105,7 @@ cpu.energy-performance-preference = "power"
 cpu.frequency-mhz-maximum         = 1800
 cpu.frequency-mhz-minimum         = 200
 cpu.governor                      = "powersave"
-cpu.turbo                         = false
+cpu.turbo                         = { if = "?turbo-available", then = false }
 
 # Balanced performance for general use. Default fallback rule.
 [[rule]]
