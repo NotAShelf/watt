@@ -194,29 +194,30 @@ impl Cpu {
   fn rescan_governor(&mut self) -> anyhow::Result<()> {
     let Self { number, .. } = *self;
 
-    self.available_governors = 'available_governors: {
-      let Some(content) = fs::read(format!(
-        "/sys/devices/system/cpu/cpu{number}/cpufreq/\
-         scaling_available_governors"
-      ))
-      .with_context(|| format!("failed to read {self} available governors"))?
-      else {
-        break 'available_governors Vec::new();
+    self.governor = fs::read(format!(
+      "/sys/devices/system/cpu/cpu{number}/cpufreq/scaling_governor"
+    ))
+    .with_context(|| format!("failed to read {self} scaling governor"))?;
+
+    if self.governor.is_some() {
+      self.available_governors = 'available_governors: {
+        let Some(content) = fs::read(format!(
+          "/sys/devices/system/cpu/cpu{number}/cpufreq/\
+           scaling_available_governors"
+        ))
+        .with_context(|| {
+          format!("failed to read {self} available governors")
+        })?
+        else {
+          break 'available_governors Vec::new();
+        };
+
+        content
+          .split_whitespace()
+          .map(ToString::to_string)
+          .collect()
       };
-
-      content
-        .split_whitespace()
-        .map(ToString::to_string)
-        .collect()
-    };
-
-    self.governor = Some(
-      fs::read(format!(
-        "/sys/devices/system/cpu/cpu{number}/cpufreq/scaling_governor"
-      ))
-      .with_context(|| format!("failed to read {self} scaling governor"))?
-      .with_context(|| format!("failed to find {self} scaling governor"))?,
-    );
+    }
 
     Ok(())
   }
@@ -227,22 +228,19 @@ impl Cpu {
     let frequency_khz = fs::read_n::<u64>(format!(
       "/sys/devices/system/cpu/cpu{number}/cpufreq/scaling_cur_freq"
     ))
-    .with_context(|| format!("failed to parse {self} frequency"))?
-    .with_context(|| format!("failed to find {self} frequency"))?;
+    .with_context(|| format!("failed to parse {self} frequency"))?;
     let frequency_khz_minimum = fs::read_n::<u64>(format!(
       "/sys/devices/system/cpu/cpu{number}/cpufreq/scaling_min_freq"
     ))
-    .with_context(|| format!("failed to parse {self} frequency minimum"))?
-    .with_context(|| format!("failed to find {self} frequency"))?;
+    .with_context(|| format!("failed to parse {self} frequency minimum"))?;
     let frequency_khz_maximum = fs::read_n::<u64>(format!(
       "/sys/devices/system/cpu/cpu{number}/cpufreq/scaling_max_freq"
     ))
-    .with_context(|| format!("failed to parse {self} frequency maximum"))?
-    .with_context(|| format!("failed to find {self} frequency"))?;
+    .with_context(|| format!("failed to parse {self} frequency maximum"))?;
 
-    self.frequency_mhz = Some(frequency_khz / 1000);
-    self.frequency_mhz_minimum = Some(frequency_khz_minimum / 1000);
-    self.frequency_mhz_maximum = Some(frequency_khz_maximum / 1000);
+    self.frequency_mhz = frequency_khz.map(|x| x / 1000);
+    self.frequency_mhz_minimum = frequency_khz_minimum.map(|x| x / 1000);
+    self.frequency_mhz_maximum = frequency_khz_maximum.map(|x| x / 1000);
 
     Ok(())
   }
@@ -279,10 +277,6 @@ impl Cpu {
 
   fn rescan_epb(&mut self) -> anyhow::Result<()> {
     let Self { number, .. } = self;
-
-    if !self.has_cpufreq {
-      return Ok(());
-    }
 
     self.epb = fs::read(format!(
       "/sys/devices/system/cpu/cpu{number}/cpufreq/energy_performance_bias"
