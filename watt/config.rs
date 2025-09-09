@@ -179,6 +179,8 @@ impl CpuDelta {
 
     if let Some(turbo) = &self.turbo {
       let turbo = turbo
+        .eval(state)?
+        .ok_or_else(|| anyhow!("`cpu.turbo` resolved to undefined"))?
         .try_into_boolean()
         .context("`cpu.turbo` was not a boolean")?;
 
