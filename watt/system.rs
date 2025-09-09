@@ -352,6 +352,7 @@ impl System {
 
         // Unknown, continue with other checks
         unknown => log::debug!("unknown chassis type: '{unknown}'"),
+        // God, I hate hardware.
       }
     }
 
