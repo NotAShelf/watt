@@ -250,30 +250,29 @@ impl Cpu {
   fn rescan_epp(&mut self) -> anyhow::Result<()> {
     let Self { number, .. } = *self;
 
-    self.available_epps = 'available_epps: {
-      let Some(content) = fs::read(format!(
-        "/sys/devices/system/cpu/cpu{number}/cpufreq/\
-         energy_performance_available_preferences"
-      ))
-      .with_context(|| format!("failed to read {self} available EPPs"))?
-      else {
-        break 'available_epps Vec::new();
+    self.epp = fs::read(format!(
+      "/sys/devices/system/cpu/cpu{number}/cpufreq/\
+       energy_performance_preference"
+    ))
+    .with_context(|| format!("failed to read {self} EPP"))?;
+
+    if self.epp.is_some() {
+      self.available_epps = 'available_epps: {
+        let Some(content) = fs::read(format!(
+          "/sys/devices/system/cpu/cpu{number}/cpufreq/\
+           energy_performance_available_preferences"
+        ))
+        .with_context(|| format!("failed to read {self} available EPPs"))?
+        else {
+          break 'available_epps Vec::new();
+        };
+
+        content
+          .split_whitespace()
+          .map(ToString::to_string)
+          .collect()
       };
-
-      content
-        .split_whitespace()
-        .map(ToString::to_string)
-        .collect()
-    };
-
-    self.epp = Some(
-      fs::read(format!(
-        "/sys/devices/system/cpu/cpu{number}/cpufreq/\
-         energy_performance_preference"
-      ))
-      .with_context(|| format!("failed to read {self} EPP"))?
-      .with_context(|| format!("failed to find {self} EPP"))?,
-    );
+    }
 
     Ok(())
   }
