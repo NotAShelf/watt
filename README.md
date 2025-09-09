@@ -288,6 +288,19 @@ of expressions as the parameter:
 if = { all = [ <expression>, <expression2> ] }
 ```
 
+Some predicates take arguments as TOML objects. For example, to check if a
+specific governor, energy performance preference, or energy performance bias is
+available:
+
+```toml
+if.is-governor-available = "powersave"
+if.is-energy-performance-preference-available = "balance_performance"
+if.is-energy-performance-bias-available = "5"
+```
+
+Each will be `true` only if the named value is available on your system. If the
+argument is not a string, Watt will fail with a configuration error.
+
 ### Basic Configuration Example
 
 ```toml
@@ -407,11 +420,31 @@ cpu.governor = "schedutil"
 Available CPU configuration options:
 
 - `governor` - CPU frequency governor (`performance`, `powersave`, `schedutil`,
-  etc.)
+  etc.). You can conditionally set a governor only if it is available using:
+
+  ```toml
+  cpu.governor = { if.is-governor-available = "powersave", then = "powersave" }
+  ```
+
+  If the governor name is not a string, Watt will fail with a configuration
+  error.
+
 - `energy-performance-preference` - EPP setting (`performance`,
-  `balance_performance`, `balance_power`, `power`)
+  `balance_performance`, `balance_power`, `power`, etc.). You can conditionally
+  set an EPP only if it is available using:
+
+  ```toml
+  cpu.energy-performance-preference = { if.is-energy-performance-preference-available = "balance_performance", then = "balance_performance" }
+  ```
+
 - `energy-performance-bias` - EPB setting (`performance`, `balance_performance`,
-  `balance_power`, `power`)
+  `balance_power`, `power`, etc.). You can conditionally set an EPB only if it
+  is available using:
+
+  ```toml
+  cpu.energy-performance-bias = { if.is-energy-performance-bias-available = "5", then = "5" }
+  ```
+
 - `frequency-mhz-minimum` - Minimum CPU frequency in MHz
 - `frequency-mhz-maximum` - Maximum CPU frequency in MHz
 - `turbo` - Enable/disable turbo boost (boolean)
