@@ -268,6 +268,7 @@ impl System {
       // Match various common label formats:
       // "Core X", "core X", "Core-X", "CPU Core X", etc.
       let number = label
+        .trim()
         .trim_start_matches("cpu")
         .trim_start_matches("CPU")
         .trim_start()
@@ -277,10 +278,18 @@ impl System {
         .trim_start_matches("Tctl")
         .trim_start_matches("Tdie")
         .trim_start_matches("Tccd")
-        .trim_start_matches(['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'])
-        .trim_start()
-        .trim_start_matches("-")
-        .trim();
+        .trim_start();
+
+      let number = if number.chars().all(|c| c.is_ascii_digit()) {
+        number
+      } else {
+        number
+          .trim_start_matches([
+            '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+          ])
+          .trim_start()
+          .trim_start_matches("-")
+      };
 
       log::debug!(
         "stripped 'Core' or similar identifier prefix of label content: \
