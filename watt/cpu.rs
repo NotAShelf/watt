@@ -416,8 +416,6 @@ impl Cpu {
       ..
     } = *self;
 
-    log::debug!("setting governor '{governor}' for CPU {number}");
-
     if !governors
       .iter()
       .any(|avail_governor| avail_governor == governor)
