@@ -360,6 +360,14 @@ pub enum Expression {
     #[serde(rename = "is-governor-available")]
     value: Box<Expression>,
   },
+  IsEnergyPerformancePreferenceAvailable {
+    #[serde(rename = "is-energy-performance-preference-available")]
+    value: Box<Expression>,
+  },
+  IsEnergyPerformanceBiasAvailable {
+    #[serde(rename = "is-energy-performance-bias-available")]
+    value: Box<Expression>,
+  },
 
   #[serde(with = "expression::energy_performance_preference_available")]
   EnergyPerformancePreferenceAvailable,
@@ -584,6 +592,34 @@ impl Expression {
           )?
           .iter()
           .any(|cpu| cpu.available_governors.contains(value));
+
+        Boolean(available)
+      },
+      IsEnergyPerformancePreferenceAvailable { value } => {
+        let value = eval!(value);
+        let value = value.try_into_string()?;
+
+        let available = cpu::Cpu::all()
+          .context(
+            "failed to scan all CPUs and get their information for \
+             `is-energy-performance-preference-available`",
+          )?
+          .iter()
+          .any(|cpu| cpu.available_epps.contains(value));
+
+        Boolean(available)
+      },
+      IsEnergyPerformanceBiasAvailable { value } => {
+        let value = eval!(value);
+        let value = value.try_into_string()?;
+
+        let available = cpu::Cpu::all()
+          .context(
+            "failed to scan all CPUs and get their information for \
+             `is-energy-performance-bias-available`",
+          )?
+          .iter()
+          .any(|cpu| cpu.available_epbs.contains(value));
 
         Boolean(available)
       },
