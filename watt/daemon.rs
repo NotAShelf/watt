@@ -18,6 +18,7 @@ use anyhow::Context;
 
 use crate::{
   config,
+  cpu,
   system,
 };
 
@@ -373,9 +374,16 @@ pub fn run(config: config::DaemonConfig) -> anyhow::Result<()> {
     let start = Instant::now();
 
     let state = config::EvalState {
-      // TODO: Actually perform checking.
-      frequency_available:         true,
-      turbo_available:             true,
+      frequency_available:         daemon
+        .system
+        .cpus
+        .iter()
+        .any(|cpu| cpu.frequency_mhz.is_some()),
+      turbo_available:             cpu::Cpu::turbo()
+        .context(
+          "failed to read CPU turbo boost status for `is-turbo-available`",
+        )?
+        .is_some(),
       cpu_usage:                   daemon.cpu_log.back().unwrap().usage,
       cpu_usage_volatility:        daemon.cpu_volatility().map(|vol| vol.usage),
       cpu_temperature:             daemon.cpu_log.back().unwrap().temperature,
