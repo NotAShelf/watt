@@ -368,6 +368,10 @@ pub enum Expression {
     #[serde(rename = "is-energy-performance-bias-available")]
     value: Box<Expression>,
   },
+  IsPlatformProfileAvailable {
+    #[serde(rename = "is-platform-profile-available")]
+    value: Box<Expression>,
+  },
 
   #[serde(with = "expression::energy_performance_preference_available")]
   EnergyPerformancePreferenceAvailable,
@@ -620,6 +624,20 @@ impl Expression {
           )?
           .iter()
           .any(|cpu| cpu.available_epbs.contains(value));
+
+        Boolean(available)
+      },
+      IsPlatformProfileAvailable { value } => {
+        let value = eval!(value);
+        let value = value.try_into_string()?;
+
+        let available =
+          power_supply::PowerSupply::get_available_platform_profiles()
+            .context(
+              "failed to get available platform profiles for \
+               `is-platform-profile-available`",
+            )?
+            .contains(value);
 
         Boolean(available)
       },
