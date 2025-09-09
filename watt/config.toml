@@ -19,10 +19,10 @@ if.all   = [ "?discharging", { is-less-than = 0.3, value = "%power-supply-charge
 priority = 90
 
 cpu.energy-performance-preference = "power"
-cpu.frequency-mhz-maximum         = 800                                                            # More aggressive below critical threshold.
+cpu.frequency-mhz-maximum         = 800                                                                    # More aggressive below critical threshold.
 cpu.governor                      = { if.is-governor-available = "powersave", then = "powersave" }
 cpu.turbo                         = { if = "?turbo-available", then = false }
-power.platform-profile            = "low-power"
+power.platform-profile            = { if.is-platform-profile-available = "low-power", then = "low-power" }
 
 # High performance mode for sustained high load.
 [[rule]]
@@ -93,7 +93,7 @@ cpu.energy-performance-preference = "power"
 cpu.frequency-mhz-maximum         = 2000
 cpu.governor                      = { if.is-governor-available = "powersave", then = "powersave" }
 cpu.turbo                         = { if = "?turbo-available", then = false }
-power.platform-profile            = "low-power"
+power.platform-profile            = { if.is-platform-profile-available = "low-power", then = "low-power" }
 
 # General battery mode.
 [[rule]]
