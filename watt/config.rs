@@ -336,7 +336,6 @@ macro_rules! named {
 }
 
 mod expression {
-  named!(governor_available => "?governor-available");
   named!(energy_performance_preference_available => "?energy-performance-preference-available");
   named!(energy_performance_bias_available => "?energy-performance-bias-available");
   named!(frequency_available => "?frequency-available");
@@ -357,8 +356,10 @@ mod expression {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(untagged)]
 pub enum Expression {
-  #[serde(with = "expression::governor_available")]
-  GovernorAvailable,
+  IsGovernorAvailable {
+    #[serde(rename = "is-governor-available")]
+    value: Box<Expression>,
+  },
 
   #[serde(with = "expression::energy_performance_preference_available")]
   EnergyPerformancePreferenceAvailable,
@@ -572,7 +573,20 @@ impl Expression {
     }
 
     Ok(Some(match self {
-      GovernorAvailable => Boolean(state.governor_available),
+      IsGovernorAvailable { value } => {
+        let value = eval!(value);
+        let value = value.try_into_string()?;
+
+        let available = cpu::Cpu::all()
+          .context(
+            "failed to scan all CPUs and get their information for \
+             `is-governor-available`",
+          )?
+          .iter()
+          .any(|cpu| cpu.available_governors.contains(value));
+
+        Boolean(available)
+      },
       EnergyPerformancePreferenceAvailable => {
         Boolean(state.energy_performance_preference_available)
       },
