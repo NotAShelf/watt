@@ -336,8 +336,6 @@ macro_rules! named {
 }
 
 mod expression {
-  named!(energy_performance_preference_available => "?energy-performance-preference-available");
-  named!(energy_performance_bias_available => "?energy-performance-bias-available");
   named!(frequency_available => "?frequency-available");
   named!(turbo_available => "?turbo-available");
 
@@ -372,12 +370,6 @@ pub enum Expression {
     #[serde(rename = "is-platform-profile-available")]
     value: Box<Expression>,
   },
-
-  #[serde(with = "expression::energy_performance_preference_available")]
-  EnergyPerformancePreferenceAvailable,
-
-  #[serde(with = "expression::energy_performance_bias_available")]
-  EnergyPerformanceBiasAvailable,
 
   #[serde(with = "expression::frequency_available")]
   FrequencyAvailable,
@@ -547,11 +539,8 @@ impl Expression {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct EvalState {
-  pub governor_available:                      bool,
-  pub energy_performance_preference_available: bool,
-  pub energy_performance_bias_available:       bool,
-  pub frequency_available:                     bool,
-  pub turbo_available:                         bool,
+  pub frequency_available: bool,
+  pub turbo_available:     bool,
 
   pub cpu_usage:                  f64,
   pub cpu_usage_volatility:       Option<f64>,
@@ -640,12 +629,6 @@ impl Expression {
             .contains(value);
 
         Boolean(available)
-      },
-      EnergyPerformancePreferenceAvailable => {
-        Boolean(state.energy_performance_preference_available)
-      },
-      EnergyPerformanceBiasAvailable => {
-        Boolean(state.energy_performance_bias_available)
       },
       FrequencyAvailable => Boolean(state.frequency_available),
       TurboAvailable => Boolean(state.turbo_available),

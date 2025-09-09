@@ -306,10 +306,10 @@ impl Daemon {
       }
     }
 
-    if let Some(volatility) = self.cpu_volatility() {
-      if volatility.usage > 0.1 || volatility.temperature > 0.02 {
-        delay = (delay / 2).max(Duration::from_secs(1));
-      }
+    if let Some(volatility) = self.cpu_volatility()
+      && (volatility.usage > 0.1 || volatility.temperature > 0.02)
+    {
+      delay = (delay / 2).max(Duration::from_secs(1));
     }
 
     let delay = match self.last_polling_delay {
@@ -374,39 +374,25 @@ pub fn run(config: config::DaemonConfig) -> anyhow::Result<()> {
 
     let state = config::EvalState {
       // TODO: Actually perform checking.
-      governor_available:                      true,
-      energy_performance_preference_available: true,
-      energy_performance_bias_available:       true,
-      frequency_available:                     true,
-      turbo_available:                         true,
-      cpu_usage:                               daemon
-        .cpu_log
-        .back()
-        .unwrap()
-        .usage,
-      cpu_usage_volatility:                    daemon
-        .cpu_volatility()
-        .map(|vol| vol.usage),
-      cpu_temperature:                         daemon
-        .cpu_log
-        .back()
-        .unwrap()
-        .temperature,
-      cpu_temperature_volatility:              daemon
+      frequency_available:         true,
+      turbo_available:             true,
+      cpu_usage:                   daemon.cpu_log.back().unwrap().usage,
+      cpu_usage_volatility:        daemon.cpu_volatility().map(|vol| vol.usage),
+      cpu_temperature:             daemon.cpu_log.back().unwrap().temperature,
+      cpu_temperature_volatility:  daemon
         .cpu_volatility()
         .map(|vol| vol.temperature),
-      cpu_idle_seconds:                        daemon
+      cpu_idle_seconds:            daemon
         .last_user_activity
         .elapsed()
         .as_secs_f64(),
-      power_supply_charge:                     daemon
+      power_supply_charge:         daemon
         .power_supply_log
         .back()
         .unwrap()
         .charge,
-      power_supply_discharge_rate:             daemon
-        .power_supply_discharge_rate(),
-      discharging:                             daemon.discharging(),
+      power_supply_discharge_rate: daemon.power_supply_discharge_rate(),
+      discharging:                 daemon.discharging(),
     };
 
     for rule in &config.rules {
