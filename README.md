@@ -155,7 +155,7 @@ turbo = "auto"
 # Enable or disable automatic turbo management (when turbo = "auto")
 enable_auto_turbo = true
 # Custom thresholds for auto turbo management
-turbo_auto_settings = { load_threshold_high = 70.0, load_threshold_low = 30.0, temp_threshold_high = 75.0, initial_turbo_state = false # whether turbo should be initially enabled (false = disabled) }
+turbo_auto_settings = { load_threshold_high = 70.0, load_threshold_low = 30.0, temp_threshold_high = 75.0, initial_turbo_state = false } # whether turbo should be initially enabled (false = disabled)
 # Energy Performance Preference
 epp = "performance"
 # Energy Performance Bias (0-15 scale or named value)
@@ -174,7 +174,7 @@ governor = "powersave"
 turbo = "auto"
 # More conservative auto turbo settings on battery
 enable_auto_turbo = true
-turbo_auto_settings = { load_threshold_high = 80.0, load_threshold_low = 40.0, temp_threshold_high = 70.0, initial_turbo_state = false # start with turbo disabled on battery for power savings }
+turbo_auto_settings = { load_threshold_high = 80.0, load_threshold_low = 40.0, temp_threshold_high = 70.0, initial_turbo_state = false } # start with turbo disabled on battery for power savings
 epp = "power"
 epb = "balance_power"
 platform_profile = "low-power"
