@@ -9,6 +9,7 @@ use std::{
 
 use anyhow::{
   Context,
+  anyhow,
   bail,
 };
 use yansi::Paint as _;
@@ -344,9 +345,12 @@ impl Cpu {
               Some((number, stat))
             },
           )))
-          .unwrap();
+          .map_err(|_| anyhow!("failed to initialize CPU stat cache"))?;
 
-        cache.stat.get().unwrap()
+        cache
+          .stat
+          .get()
+          .context("CPU stat cache was not initialized")?
       },
     };
 
@@ -399,8 +403,14 @@ impl Cpu {
 
         try_save_data!();
 
-        cache.info.set(info).unwrap();
-        cache.info.get().unwrap()
+        cache
+          .info
+          .set(info)
+          .map_err(|_| anyhow!("failed to initialize CPU info cache"))?;
+        cache
+          .info
+          .get()
+          .context("CPU info cache was not initialized")?
       },
     };
 

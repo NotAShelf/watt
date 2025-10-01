@@ -251,9 +251,9 @@ impl Daemon {
     }
 
     // Start of discharging. Has the most charge.
-    let start = discharging.last().unwrap();
+    let start = discharging.last()?;
     // End of discharging, very close to now. Has the least charge.
-    let end = discharging.first().unwrap();
+    let end = discharging.first()?;
 
     let discharging_duration_seconds = (start.at - end.at).as_secs_f64();
     let discharging_duration_hours = discharging_duration_seconds / 60.0 / 60.0;
@@ -384,9 +384,17 @@ pub fn run(config: config::DaemonConfig) -> anyhow::Result<()> {
           "failed to read CPU turbo boost status for `is-turbo-available`",
         )?
         .is_some(),
-      cpu_usage:                   daemon.cpu_log.back().unwrap().usage,
+      cpu_usage:                   daemon
+        .cpu_log
+        .back()
+        .context("CPU log is empty")?
+        .usage,
       cpu_usage_volatility:        daemon.cpu_volatility().map(|vol| vol.usage),
-      cpu_temperature:             daemon.cpu_log.back().unwrap().temperature,
+      cpu_temperature:             daemon
+        .cpu_log
+        .back()
+        .context("CPU log is empty")?
+        .temperature,
       cpu_temperature_volatility:  daemon
         .cpu_volatility()
         .map(|vol| vol.temperature),
@@ -397,7 +405,7 @@ pub fn run(config: config::DaemonConfig) -> anyhow::Result<()> {
       power_supply_charge:         daemon
         .power_supply_log
         .back()
-        .unwrap()
+        .context("power supply log is empty")?
         .charge,
       power_supply_discharge_rate: daemon.power_supply_discharge_rate(),
       discharging:                 daemon.discharging(),
