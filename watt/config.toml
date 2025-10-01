@@ -8,8 +8,8 @@
 if       = { is-more-than = 85.0, value = "$cpu-temperature" }
 priority = 100
 
-cpu.energy-performance-preference = { if.is-energy-performance-preference-available = "power", then = "power" }
 cpu.energy-performance-bias       = { if.is-energy-performance-bias-available = "power", then = "power" }
+cpu.energy-performance-preference = { if.is-energy-performance-preference-available = "power", then = "power" }
 cpu.frequency-mhz-maximum         = { if = "?frequency-available", then = 2000 }
 cpu.governor                      = { if.is-governor-available = "powersave", then = "powersave" }
 cpu.turbo                         = { if = "?turbo-available", then = false }
@@ -19,9 +19,9 @@ cpu.turbo                         = { if = "?turbo-available", then = false }
 if.all   = [ "?discharging", { is-less-than = 0.3, value = "%power-supply-charge" } ]
 priority = 90
 
-cpu.energy-performance-preference = { if.is-energy-performance-preference-available = "power", then = "power" }
 cpu.energy-performance-bias       = { if.is-energy-performance-bias-available = "power", then = "power" }
-cpu.frequency-mhz-maximum         = { if = "?frequency-available", then = 800 }                            # More aggressive below critical threshold.
+cpu.energy-performance-preference = { if.is-energy-performance-preference-available = "power", then = "power" }
+cpu.frequency-mhz-maximum         = { if = "?frequency-available", then = 800 }                                 # More aggressive below critical threshold.
 cpu.governor                      = { if.is-governor-available = "powersave", then = "powersave" }
 cpu.turbo                         = { if = "?turbo-available", then = false }
 power.platform-profile            = { if.is-platform-profile-available = "low-power", then = "low-power" }
@@ -35,8 +35,8 @@ if.all = [
 ]
 priority = 80
 
-cpu.energy-performance-preference = { if.is-energy-performance-preference-available = "performance", then = "performance" }
 cpu.energy-performance-bias       = { if.is-energy-performance-bias-available = "performance", then = "performance" }
+cpu.energy-performance-preference = { if.is-energy-performance-preference-available = "performance", then = "performance" }
 cpu.governor                      = { if.is-governor-available = "performance", then = "performance" }
 cpu.turbo                         = { if = "?turbo-available", then = true }
 
@@ -62,8 +62,8 @@ if.all = [
 ]
 priority = 60
 
-cpu.energy-performance-preference = { if.is-energy-performance-preference-available = "balance_performance", then = "balance_performance" }
 cpu.energy-performance-bias       = { if.is-energy-performance-bias-available = "balance_performance", then = "balance_performance" }
+cpu.energy-performance-preference = { if.is-energy-performance-preference-available = "balance_performance", then = "balance_performance" }
 cpu.governor                      = { if.is-governor-available = "schedutil", then = "schedutil" }
 
 # Power saving during low activity.
@@ -74,8 +74,8 @@ if.all = [
 ]
 priority = 50
 
-cpu.energy-performance-preference = { if.is-energy-performance-preference-available = "power", then = "power" }
 cpu.energy-performance-bias       = { if.is-energy-performance-bias-available = "power", then = "power" }
+cpu.energy-performance-preference = { if.is-energy-performance-preference-available = "power", then = "power" }
 cpu.governor                      = { if.is-governor-available = "powersave", then = "powersave" }
 cpu.turbo                         = { if = "?turbo-available", then = false }
 
@@ -84,8 +84,8 @@ cpu.turbo                         = { if = "?turbo-available", then = false }
 if       = { is-more-than = 300.0, value = "$cpu-idle-seconds" }
 priority = 40
 
-cpu.energy-performance-preference = { if.is-energy-performance-preference-available = "power", then = "power" }
 cpu.energy-performance-bias       = { if.is-energy-performance-bias-available = "power", then = "power" }
+cpu.energy-performance-preference = { if.is-energy-performance-preference-available = "power", then = "power" }
 cpu.frequency-mhz-maximum         = { if = "?frequency-available", then = 1600 }
 cpu.governor                      = { if.is-governor-available = "powersave", then = "powersave" }
 cpu.turbo                         = { if = "?turbo-available", then = false }
@@ -95,8 +95,8 @@ cpu.turbo                         = { if = "?turbo-available", then = false }
 if.all   = [ "?discharging", { is-less-than = 0.5, value = "%power-supply-charge" } ]
 priority = 30
 
-cpu.energy-performance-preference = { if.is-energy-performance-preference-available = "power", then = "power" }
 cpu.energy-performance-bias       = { if.is-energy-performance-bias-available = "power", then = "power" }
+cpu.energy-performance-preference = { if.is-energy-performance-preference-available = "power", then = "power" }
 cpu.frequency-mhz-maximum         = { if = "?frequency-available", then = 2000 }
 cpu.governor                      = { if.is-governor-available = "powersave", then = "powersave" }
 cpu.turbo                         = { if = "?turbo-available", then = false }
@@ -116,7 +116,7 @@ cpu.turbo                         = { if = "?turbo-available", then = false }
 
 # Balanced performance for general use. Default fallback rule.
 [[rule]]
-cpu.energy-performance-preference = { if.is-energy-performance-preference-available = "balance_performance", then = "balance_performance" }
 cpu.energy-performance-bias       = { if.is-energy-performance-bias-available = "balance_performance", then = "balance_performance" }
+cpu.energy-performance-preference = { if.is-energy-performance-preference-available = "balance_performance", then = "balance_performance" }
 cpu.governor                      = { if.is-governor-available = "schedutil", then = "schedutil" }
 priority                          = 0

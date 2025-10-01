@@ -13,17 +13,17 @@ rust-version = "1.88"
 version      = "0.4.0"
 
 [workspace.dependencies]
-anyhow                = "1.0.99"
-clap                  = { version = "4.5.45", features = [ "derive", "env" ] }
-clap-verbosity-flag   = "3.0.3"
-clap_complete         = "4.5.57"
-clap_complete_nushell = "4.5.8"
-ctrlc                 = "3.4.7"
-derive_more           = { version = "2.0.1", features = [ "full" ] }
+anyhow                = "1.0.100"
+clap                  = { features = [ "derive", "env" ], version = "4.5.50" }
+clap-verbosity-flag   = "3.0.4"
+clap_complete         = "4.5.59"
+clap_complete_nushell = "4.5.9"
+ctrlc                 = "3.5.0"
+derive_more           = { features = [ "full" ], version = "2.0.1" }
 env_logger            = "0.11.8"
-log                   = "0.4.27"
+log                   = "0.4.28"
 num_cpus              = "1.17.0"
-serde                 = { version = "1.0.219", features = [ "derive" ] }
-thiserror             = "2.0.14"
-toml                  = "0.9.5"
-yansi                 = { version = "1.0.1", features = [ "detect-env", "detect-tty" ] }
+serde                 = { features = [ "derive" ], version = "1.0.228" }
+thiserror             = "2.0.17"
+toml                  = "0.9.8"
+yansi                 = { features = [ "detect-env", "detect-tty" ], version = "1.0.1" }
