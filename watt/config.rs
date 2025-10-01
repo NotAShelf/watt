@@ -67,8 +67,16 @@ pub struct CpuDelta {
   pub turbo: Option<Expression>,
 }
 
+struct PendingCpuAction {
+  governor:              Option<String>,
+  epp:                   Option<String>,
+  epb:                   Option<String>,
+  frequency_mhz_minimum: Option<u64>,
+  frequency_mhz_maximum: Option<u64>,
+}
+
 impl CpuDelta {
-  pub fn apply(&self, state: &EvalState) -> anyhow::Result<()> {
+  pub fn apply(&self, state: &EvalState<'_>) -> anyhow::Result<()> {
     let mut cpus = match &self.for_ {
       Some(numbers) => {
         let numbers = numbers
@@ -105,39 +113,54 @@ impl CpuDelta {
       },
     };
 
-    for cpu in &mut cpus {
+    let mut pending_actions = Vec::with_capacity(cpus.len());
+
+    for cpu in &cpus {
+      let cpu_state = EvalState {
+        current_cpu: Some(cpu),
+        ..*state
+      };
+
+      let mut action = PendingCpuAction {
+        governor:              None,
+        epp:                   None,
+        epb:                   None,
+        frequency_mhz_minimum: None,
+        frequency_mhz_maximum: None,
+      };
+
       if let Some(governor) = &self.governor
-        && let Some(governor) = governor.eval(state)?
+        && let Some(governor) = governor.eval(&cpu_state)?
       {
         let governor = governor
           .try_into_string()
           .context("`cpu.governor` was not a string")?;
 
-        cpu.set_governor(governor)?;
+        action.governor = Some(governor.to_string());
       }
 
       if let Some(epp) = &self.energy_performance_preference
-        && let Some(epp) = epp.eval(state)?
+        && let Some(epp) = epp.eval(&cpu_state)?
       {
         let epp = epp
           .try_into_string()
           .context("`cpu.energy-performance-preference` was not a string")?;
 
-        cpu.set_epp(epp)?;
+        action.epp = Some(epp.to_string());
       }
 
       if let Some(epb) = &self.energy_performance_bias
-        && let Some(epb) = epb.eval(state)?
+        && let Some(epb) = epb.eval(&cpu_state)?
       {
         let epb = epb
           .try_into_string()
           .context("`cpu.energy-performance-bias` was not a string")?;
 
-        cpu.set_epb(epb)?;
+        action.epb = Some(epb.to_string());
       }
 
       if let Some(mhz_minimum) = &self.frequency_mhz_minimum
-        && let Some(mhz_minimum) = mhz_minimum.eval(state)?
+        && let Some(mhz_minimum) = mhz_minimum.eval(&cpu_state)?
       {
         let mhz_minimum = mhz_minimum
           .try_into_number()
@@ -153,11 +176,11 @@ impl CpuDelta {
           bail!("`cpu.frequency-mhz-minimum` too big: {mhz_minimum}");
         }
 
-        cpu.set_frequency_mhz_minimum(mhz_minimum as u64)?;
+        action.frequency_mhz_minimum = Some(mhz_minimum as u64);
       }
 
       if let Some(mhz_maximum) = &self.frequency_mhz_maximum
-        && let Some(mhz_maximum) = mhz_maximum.eval(state)?
+        && let Some(mhz_maximum) = mhz_maximum.eval(&cpu_state)?
       {
         let mhz_maximum = mhz_maximum
           .try_into_number()
@@ -173,14 +196,38 @@ impl CpuDelta {
           bail!("`cpu.frequency-mhz-maximum` too big: {mhz_maximum}");
         }
 
-        cpu.set_frequency_mhz_maximum(mhz_maximum as u64)?;
+        action.frequency_mhz_maximum = Some(mhz_maximum as u64);
+      }
+
+      pending_actions.push(action);
+    }
+
+    for (cpu, action) in cpus.iter_mut().zip(pending_actions.iter()) {
+      if let Some(governor) = &action.governor {
+        cpu.set_governor(governor)?;
+      }
+
+      if let Some(epp) = &action.epp {
+        cpu.set_epp(epp)?;
+      }
+
+      if let Some(epb) = &action.epb {
+        cpu.set_epb(epb)?;
+      }
+
+      if let Some(mhz_minimum) = action.frequency_mhz_minimum {
+        cpu.set_frequency_mhz_minimum(mhz_minimum)?;
+      }
+
+      if let Some(mhz_maximum) = action.frequency_mhz_maximum {
+        cpu.set_frequency_mhz_maximum(mhz_maximum)?;
       }
     }
 
-    if let Some(turbo) = &self.turbo {
+    if let Some(turbo) = &self.turbo
+      && let Some(turbo) = turbo.eval(state)?
+    {
       let turbo = turbo
-        .eval(state)?
-        .ok_or_else(|| anyhow!("`cpu.turbo` resolved to undefined"))?
         .try_into_boolean()
         .context("`cpu.turbo` was not a boolean")?;
 
@@ -222,7 +269,7 @@ pub struct PowerDelta {
 }
 
 impl PowerDelta {
-  pub fn apply(&self, state: &EvalState) -> anyhow::Result<()> {
+  pub fn apply(&self, state: &EvalState<'_>) -> anyhow::Result<()> {
     let mut power_supplies = match &self.for_ {
       Some(names) => {
         let names = names
@@ -538,7 +585,7 @@ impl Expression {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct EvalState {
+pub struct EvalState<'a> {
   pub frequency_available: bool,
   pub turbo_available:     bool,
 
@@ -552,10 +599,15 @@ pub struct EvalState {
   pub power_supply_discharge_rate: Option<f64>,
 
   pub discharging: bool,
+
+  pub current_cpu: Option<&'a cpu::Cpu>,
 }
 
 impl Expression {
-  pub fn eval(&self, state: &EvalState) -> anyhow::Result<Option<Expression>> {
+  pub fn eval(
+    &self,
+    state: &EvalState<'_>,
+  ) -> anyhow::Result<Option<Expression>> {
     use Expression::*;
 
     macro_rules! try_ok {
@@ -578,13 +630,17 @@ impl Expression {
         let value = eval!(value);
         let value = value.try_into_string()?;
 
-        let available = cpu::Cpu::all()
-          .context(
-            "failed to scan all CPUs and get their information for \
-             `is-governor-available`",
-          )?
-          .iter()
-          .any(|cpu| cpu.available_governors.contains(value));
+        let available = if let Some(cpu) = state.current_cpu {
+          cpu.available_governors.contains(value)
+        } else {
+          cpu::Cpu::all()
+            .context(
+              "failed to scan all CPUs and get their information for \
+               `is-governor-available`",
+            )?
+            .iter()
+            .any(|cpu| cpu.available_governors.contains(value))
+        };
 
         Boolean(available)
       },
@@ -592,13 +648,17 @@ impl Expression {
         let value = eval!(value);
         let value = value.try_into_string()?;
 
-        let available = cpu::Cpu::all()
-          .context(
-            "failed to scan all CPUs and get their information for \
-             `is-energy-performance-preference-available`",
-          )?
-          .iter()
-          .any(|cpu| cpu.available_epps.contains(value));
+        let available = if let Some(cpu) = state.current_cpu {
+          cpu.available_epps.contains(value)
+        } else {
+          cpu::Cpu::all()
+            .context(
+              "failed to scan all CPUs and get their information for \
+               `is-energy-performance-preference-available`",
+            )?
+            .iter()
+            .any(|cpu| cpu.available_epps.contains(value))
+        };
 
         Boolean(available)
       },
@@ -606,13 +666,17 @@ impl Expression {
         let value = eval!(value);
         let value = value.try_into_string()?;
 
-        let available = cpu::Cpu::all()
-          .context(
-            "failed to scan all CPUs and get their information for \
-             `is-energy-performance-bias-available`",
-          )?
-          .iter()
-          .any(|cpu| cpu.available_epbs.contains(value));
+        let available = if let Some(cpu) = state.current_cpu {
+          cpu.available_epbs.contains(value)
+        } else {
+          cpu::Cpu::all()
+            .context(
+              "failed to scan all CPUs and get their information for \
+               `is-energy-performance-bias-available`",
+            )?
+            .iter()
+            .any(|cpu| cpu.available_epbs.contains(value))
+        };
 
         Boolean(available)
       },

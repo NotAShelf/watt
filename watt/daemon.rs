@@ -401,6 +401,7 @@ pub fn run(config: config::DaemonConfig) -> anyhow::Result<()> {
         .charge,
       power_supply_discharge_rate: daemon.power_supply_discharge_rate(),
       discharging:                 daemon.discharging(),
+      current_cpu:                 None,
     };
 
     for rule in &config.rules {
