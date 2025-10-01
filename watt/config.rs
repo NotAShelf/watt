@@ -129,74 +129,93 @@ impl CpuDelta {
         frequency_mhz_maximum: None,
       };
 
-      if let Some(governor) = &self.governor
-        && let Some(governor) = governor.eval(&cpu_state)?
-      {
-        let governor = governor
-          .try_into_string()
-          .context("`cpu.governor` was not a string")?;
+      if let Some(governor) = &self.governor {
+        if let Some(governor) = governor.eval(&cpu_state)? {
+          let governor = governor
+            .try_into_string()
+            .context("`cpu.governor` was not a string")?;
 
-        action.governor = Some(governor.to_string());
+          action.governor = Some(governor.to_string());
+        } else {
+          log::debug!("skipping cpu.governor for {cpu}: condition not met");
+        }
       }
 
-      if let Some(epp) = &self.energy_performance_preference
-        && let Some(epp) = epp.eval(&cpu_state)?
-      {
-        let epp = epp
-          .try_into_string()
-          .context("`cpu.energy-performance-preference` was not a string")?;
+      if let Some(epp) = &self.energy_performance_preference {
+        if let Some(epp) = epp.eval(&cpu_state)? {
+          let epp = epp
+            .try_into_string()
+            .context("`cpu.energy-performance-preference` was not a string")?;
 
-        action.epp = Some(epp.to_string());
-      }
-
-      if let Some(epb) = &self.energy_performance_bias
-        && let Some(epb) = epb.eval(&cpu_state)?
-      {
-        let epb = epb
-          .try_into_string()
-          .context("`cpu.energy-performance-bias` was not a string")?;
-
-        action.epb = Some(epb.to_string());
-      }
-
-      if let Some(mhz_minimum) = &self.frequency_mhz_minimum
-        && let Some(mhz_minimum) = mhz_minimum.eval(&cpu_state)?
-      {
-        let mhz_minimum = mhz_minimum
-          .try_into_number()
-          .context("`cpu.frequency-mhz-minimum` was not a number")?;
-
-        if mhz_minimum.fract() != 0.0 {
-          bail!(
-            "invalid number for `cpu.frequency-mhz-minimum`: {mhz_minimum}"
+          action.epp = Some(epp.to_string());
+        } else {
+          log::debug!(
+            "skipping cpu.energy-performance-preference for {cpu}: condition \
+             not met"
           );
         }
-
-        if mhz_minimum > u64::MAX as f64 {
-          bail!("`cpu.frequency-mhz-minimum` too big: {mhz_minimum}");
-        }
-
-        action.frequency_mhz_minimum = Some(mhz_minimum as u64);
       }
 
-      if let Some(mhz_maximum) = &self.frequency_mhz_maximum
-        && let Some(mhz_maximum) = mhz_maximum.eval(&cpu_state)?
-      {
-        let mhz_maximum = mhz_maximum
-          .try_into_number()
-          .context("`cpu.frequency-mhz-maximum` was not a number")?;
+      if let Some(epb) = &self.energy_performance_bias {
+        if let Some(epb) = epb.eval(&cpu_state)? {
+          let epb = epb
+            .try_into_string()
+            .context("`cpu.energy-performance-bias` was not a string")?;
 
-        if mhz_maximum.fract() != 0.0 {
-          bail!(
-            "invalid number for `cpu.frequency-mhz-maximum`: {mhz_maximum}"
+          action.epb = Some(epb.to_string());
+        } else {
+          log::debug!(
+            "skipping cpu.energy-performance-bias for {cpu}: condition not met"
           );
         }
+      }
 
-        if mhz_maximum > u64::MAX as f64 {
-          bail!("`cpu.frequency-mhz-maximum` too big: {mhz_maximum}");
+      if let Some(mhz_minimum) = &self.frequency_mhz_minimum {
+        if let Some(mhz_minimum) = mhz_minimum.eval(&cpu_state)? {
+          let mhz_minimum = mhz_minimum
+            .try_into_number()
+            .context("`cpu.frequency-mhz-minimum` was not a number")?;
+
+          if mhz_minimum.fract() != 0.0 {
+            bail!(
+              "invalid number for `cpu.frequency-mhz-minimum`: {mhz_minimum}"
+            );
+          }
+
+          if mhz_minimum > u64::MAX as f64 {
+            bail!("`cpu.frequency-mhz-minimum` too big: {mhz_minimum}");
+          }
+
+          action.frequency_mhz_minimum = Some(mhz_minimum as u64);
+        } else {
+          log::debug!(
+            "skipping cpu.frequency-mhz-minimum for {cpu}: condition not met"
+          );
         }
+      }
 
-        action.frequency_mhz_maximum = Some(mhz_maximum as u64);
+      if let Some(mhz_maximum) = &self.frequency_mhz_maximum {
+        if let Some(mhz_maximum) = mhz_maximum.eval(&cpu_state)? {
+          let mhz_maximum = mhz_maximum
+            .try_into_number()
+            .context("`cpu.frequency-mhz-maximum` was not a number")?;
+
+          if mhz_maximum.fract() != 0.0 {
+            bail!(
+              "invalid number for `cpu.frequency-mhz-maximum`: {mhz_maximum}"
+            );
+          }
+
+          if mhz_maximum > u64::MAX as f64 {
+            bail!("`cpu.frequency-mhz-maximum` too big: {mhz_maximum}");
+          }
+
+          action.frequency_mhz_maximum = Some(mhz_maximum as u64);
+        } else {
+          log::debug!(
+            "skipping cpu.frequency-mhz-maximum for {cpu}: condition not met"
+          );
+        }
       }
 
       pending_actions.push(action);
@@ -224,14 +243,16 @@ impl CpuDelta {
       }
     }
 
-    if let Some(turbo) = &self.turbo
-      && let Some(turbo) = turbo.eval(state)?
-    {
-      let turbo = turbo
-        .try_into_boolean()
-        .context("`cpu.turbo` was not a boolean")?;
+    if let Some(turbo) = &self.turbo {
+      if let Some(turbo) = turbo.eval(state)? {
+        let turbo = turbo
+          .try_into_boolean()
+          .context("`cpu.turbo` was not a boolean")?;
 
-      cpu::Cpu::set_turbo(turbo)?;
+        cpu::Cpu::set_turbo(turbo)?;
+      } else {
+        log::debug!("skipping cpu.turbo: condition not met");
+      }
     }
 
     Ok(())
