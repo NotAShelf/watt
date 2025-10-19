@@ -6,6 +6,8 @@ mod cpu;
 mod daemon;
 mod engine;
 mod monitor;
+#[cfg(feature = "prometheus")]
+mod prometheus;
 mod util;
 
 use crate::config::AppConfig;

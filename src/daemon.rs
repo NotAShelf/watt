@@ -431,6 +431,26 @@ pub fn run_daemon(config: AppConfig, verbose: bool) -> Result<(), AppError> {
         return Err(AppError::Control(err));
     }
 
+    // Start Prometheus exporter if enabled
+    #[cfg(feature = "prometheus")]
+    if config.daemon.prometheus_enabled {
+        match crate::prometheus::start_exporter(
+            &config.daemon.prometheus_bind_address,
+            config.daemon.prometheus_port,
+        ) {
+            Ok(()) => info!(
+                "Prometheus exporter enabled on {}:{}",
+                config.daemon.prometheus_bind_address, config.daemon.prometheus_port
+            ),
+            Err(e) => {
+                error!("Failed to start Prometheus exporter: {e}");
+                return Err(AppError::Generic(format!(
+                    "Failed to start Prometheus exporter: {e}"
+                )));
+            }
+        }
+    }
+
     // Create a flag that will be set to true when a signal is received
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
@@ -473,6 +493,12 @@ pub fn run_daemon(config: AppConfig, verbose: bool) -> Result<(), AppError> {
 
                 // Update system history with new data
                 system_history.update(&report);
+
+                // Update Prometheus metrics if enabled
+                #[cfg(feature = "prometheus")]
+                if config.daemon.prometheus_enabled {
+                    crate::prometheus::update_metrics(&report);
+                }
 
                 // Update the stats file if configured
                 if let Some(stats_path) = &config.daemon.stats_file_path {

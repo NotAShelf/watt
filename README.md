@@ -215,6 +215,10 @@ throttle_on_battery = true
 log_level = "Info"
 # Optional stats file path
 stats_file_path = "/var/run/watt-stats"
+# Prometheus metrics exporter (requires 'prometheus' feature at compile time)
+prometheus_enabled = false
+prometheus_port = 9100
+prometheus_bind_address = "127.0.0.1"
 
 # Optional: List of power supplies to ignore
 [power_supply_ignore_list]
@@ -296,6 +300,78 @@ idle periods, while maintaining responsiveness when needed.
 
 Configure Watt to ignore certain power supplies (like peripheral batteries)
 that might interfere with power state detection.
+
+### Prometheus Metrics Export
+
+Watt includes optional Prometheus metrics export functionality for monitoring
+system metrics. This feature is **disabled by default** and must be enabled at
+compile-time.
+
+#### Building with Prometheus Support
+
+To build Watt with Prometheus support, enable the `prometheus` feature:
+
+```bash
+cargo build --release --features prometheus
+```
+
+Or with Nix:
+
+```bash
+nix build --override-input nixpkgs nixpkgs/nixos-unstable \
+  --impure --expr '(import ./. {}).overrideAttrs (old: {
+    buildFeatures = [ "prometheus" ];
+  })'
+```
+
+#### Configuration
+
+Once built with Prometheus support, enable it in your configuration:
+
+```toml
+[daemon]
+# Enable Prometheus metrics exporter
+prometheus_enabled = true
+# Port to serve metrics on (default: 9100)
+prometheus_port = 9100
+# Address to bind to (default: "127.0.0.1")
+prometheus_bind_address = "127.0.0.1"
+```
+
+#### Available Metrics
+
+The Prometheus exporter exposes the following metrics at `http://<bind_address>:<port>/metrics`:
+
+**Per-core metrics** (with `core` label):
+- `watt_cpu_frequency_mhz` - Current CPU frequency in MHz
+- `watt_cpu_usage_percent` - CPU usage percentage
+- `watt_cpu_temperature_celsius` - CPU temperature in Celsius
+
+**Global CPU metrics**:
+- `watt_cpu_average_temperature_celsius` - Average temperature across all cores
+- `watt_cpu_turbo_enabled` - Turbo boost status (1=enabled, 0=disabled)
+
+**Battery metrics** (with `battery` label):
+- `watt_battery_capacity_percent` - Battery charge level
+- `watt_battery_power_watts` - Power rate (positive=charging, negative=discharging)
+- `watt_battery_ac_connected` - AC power status (1=connected, 0=on battery)
+
+**System load**:
+- `watt_system_load_1min/5min/15min` - System load averages
+
+**System info** (with labels for cpu_model, architecture, distribution, governor):
+- `watt_info` - System information metadata (value always 1)
+
+#### Example Prometheus Configuration
+
+Add this to your `prometheus.yml`:
+
+```yaml
+scrape_configs:
+  - job_name: 'watt'
+    static_configs:
+      - targets: ['localhost:9100']
+```
 
 ## Troubleshooting
 

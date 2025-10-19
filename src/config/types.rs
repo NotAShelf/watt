@@ -246,6 +246,12 @@ pub struct DaemonConfig {
     pub log_level: LogLevel,
     #[serde(default = "default_stats_file_path")]
     pub stats_file_path: Option<String>,
+    #[serde(default = "default_prometheus_enabled")]
+    pub prometheus_enabled: bool,
+    #[serde(default = "default_prometheus_port")]
+    pub prometheus_port: u16,
+    #[serde(default = "default_prometheus_bind_address")]
+    pub prometheus_bind_address: String,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -266,6 +272,9 @@ impl Default for DaemonConfig {
             throttle_on_battery: default_throttle_on_battery(),
             log_level: default_log_level(),
             stats_file_path: default_stats_file_path(),
+            prometheus_enabled: default_prometheus_enabled(),
+            prometheus_port: default_prometheus_port(),
+            prometheus_bind_address: default_prometheus_bind_address(),
         }
     }
 }
@@ -278,6 +287,14 @@ default_const!(default_throttle_on_battery, bool, true);
 default_const!(default_log_level, LogLevel, LogLevel::Info);
 default_const!(default_stats_file_path, Option<String>, None);
 default_const!(default_enable_auto_turbo, bool, true);
+
+// Prometheus exporter defaults
+default_const!(default_prometheus_enabled, bool, false);
+default_const!(default_prometheus_port, u16, 9100);
+
+fn default_prometheus_bind_address() -> String {
+    String::from("127.0.0.1")
+}
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct DaemonConfigToml {
@@ -295,6 +312,12 @@ pub struct DaemonConfigToml {
     pub log_level: LogLevel,
     #[serde(default = "default_stats_file_path")]
     pub stats_file_path: Option<String>,
+    #[serde(default = "default_prometheus_enabled")]
+    pub prometheus_enabled: bool,
+    #[serde(default = "default_prometheus_port")]
+    pub prometheus_port: u16,
+    #[serde(default = "default_prometheus_bind_address")]
+    pub prometheus_bind_address: String,
 }
 
 impl Default for DaemonConfigToml {
@@ -307,6 +330,9 @@ impl Default for DaemonConfigToml {
             throttle_on_battery: default_throttle_on_battery(),
             log_level: default_log_level(),
             stats_file_path: default_stats_file_path(),
+            prometheus_enabled: default_prometheus_enabled(),
+            prometheus_port: default_prometheus_port(),
+            prometheus_bind_address: default_prometheus_bind_address(),
         }
     }
 }

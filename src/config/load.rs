@@ -36,10 +36,7 @@ pub fn load_config_from_path(specific_path: Option<&str>) -> Result<AppConfig, C
     if let Ok(env_path) = std::env::var("WATT_CONFIG") {
         let env_path = Path::new(&env_path);
         if env_path.exists() {
-            println!(
-                "Loading config from WATT_CONFIG: {}",
-                env_path.display()
-            );
+            println!("Loading config from WATT_CONFIG: {}", env_path.display());
             return load_and_parse_config(env_path);
         }
         eprintln!(
@@ -114,6 +111,9 @@ fn load_and_parse_config(path: &Path) -> Result<AppConfig, ConfigError> {
             throttle_on_battery: toml_app_config.daemon.throttle_on_battery,
             log_level: toml_app_config.daemon.log_level,
             stats_file_path: toml_app_config.daemon.stats_file_path,
+            prometheus_enabled: toml_app_config.daemon.prometheus_enabled,
+            prometheus_port: toml_app_config.daemon.prometheus_port,
+            prometheus_bind_address: toml_app_config.daemon.prometheus_bind_address,
         },
     })
 }

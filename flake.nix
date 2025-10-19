@@ -12,6 +12,12 @@
         localSystem.system = system;
         overlays = [self.overlays.default];
       });
+    forAllDevSystems = nixpkgs.lib.genAttrs ["x86_64-linux" "aarch64-linux" "aarch64-darwin" "x86_64-darwin"];
+    pkgsForEachDev = forAllDevSystems (system:
+      import nixpkgs {
+        localSystem.system = system;
+        overlays = [self.overlays.default];
+      });
   in {
     overlays = {
       watt = final: _: {
@@ -31,13 +37,13 @@
       nixpkgs.lib.mapAttrs (system: pkgs: {
         default = pkgs.callPackage ./nix/shell.nix {};
       })
-      pkgsForEach;
+      pkgsForEachDev;
 
     nixosModules = {
       watt = import ./nix/module.nix inputs;
       default = self.nixosModules.watt;
     };
 
-    formatter = forAllSystems (system: nixpkgs.legacyPackages.${system}.alejandra);
+    formatter = forAllDevSystems (system: nixpkgs.legacyPackages.${system}.alejandra);
   };
 }

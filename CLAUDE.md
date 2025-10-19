@@ -17,6 +17,9 @@ cargo build
 
 # Build with optimizations
 cargo build --release
+
+# Build with Prometheus metrics support (optional feature)
+cargo build --release --features prometheus
 ```
 
 ### Running
@@ -68,6 +71,7 @@ The codebase is organized into focused modules:
 - **`monitor.rs`**: Collects system information and generates `SystemReport`
 - **`cpu.rs`**: Low-level CPU control (governors, frequencies, turbo, EPP/EPB, platform profiles)
 - **`battery.rs`**: Battery management and charge threshold control
+- **`prometheus.rs`**: (Optional, feature-gated) Prometheus metrics exporter using `prometheus_exporter` crate
 - **`config/`**: Configuration loading and types
 - **`util/`**: Utilities (sysfs interaction, error types)
 - **`cli/`**: CLI-specific commands (e.g., debug output)
@@ -90,6 +94,14 @@ The codebase is organized into focused modules:
 - Maintains separate hysteresis state for AC vs battery power
 
 **Error Handling**: The codebase uses custom error types (`AppError`, `ControlError`, `EngineError`) with thiserror for structured error handling. The `try_apply_feature` helper in engine.rs centralizes feature application and gracefully handles unsupported features.
+
+**Prometheus Metrics Export** (Optional Feature): When built with the `prometheus` feature flag:
+- The `prometheus.rs` module uses the `prometheus_exporter` crate (which bundles `tiny_http` and `prometheus`)
+- Metrics are registered globally using `OnceLock` for thread-safe lazy initialization
+- HTTP server starts at daemon initialization if `prometheus_enabled = true` in config
+- Metrics are updated in the daemon loop after each `SystemReport` collection
+- Exposes per-core metrics (frequency, usage, temperature), global CPU metrics (turbo status, average temp), battery metrics, and system load
+- All metrics are gauges representing current values, updated on each poll cycle
 
 ### Configuration Flow
 
@@ -132,3 +144,5 @@ Platform profiles (`set-platform-profile`) require ACPI platform profile support
 - Battery discharge rate calculations require at least 30 seconds between measurements to avoid noise
 - Adaptive polling uses weighted averaging (70% previous, 30% new) to smooth out interval changes
 - Configuration validation happens at runtime, not parse time, for some settings (like turbo thresholds)
+- Prometheus metrics are only available when built with `--features prometheus`; the module is conditionally compiled
+- If prometheus is enabled in config but not built with the feature, the daemon will ignore the prometheus settings silently
