@@ -609,9 +609,11 @@ impl Cpu {
     let Self { number, .. } = self;
 
     let Some(maximum_frequency_khz) = fs::read_n::<u64>(format!(
-      "/sys/devices/system/cpu/cpu{number}/cpufreq/scaling_max_freq"
+      "/sys/devices/system/cpu/cpu{number}/cpufreq/cpuinfo_max_freq"
     ))
-    .with_context(|| format!("failed to read {self} maximum frequency"))?
+    .with_context(|| {
+      format!("failed to read {self} hardware maximum frequency")
+    })?
     else {
       // Just let it pass if we can't find anything.
       return Ok(());
