@@ -681,6 +681,12 @@ impl Cpu {
     bail!("no supported CPU boost control mechanism found");
   }
 
+  pub fn hardware_frequency_mhz_maximum() -> anyhow::Result<Option<u64>> {
+    fs::read_n::<u64>("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq")
+      .context("failed to read CPU hardware maximum frequency")
+      .map(|x| x.map(|freq| freq / 1000))
+  }
+
   pub fn turbo() -> anyhow::Result<Option<bool>> {
     if let Some(content) =
       fs::read_n::<u64>("/sys/devices/system/cpu/intel_pstate/no_turbo")

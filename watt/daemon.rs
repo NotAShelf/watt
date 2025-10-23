@@ -402,6 +402,9 @@ pub fn run(config: config::DaemonConfig) -> anyhow::Result<()> {
         .last_user_activity
         .elapsed()
         .as_secs_f64(),
+      cpu_frequency_maximum:       cpu::Cpu::hardware_frequency_mhz_maximum()
+        .context("failed to read CPU hardware maximum frequency")?
+        .unwrap_or(0) as f64,
       power_supply_charge:         daemon
         .power_supply_log
         .back()
