@@ -260,6 +260,8 @@ Watt includes a powerful expression language for defining conditions:
 - `"$cpu-temperature"` - CPU temperature in Celsius
 - `"$cpu-temperature-volatility"` - CPU temperature volatility
 - `"$cpu-idle-seconds"` - Seconds since last significant CPU activity
+- `"$cpu-frequency-maximum"` - CPU hardware maximum frequency in MHz
+- `"$cpu-frequency-minimum"` - CPU hardware minimum frequency in MHz
 - `"%power-supply-charge"` - Battery charge percentage (0.0-1.0)
 - `"%power-supply-discharge-rate"` - Current discharge rate
 - `"?discharging"` - Boolean indicating if system is on battery power
