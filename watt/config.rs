@@ -413,6 +413,7 @@ mod expression {
   named!(cpu_temperature_volatility => "$cpu-temperature-volatility");
   named!(cpu_idle_seconds => "$cpu-idle-seconds");
   named!(cpu_frequency_maximum => "$cpu-frequency-maximum");
+  named!(cpu_frequency_minimum => "$cpu-frequency-minimum");
 
   named!(power_supply_charge => "%power-supply-charge");
   named!(power_supply_discharge_rate => "%power-supply-discharge-rate");
@@ -463,6 +464,9 @@ pub enum Expression {
 
   #[serde(with = "expression::cpu_frequency_maximum")]
   CpuFrequencyMaximum,
+
+  #[serde(with = "expression::cpu_frequency_minimum")]
+  CpuFrequencyMinimum,
 
   #[serde(with = "expression::power_supply_charge")]
   PowerSupplyCharge,
@@ -620,6 +624,7 @@ pub struct EvalState<'a> {
   pub cpu_temperature_volatility: Option<f64>,
   pub cpu_idle_seconds:           f64,
   pub cpu_frequency_maximum:      f64,
+  pub cpu_frequency_minimum:      f64,
 
   pub power_supply_charge:         f64,
   pub power_supply_discharge_rate: Option<f64>,
@@ -731,6 +736,7 @@ impl Expression {
       },
       CpuIdleSeconds => Number(state.cpu_idle_seconds),
       CpuFrequencyMaximum => Number(state.cpu_frequency_maximum),
+      CpuFrequencyMinimum => Number(state.cpu_frequency_minimum),
 
       PowerSupplyCharge => Number(state.power_supply_charge),
       PowerSupplyDischargeRate => {

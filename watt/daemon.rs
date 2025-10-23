@@ -405,6 +405,9 @@ pub fn run(config: config::DaemonConfig) -> anyhow::Result<()> {
       cpu_frequency_maximum:       cpu::Cpu::hardware_frequency_mhz_maximum()
         .context("failed to read CPU hardware maximum frequency")?
         .unwrap_or(0) as f64,
+      cpu_frequency_minimum:       cpu::Cpu::hardware_frequency_mhz_minimum()
+        .context("failed to read CPU hardware minimum frequency")?
+        .unwrap_or(0) as f64,
       power_supply_charge:         daemon
         .power_supply_log
         .back()
