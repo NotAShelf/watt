@@ -2,9 +2,10 @@ use std::{
   cell::OnceCell,
   collections::HashMap,
   fmt,
+  hash,
   mem,
-  rc::Rc,
   string::ToString,
+  sync::Arc,
 };
 
 use anyhow::{
@@ -19,7 +20,7 @@ use crate::fs;
 #[derive(Default, Debug, Clone, PartialEq)]
 pub struct CpuRescanCache {
   stat: OnceCell<HashMap<u32, CpuStat>>,
-  info: OnceCell<HashMap<u32, Rc<HashMap<String, String>>>>,
+  info: OnceCell<HashMap<u32, Arc<HashMap<String, String>>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,7 +56,7 @@ impl CpuStat {
   }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Cpu {
   pub number: u32,
 
@@ -75,9 +76,23 @@ pub struct Cpu {
   pub epb:            Option<String>,
 
   pub stat: CpuStat,
-  pub info: Option<Rc<HashMap<String, String>>>,
+  pub info: Option<Arc<HashMap<String, String>>>,
 
   pub temperature: Option<f64>,
+}
+
+impl PartialEq for Cpu {
+  fn eq(&self, other: &Self) -> bool {
+    self.number == other.number
+  }
+}
+
+impl Eq for Cpu {}
+
+impl hash::Hash for Cpu {
+  fn hash<H: hash::Hasher>(&self, state: &mut H) {
+    self.number.hash(state);
+  }
 }
 
 impl fmt::Display for Cpu {
@@ -379,7 +394,7 @@ impl Cpu {
         macro_rules! try_save_data {
           () => {
             if let Some(number) = current_number.take() {
-              info.insert(number, Rc::new(mem::take(&mut current_data)));
+              info.insert(number, Arc::new(mem::take(&mut current_data)));
             }
           };
         }

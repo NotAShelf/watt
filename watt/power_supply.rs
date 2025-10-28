@@ -1,5 +1,6 @@
 use std::{
   fmt,
+  hash,
   path::{
     Path,
     PathBuf,
@@ -51,7 +52,7 @@ const POWER_SUPPLY_THRESHOLD_CONFIGS: &[PowerSupplyThresholdConfig] = &[
 ];
 
 /// Represents a power supply that supports charge threshold control.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct PowerSupply {
   pub name: String,
   pub path: PathBuf,
@@ -68,6 +69,20 @@ pub struct PowerSupply {
   pub drain_rate_watts: Option<f64>,
 
   pub threshold_config: Option<PowerSupplyThresholdConfig>,
+}
+
+impl PartialEq for PowerSupply {
+  fn eq(&self, other: &Self) -> bool {
+    self.name == other.name
+  }
+}
+
+impl Eq for PowerSupply {}
+
+impl hash::Hash for PowerSupply {
+  fn hash<H: hash::Hasher>(&self, state: &mut H) {
+    self.name.hash(state);
+  }
 }
 
 impl PowerSupply {
