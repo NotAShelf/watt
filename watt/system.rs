@@ -1,7 +1,22 @@
 use std::{
-  collections::HashMap,
+  collections::{
+    HashMap,
+    HashSet,
+    VecDeque,
+  },
   path::Path,
-  time::Instant,
+  sync::{
+    Arc,
+    atomic::{
+      AtomicBool,
+      Ordering,
+    },
+  },
+  thread,
+  time::{
+    Duration,
+    Instant,
+  },
 };
 
 use anyhow::{
@@ -10,53 +25,71 @@ use anyhow::{
 };
 
 use crate::{
+  config,
   cpu,
   fs,
   power_supply,
 };
 
 #[derive(Debug)]
-pub struct System {
-  pub is_ac: bool,
+struct CpuLog {
+  at: Instant,
 
-  pub load_average_1min:  f64,
-  pub load_average_5min:  f64,
-  pub load_average_15min: f64,
+  /// CPU usage between 0-1, a percentage.
+  usage: f64,
 
-  pub cpus:             Vec<cpu::Cpu>,
-  pub cpu_temperatures: HashMap<u32, f64>,
+  /// CPU temperature in celsius.
+  temperature: f64,
+}
 
-  pub power_supplies: Vec<power_supply::PowerSupply>,
+#[derive(Debug)]
+struct CpuVolatility {
+  usage: f64,
+
+  temperature: f64,
+}
+
+#[derive(Debug)]
+struct PowerSupplyLog {
+  at: Instant,
+
+  /// Charge 0-1, as a percentage.
+  charge: f64,
+}
+
+#[derive(Default, Debug)]
+struct System {
+  is_ac: bool,
+
+  load_average_1min:  f64,
+  load_average_5min:  f64,
+  load_average_15min: f64,
+
+  /// All CPUs.
+  cpus:             HashSet<Arc<cpu::Cpu>>,
+  /// CPU usage and temperature log.
+  cpu_log:          VecDeque<CpuLog>,
+  cpu_temperatures: HashMap<u32, f64>,
+
+  /// All power supplies.
+  power_supplies:   HashSet<Arc<power_supply::PowerSupply>>,
+  /// Power supply status log.
+  power_supply_log: VecDeque<PowerSupplyLog>,
 }
 
 impl System {
-  pub fn new() -> anyhow::Result<Self> {
-    let mut system = Self {
-      is_ac: false,
-
-      cpus:             Vec::new(),
-      cpu_temperatures: HashMap::new(),
-
-      power_supplies: Vec::new(),
-
-      load_average_1min:  0.0,
-      load_average_5min:  0.0,
-      load_average_15min: 0.0,
-    };
-
-    system.rescan()?;
-
-    Ok(system)
-  }
-
-  pub fn rescan(&mut self) -> anyhow::Result<()> {
-    log::info!("rescanning view of system hardware...");
+  fn scan(&mut self) -> anyhow::Result<()> {
+    log::info!("scanning view of system hardware...");
 
     {
       let start = Instant::now();
-      self.cpus = cpu::Cpu::all().context("failed to scan CPUs")?;
+      self.cpus = cpu::Cpu::all()
+        .context("failed to scan CPUs")?
+        .into_iter()
+        .map(Arc::from)
+        .collect();
       log::info!(
-        "rescanned all CPUs in {millis}ms",
+        "scanned all CPUs in {millis}ms",
         millis = start.elapsed().as_millis(),
       );
     }
@@ -64,9 +97,12 @@ impl System {
     {
       let start = Instant::now();
       self.power_supplies = power_supply::PowerSupply::all()
-        .context("failed to scan power supplies")?;
+        .context("failed to scan power supplies")?
+        .into_iter()
+        .map(Arc::from)
+        .collect();
       log::info!(
-        "rescanned all power supplies in {millis}ms",
+        "scanned all power supplies in {millis}ms",
         millis = start.elapsed().as_millis(),
       );
     }
@@ -102,26 +138,72 @@ impl System {
 
     {
       let start = Instant::now();
-      self.rescan_load_average()?;
+      self.scan_load_average()?;
       log::info!(
-        "rescanned load average in {millis}ms",
+        "scanned load average in {millis}ms",
         millis = start.elapsed().as_millis(),
       );
     }
 
     {
       let start = Instant::now();
-      self.rescan_temperatures()?;
+      self.scan_temperatures()?;
       log::info!(
-        "rescanned temperatures in {millis}ms",
+        "scanned temperatures in {millis}ms",
         millis = start.elapsed().as_millis(),
       );
     }
 
+    log::debug!("appending to system logs...");
+
+    let at = Instant::now();
+
+    while self.cpu_log.len() > 100 {
+      log::debug!("daemon CPU log was too long, popping element");
+      self.cpu_log.pop_front();
+    }
+
+    let cpu_log = CpuLog {
+      at,
+
+      usage: self.cpus.iter().map(|cpu| cpu.stat.usage()).sum::<f64>()
+        / self.cpus.len() as f64,
+
+      temperature: self.cpu_temperatures.values().sum::<f64>()
+        / self.cpu_temperatures.len() as f64,
+    };
+    log::debug!("appending CPU log item: {cpu_log:?}");
+    self.cpu_log.push_back(cpu_log);
+
+    while self.power_supply_log.len() > 100 {
+      log::debug!("daemon power supply log was too long, popping element");
+      self.power_supply_log.pop_front();
+    }
+
+    let power_supply_log = PowerSupplyLog {
+      at,
+      charge: {
+        let (charge_sum, charge_nr) = self.power_supplies.iter().fold(
+          (0.0, 0u32),
+          |(sum, count), power_supply| {
+            if let Some(charge_percent) = power_supply.charge_percent {
+              (sum + charge_percent, count + 1)
+            } else {
+              (sum, count)
+            }
+          },
+        );
+
+        charge_sum / charge_nr as f64
+      },
+    };
+    log::debug!("appending power supply log item: {power_supply_log:?}");
+    self.power_supply_log.push_back(power_supply_log);
+
     Ok(())
   }
 
-  fn rescan_temperatures(&mut self) -> anyhow::Result<()> {
+  fn scan_temperatures(&mut self) -> anyhow::Result<()> {
     const PATH: &str = "/sys/class/hwmon";
 
     let mut temperatures = HashMap::new();
@@ -328,6 +410,38 @@ impl System {
     Ok(())
   }
 
+  fn scan_load_average(&mut self) -> anyhow::Result<()> {
+    let content = fs::read("/proc/loadavg")
+      .context("failed to read load average from '/proc/loadavg'")?
+      .context("'/proc/loadavg' doesn't exist, are you on linux?")?;
+
+    let mut parts = content.split_whitespace();
+
+    let (
+      Some(load_average_1min),
+      Some(load_average_5min),
+      Some(load_average_15min),
+    ) = (parts.next(), parts.next(), parts.next())
+    else {
+      bail!(
+        "failed to parse first 3 load average entries due to there not being \
+         enough, content: {content}"
+      );
+    };
+
+    self.load_average_1min = load_average_1min
+      .parse()
+      .context("failed to parse load average")?;
+    self.load_average_5min = load_average_5min
+      .parse()
+      .context("failed to parse load average")?;
+    self.load_average_15min = load_average_15min
+      .parse()
+      .context("failed to parse load average")?;
+
+    Ok(())
+  }
+
   fn is_desktop(&mut self) -> anyhow::Result<bool> {
     log::debug!("checking chassis type to determine if system is a desktop");
     if let Some(chassis_type) = fs::read("/sys/class/dmi/id/chassis_type")
@@ -389,35 +503,316 @@ impl System {
     Ok(true)
   }
 
-  fn rescan_load_average(&mut self) -> anyhow::Result<()> {
-    let content = fs::read("/proc/loadavg")
-      .context("failed to read load average from '/proc/loadavg'")?
-      .context("'/proc/loadavg' doesn't exist, are you on linux?")?;
+  fn cpu_volatility(&self) -> Option<CpuVolatility> {
+    let recent_log_count = self
+      .cpu_log
+      .iter()
+      .rev()
+      .take_while(|log| log.at.elapsed() < Duration::from_secs(5 * 60))
+      .count();
 
-    let mut parts = content.split_whitespace();
+    if recent_log_count < 2 {
+      return None;
+    }
 
-    let (
-      Some(load_average_1min),
-      Some(load_average_5min),
-      Some(load_average_15min),
-    ) = (parts.next(), parts.next(), parts.next())
-    else {
-      bail!(
-        "failed to parse first 3 load average entries due to there not being \
-         enough, content: {content}"
-      );
+    if self.cpu_log.len() < 2 {
+      return None;
+    }
+
+    let change_count = self.cpu_log.len() - 1;
+
+    let mut usage_change_sum = 0.0;
+    let mut temperature_change_sum = 0.0;
+
+    for index in 0..change_count {
+      let usage_change =
+        self.cpu_log[index + 1].usage - self.cpu_log[index].usage;
+      usage_change_sum += usage_change.abs();
+
+      let temperature_change =
+        self.cpu_log[index + 1].temperature - self.cpu_log[index].temperature;
+      temperature_change_sum += temperature_change.abs();
+    }
+
+    Some(CpuVolatility {
+      usage:       usage_change_sum / change_count as f64,
+      temperature: temperature_change_sum / change_count as f64,
+    })
+  }
+
+  fn is_cpu_idle(&self) -> bool {
+    let recent_log_count = self
+      .cpu_log
+      .iter()
+      .rev()
+      .take_while(|log| log.at.elapsed() < Duration::from_secs(5 * 60))
+      .count();
+
+    if recent_log_count < 2 {
+      return false;
+    }
+
+    let recent_average = self
+      .cpu_log
+      .iter()
+      .rev()
+      .take(recent_log_count)
+      .map(|log| log.usage)
+      .sum::<f64>()
+      / recent_log_count as f64;
+
+    recent_average < 0.1
+      && self
+        .cpu_volatility()
+        .is_none_or(|volatility| volatility.usage < 0.05)
+  }
+
+  fn is_discharging(&self) -> bool {
+    self.power_supplies.iter().any(|power_supply| {
+      power_supply.charge_state.as_deref() == Some("Discharging")
+    })
+  }
+
+  /// Calculates the discharge rate, returns a number between 0 and 1.
+  ///
+  /// The discharge rate is averaged per hour.
+  /// So a return value of Some(0.3) means the battery has been
+  /// discharging 30% per hour.
+  fn power_supply_discharge_rate(&self) -> Option<f64> {
+    let mut last_charge = None;
+
+    // A list of increasing charge percentages.
+    let discharging: Vec<&PowerSupplyLog> = self
+      .power_supply_log
+      .iter()
+      .rev()
+      .take_while(move |log| {
+        let Some(last_charge_value) = last_charge else {
+          last_charge = Some(log.charge);
+          return true;
+        };
+
+        last_charge = Some(log.charge);
+
+        log.charge > last_charge_value
+      })
+      .collect();
+
+    if discharging.len() < 2 {
+      return None;
+    }
+
+    // Start of discharging. Has the most charge.
+    let start = discharging.last()?;
+    // End of discharging, very close to now. Has the least charge.
+    let end = discharging.first()?;
+
+    let discharging_duration_seconds = (start.at - end.at).as_secs_f64();
+    let discharging_duration_hours = discharging_duration_seconds / 60.0 / 60.0;
+    let discharged = start.charge - end.charge;
+
+    Some(discharged / discharging_duration_hours)
+  }
+}
+
+/// Calculate the idle time multiplier based on system idle time.
+///
+/// Returns a multiplier between 1.0 and 5.0:
+/// - For idle times < 2 minutes: Linear interpolation from 1.0 to 2.0
+/// - For idle times >= 2 minutes: Logarithmic scaling (1.0 + log2(minutes))
+fn idle_multiplier(idle_for: Duration) -> f64 {
+  let factor = match idle_for.as_secs() < 120 {
+    // Less than 2 minutes.
+    // Linear interpolation from 1.0 (at 0s) to 2.0 (at 120s)
+    true => (idle_for.as_secs() as f64) / 120.0,
+
+    // 2 minutes or more.
+    // Logarithmic scaling: 1.0 + log2(minutes)
+    false => {
+      let idle_minutes = idle_for.as_secs() as f64 / 60.0;
+      idle_minutes.log2()
+    },
+  };
+
+  // Clamp the multiplier to avoid excessive delays.
+  (1.0 + factor).clamp(1.0, 5.0)
+}
+
+pub fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
+  assert!(config.rules.is_sorted_by_key(|rule| rule.priority));
+
+  log::info!("starting daemon...");
+
+  let cancelled = Arc::new(AtomicBool::new(false));
+
+  log::debug!("setting ctrl-c handler...");
+  let cancelled_ = Arc::clone(&cancelled);
+  ctrlc::set_handler(move || {
+    log::info!("received shutdown signal");
+    cancelled_.store(true, Ordering::SeqCst);
+  })
+  .context("failed to set ctrl-c handler")?;
+
+  let mut system = System::default();
+  let mut last_polling_delay = None::<Duration>;
+  // TODO: Set this somewhere.
+  let last_user_activity = Instant::now();
+
+  while !cancelled.load(Ordering::SeqCst) {
+    system.scan()?;
+
+    let delay = {
+      let mut delay = Duration::from_secs(5);
+
+      // We are on battery, so we must be more conservative with our polling.
+      if system.is_discharging() {
+        match system.power_supply_discharge_rate() {
+          Some(discharge_rate) => {
+            if discharge_rate > 0.2 {
+              delay *= 3;
+            } else if discharge_rate > 0.1 {
+              delay *= 2;
+            } else {
+              // *= 1.5;
+              delay /= 2;
+              delay *= 3;
+            }
+          },
+
+          // If we can't determine the discharge rate, that means that
+          // we were very recently started. Which is user activity.
+          None => {
+            delay *= 2;
+          },
+        }
+      }
+
+      if system.is_cpu_idle() {
+        let idle_for = last_user_activity.elapsed();
+
+        if idle_for > Duration::from_secs(30) {
+          let factor = idle_multiplier(idle_for);
+
+          log::debug!(
+            "system has been idle for {seconds} seconds (approx {minutes} \
+             minutes), applying idle factor: {factor:.2}x",
+            seconds = idle_for.as_secs(),
+            minutes = idle_for.as_secs() / 60,
+          );
+
+          delay = Duration::from_secs_f64(delay.as_secs_f64() * factor);
+        }
+      }
+
+      if let Some(volatility) = system.cpu_volatility()
+        && (volatility.usage > 0.1 || volatility.temperature > 0.02)
+      {
+        delay = (delay / 2).max(Duration::from_secs(1));
+      }
+
+      let delay = match last_polling_delay {
+        Some(last_delay) => {
+          Duration::from_secs_f64(
+            // 30% of current computed delay, 70% of last delay.
+            delay.as_secs_f64() * 0.3 + last_delay.as_secs_f64() * 0.7,
+          )
+        },
+
+        None => delay,
+      };
+
+      let delay = Duration::from_secs_f64(delay.as_secs_f64().clamp(1.0, 30.0));
+
+      last_polling_delay = Some(delay);
+
+      delay
+    };
+    log::info!(
+      "next poll will be in {seconds} seconds or {minutes} minutes, possibly \
+       delayed if application of rules takes more than the polling delay",
+      seconds = delay.as_secs_f64(),
+      minutes = delay.as_secs_f64() / 60.0,
+    );
+
+    log::info!("filtering rules and applying them...");
+
+    let start = Instant::now();
+
+    let state = config::EvalState {
+      frequency_available: system
+        .cpus
+        .iter()
+        .any(|cpu| cpu.frequency_mhz.is_some()),
+      turbo_available:     cpu::Cpu::turbo()
+        .context(
+          "failed to read CPU turbo boost status for `is-turbo-available`",
+        )?
+        .is_some(),
+
+      cpu_usage:                  system
+        .cpu_log
+        .back()
+        .context("CPU log is empty")?
+        .usage,
+      cpu_usage_volatility:       system.cpu_volatility().map(|vol| vol.usage),
+      cpu_temperature:            system
+        .cpu_log
+        .back()
+        .context("CPU log is empty")?
+        .temperature,
+      cpu_temperature_volatility: system
+        .cpu_volatility()
+        .map(|vol| vol.temperature),
+      cpu_idle_seconds:           last_user_activity.elapsed().as_secs_f64(),
+      cpu_frequency_maximum:      cpu::Cpu::hardware_frequency_mhz_maximum()
+        .context("failed to read CPU hardware maximum frequency")?
+        .unwrap_or(0) as f64,
+      cpu_frequency_minimum:      cpu::Cpu::hardware_frequency_mhz_minimum()
+        .context("failed to read CPU hardware minimum frequency")?
+        .unwrap_or(0) as f64,
+
+      power_supply_charge:         system
+        .power_supply_log
+        .back()
+        .context("power supply log is empty")?
+        .charge,
+      power_supply_discharge_rate: system.power_supply_discharge_rate(),
+
+      discharging: system.is_discharging(),
+
+      context: config::EvalContext::WidestPossible,
+
+      cpus:           &system.cpus,
+      power_supplies: &system.power_supplies,
     };
 
-    self.load_average_1min = load_average_1min
-      .parse()
-      .context("failed to parse load average")?;
-    self.load_average_5min = load_average_5min
-      .parse()
-      .context("failed to parse load average")?;
-    self.load_average_15min = load_average_15min
-      .parse()
-      .context("failed to parse load average")?;
+    for rule in &config.rules {
+      let Some(condition) = rule.condition.eval(&state)? else {
+        continue;
+      };
 
-    Ok(())
+      let condition = condition
+        .try_into_boolean()
+        .context("`if` was not a boolean")?;
+
+      if condition {
+        // TODO: Actually do something!!!
+        rule.cpu.eval(&state)?;
+        rule.power.eval(&state)?;
+      }
+    }
+
+    let elapsed = start.elapsed();
+    log::info!(
+      "filtered and applied rules in {seconds} seconds or {minutes} minutes",
+      seconds = elapsed.as_secs_f64(),
+      minutes = elapsed.as_secs_f64() / 60.0,
+    );
+
+    thread::sleep(delay.saturating_sub(elapsed));
   }
+
+  log::info!("stopping polling loop and thus ..");
+
+  Ok(())
 }

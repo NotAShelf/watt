@@ -110,7 +110,6 @@ impl CpusDelta {
     };
 
     let mut deltas = HashMap::with_capacity(cpus.len());
-    let cpus = cpus.into_iter().map(Arc::from);
 
     for cpu in cpus {
       let state = state.in_context(EvalContext::Cpu(&cpu));
@@ -274,7 +273,6 @@ impl PowersDelta {
     };
 
     let mut deltas = HashMap::with_capacity(power_supplies.len());
-    let power_supplies = power_supplies.into_iter().map(Arc::from);
 
     for power_supply in power_supplies {
       let state = state.in_context(EvalContext::PowerSupply(&power_supply));

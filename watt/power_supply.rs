@@ -2,10 +2,7 @@ use std::{
   cell,
   fmt,
   hash,
-  path::{
-    Path,
-    PathBuf,
-  },
+  path::PathBuf,
 };
 
 use anyhow::{
@@ -118,61 +115,6 @@ impl fmt::Display for PowerSupply {
 const POWER_SUPPLY_PATH: &str = "/sys/class/power_supply";
 
 impl PowerSupply {
-  pub fn from_name(name: String) -> anyhow::Result<Self> {
-    let mut power_supply = Self {
-      path: Path::new(POWER_SUPPLY_PATH).join(&name),
-      name,
-      type_: String::new(),
-
-      charge_state: None,
-      charge_percent: None,
-
-      charge_threshold_start: 0.0,
-      charge_threshold_end: 1.0,
-
-      drain_rate_watts: None,
-
-      is_from_peripheral: false,
-
-      threshold_config: None,
-    };
-
-    power_supply.rescan()?;
-
-    Ok(power_supply)
-  }
-
-  pub fn from_path(path: PathBuf) -> anyhow::Result<Self> {
-    let mut power_supply = PowerSupply {
-      name: path
-        .file_name()
-        .with_context(|| {
-          format!("failed to get file name of '{path}'", path = path.display(),)
-        })?
-        .to_string_lossy()
-        .to_string(),
-
-      path,
-      type_: String::new(),
-
-      charge_state: None,
-      charge_percent: None,
-
-      charge_threshold_start: 0.0,
-      charge_threshold_end: 1.0,
-
-      drain_rate_watts: None,
-
-      is_from_peripheral: false,
-
-      threshold_config: None,
-    };
-
-    power_supply.rescan()?;
-
-    Ok(power_supply)
-  }
-
   pub fn all() -> anyhow::Result<Vec<PowerSupply>> {
     let mut power_supplies = Vec::new();
 
@@ -190,14 +132,45 @@ impl PowerSupply {
           continue;
         },
       };
+      let path = entry.path();
 
-      power_supplies.push(PowerSupply::from_path(entry.path())?);
+      let mut power_supply = PowerSupply {
+        name: path
+          .file_name()
+          .with_context(|| {
+            format!(
+              "failed to get file name of '{path}'",
+              path = path.display(),
+            )
+          })?
+          .to_string_lossy()
+          .to_string(),
+
+        path,
+        type_: String::new(),
+
+        charge_state: None,
+        charge_percent: None,
+
+        charge_threshold_start: 0.0,
+        charge_threshold_end: 1.0,
+
+        drain_rate_watts: None,
+
+        is_from_peripheral: false,
+
+        threshold_config: None,
+      };
+
+      power_supply.scan()?;
+
+      power_supplies.push(power_supply);
     }
 
     Ok(power_supplies)
   }
 
-  pub fn rescan(&mut self) -> anyhow::Result<()> {
+  fn scan(&mut self) -> anyhow::Result<()> {
     if !self.path.exists() {
       bail!("{self} does not exist");
     }

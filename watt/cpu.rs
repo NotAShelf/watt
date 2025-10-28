@@ -21,12 +21,12 @@ use yansi::Paint as _;
 use crate::fs;
 
 #[derive(Default, Debug, Clone, PartialEq)]
-pub struct CpuRescanCache {
+struct CpuScanCache {
   stat: OnceCell<HashMap<u32, CpuStat>>,
   info: OnceCell<HashMap<u32, Arc<HashMap<String, String>>>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Default, Debug, Clone, PartialEq, Eq)]
 pub struct CpuStat {
   pub user:    u64,
   pub nice:    u64,
@@ -59,7 +59,7 @@ impl CpuStat {
   }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Default, Debug, Clone)]
 pub struct Cpu {
   pub number: u32,
 
@@ -80,8 +80,6 @@ pub struct Cpu {
 
   pub stat: CpuStat,
   pub info: Option<Arc<HashMap<String, String>>>,
-
-  pub temperature: Option<f64>,
 }
 
 impl PartialEq for Cpu {
@@ -107,49 +105,22 @@ impl fmt::Display for Cpu {
 }
 
 impl Cpu {
-  pub fn new(number: u32, cache: &CpuRescanCache) -> anyhow::Result<Self> {
-    let mut cpu = Self {
-      number,
-      has_cpufreq: false,
-
-      available_governors: Vec::new(),
-      governor: None,
-
-      frequency_mhz: None,
-      frequency_mhz_minimum: None,
-      frequency_mhz_maximum: None,
-
-      available_epps: Vec::new(),
-      epp: None,
-
-      available_epbs: Vec::new(),
-      epb: None,
-
-      stat: CpuStat {
-        user:    0,
-        nice:    0,
-        system:  0,
-        idle:    0,
-        iowait:  0,
-        irq:     0,
-        softirq: 0,
-        steal:   0,
-      },
-      info: None,
-
-      temperature: None,
-    };
-    cpu.rescan(cache)?;
-
-    Ok(cpu)
-  }
-
   /// Get all CPUs.
   pub fn all() -> anyhow::Result<Vec<Cpu>> {
+    fn from_number(number: u32, cache: &CpuScanCache) -> anyhow::Result<Cpu> {
+      let mut cpu = Cpu {
+        number,
+        ..Cpu::default()
+      };
+      cpu.scan(cache)?;
+
+      Ok(cpu)
+    }
+
     const PATH: &str = "/sys/devices/system/cpu";
 
     let mut cpus = vec![];
-    let cache = CpuRescanCache::default();
+    let cache = CpuScanCache::default();
 
     for entry in fs::read_dir(PATH)
       .context("failed to read CPU entries")?
@@ -173,21 +144,21 @@ impl Cpu {
         continue;
       };
 
-      cpus.push(Self::new(number, &cache)?);
+      cpus.push(from_number(number, &cache)?);
     }
 
     // Fall back if sysfs iteration above fails to find any cpufreq CPUs.
     if cpus.is_empty() {
       for number in 0..num_cpus::get() as u32 {
-        cpus.push(Self::new(number, &cache)?);
+        cpus.push(from_number(number, &cache)?);
       }
     }
 
     Ok(cpus)
   }
 
-  /// Rescan CPU, tuning local copy of settings.
-  pub fn rescan(&mut self, cache: &CpuRescanCache) -> anyhow::Result<()> {
+  /// Scan CPU, tuning local copy of settings.
+  fn scan(&mut self, cache: &CpuScanCache) -> anyhow::Result<()> {
     let Self { number, .. } = self;
 
     if !fs::exists(format!("/sys/devices/system/cpu/cpu{number}")) {
@@ -198,19 +169,19 @@ impl Cpu {
       fs::exists(format!("/sys/devices/system/cpu/cpu{number}/cpufreq"));
 
     if self.has_cpufreq {
-      self.rescan_governor()?;
-      self.rescan_frequency()?;
-      self.rescan_epp()?;
-      self.rescan_epb()?;
+      self.scan_governor()?;
+      self.scan_frequency()?;
+      self.scan_epp()?;
+      self.scan_epb()?;
     }
 
-    self.rescan_stat(cache)?;
-    self.rescan_info(cache)?;
+    self.scan_stat(cache)?;
+    self.scan_info(cache)?;
 
     Ok(())
   }
 
-  fn rescan_governor(&mut self) -> anyhow::Result<()> {
+  fn scan_governor(&mut self) -> anyhow::Result<()> {
     let Self { number, .. } = *self;
 
     self.governor = fs::read(format!(
@@ -241,7 +212,7 @@ impl Cpu {
     Ok(())
   }
 
-  fn rescan_frequency(&mut self) -> anyhow::Result<()> {
+  fn scan_frequency(&mut self) -> anyhow::Result<()> {
     let Self { number, .. } = *self;
 
     let frequency_khz = fs::read_n::<u64>(format!(
@@ -264,7 +235,7 @@ impl Cpu {
     Ok(())
   }
 
-  fn rescan_epp(&mut self) -> anyhow::Result<()> {
+  fn scan_epp(&mut self) -> anyhow::Result<()> {
     let Self { number, .. } = *self;
 
     self.epp = fs::read(format!(
@@ -294,7 +265,7 @@ impl Cpu {
     Ok(())
   }
 
-  fn rescan_epb(&mut self) -> anyhow::Result<()> {
+  fn scan_epb(&mut self) -> anyhow::Result<()> {
     let Self { number, .. } = self;
 
     self.epb = fs::read(format!(
@@ -331,7 +302,7 @@ impl Cpu {
     Ok(())
   }
 
-  fn rescan_stat(&mut self, cache: &CpuRescanCache) -> anyhow::Result<()> {
+  fn scan_stat(&mut self, cache: &CpuScanCache) -> anyhow::Result<()> {
     // OnceCell::get_or_try_init is unstable. Cope:
     let stat = match cache.stat.get() {
       Some(stat) => stat,
@@ -380,7 +351,7 @@ impl Cpu {
     Ok(())
   }
 
-  fn rescan_info(&mut self, cache: &CpuRescanCache) -> anyhow::Result<()> {
+  fn scan_info(&mut self, cache: &CpuScanCache) -> anyhow::Result<()> {
     // OnceCell::get_or_try_init is unstable. Cope:
     let info = match cache.info.get() {
       Some(stat) => stat,
@@ -648,7 +619,10 @@ impl Cpu {
     Ok(())
   }
 
-  pub fn set_turbo(on: bool) -> anyhow::Result<()> {
+  pub fn set_turbo<'a>(
+    on: bool,
+    mut cpus: impl Iterator<Item = &'a Self>,
+  ) -> anyhow::Result<()> {
     let value_boost = match on {
       true => "1",  // boost = 1 means turbo is enabled.
       false => "0", // boost = 0 means turbo is disabled.
@@ -684,7 +658,7 @@ impl Cpu {
     }
 
     // Also try per-core cpufreq boost for some AMD systems.
-    if Self::all()?.iter().any(|cpu| {
+    if cpus.any(|cpu| {
       let Cpu { number, .. } = cpu;
 
       fs::write(

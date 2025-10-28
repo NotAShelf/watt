@@ -10,7 +10,6 @@ pub mod system;
 pub mod fs;
 
 pub mod config;
-pub mod daemon;
 
 #[derive(clap::Parser, Debug)]
 #[command(version, about)]
@@ -37,5 +36,5 @@ pub fn main() -> anyhow::Result<()> {
   let config = config::DaemonConfig::load_from(cli.config.as_deref())
     .context("failed to load daemon config")?;
 
-  daemon::run(config)
+  system::run_daemon(config)
 }
