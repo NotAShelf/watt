@@ -1,5 +1,8 @@
 use std::{
-  collections::HashMap,
+  collections::{
+    HashMap,
+    HashSet,
+  },
   fs,
   path::Path,
   sync::Arc,
@@ -71,7 +74,7 @@ pub struct CpusDelta {
 impl CpusDelta {
   pub fn eval(
     &self,
-    state: &EvalState<'_>,
+    state: &EvalState<'_, '_>,
   ) -> anyhow::Result<(HashMap<Arc<cpu::Cpu>, cpu::Delta>, Option<bool>)> {
     let cpus = match &self.for_ {
       Some(numbers) => {
@@ -83,7 +86,6 @@ impl CpusDelta {
           .context("`cpu.for` was not a list")?;
 
         let mut cpus = Vec::with_capacity(numbers.len());
-        let cache = cpu::CpuRescanCache::default();
 
         for number in numbers {
           let number = number
@@ -94,15 +96,17 @@ impl CpusDelta {
             bail!("invalid CPU in `cpu.for`: {number}");
           }
 
-          cpus.push(cpu::Cpu::new(number as u32, &cache)?);
+          cpus.push(number as u32);
         }
 
-        cpus
+        state
+          .cpus
+          .iter()
+          .filter(|cpu| cpus.contains(&cpu.number))
+          .cloned()
+          .collect()
       },
-      None => {
-        cpu::Cpu::all()
-          .context("failed to get all CPUs and their information")?
-      },
+      None => state.cpus.clone(),
     };
 
     let mut deltas = HashMap::with_capacity(cpus.len());
@@ -235,7 +239,7 @@ pub struct PowersDelta {
 impl PowersDelta {
   pub fn eval(
     &self,
-    state: &EvalState<'_>,
+    state: &EvalState<'_, '_>,
   ) -> anyhow::Result<(
     HashMap<Arc<power_supply::PowerSupply>, power_supply::Delta>,
     Option<String>,
@@ -256,16 +260,17 @@ impl PowersDelta {
             .try_into_string()
             .context("`power.for` item was not a string")?;
 
-          power_supplies
-            .push(power_supply::PowerSupply::from_name(name.clone())?);
+          power_supplies.push(name);
         }
 
-        power_supplies
+        state
+          .power_supplies
+          .iter()
+          .filter(|power_supply| power_supplies.contains(&power_supply.name))
+          .cloned()
+          .collect()
       },
-      None => {
-        power_supply::PowerSupply::all()
-          .context("failed to get all power supplies and their information")?
-      },
+      None => state.power_supplies.clone(),
     };
 
     let mut deltas = HashMap::with_capacity(power_supplies.len());
@@ -581,7 +586,7 @@ impl Expression {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct EvalState<'a> {
+pub struct EvalState<'peripherals, 'context> {
   pub frequency_available: bool,
   pub turbo_available:     bool,
 
@@ -598,7 +603,10 @@ pub struct EvalState<'a> {
 
   pub discharging: bool,
 
-  pub context: EvalContext<'a>,
+  pub context: EvalContext<'context>,
+
+  pub cpus:           &'peripherals HashSet<Arc<cpu::Cpu>>,
+  pub power_supplies: &'peripherals HashSet<Arc<power_supply::PowerSupply>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -608,8 +616,11 @@ pub enum EvalContext<'a> {
   WidestPossible,
 }
 
-impl EvalState<'_> {
-  pub fn in_context<'a>(&self, context: EvalContext<'a>) -> EvalState<'a> {
+impl<'peripherals> EvalState<'peripherals, '_> {
+  pub fn in_context<'context>(
+    &self,
+    context: EvalContext<'context>,
+  ) -> EvalState<'peripherals, 'context> {
     EvalState { context, ..*self }
   }
 }
@@ -617,7 +628,7 @@ impl EvalState<'_> {
 impl Expression {
   pub fn eval(
     &self,
-    state: &EvalState<'_>,
+    state: &EvalState<'_, '_>,
   ) -> anyhow::Result<Option<Expression>> {
     use Expression::*;
 
@@ -645,11 +656,8 @@ impl Expression {
           EvalContext::Cpu(cpu) => cpu.available_governors.contains(&value),
           EvalContext::PowerSupply(_) => false,
           EvalContext::WidestPossible => {
-            cpu::Cpu::all()
-              .context(
-                "failed to scan all CPUs and get their information for \
-                 `is-governor-available`",
-              )?
+            state
+              .cpus
               .iter()
               .any(|cpu| cpu.available_governors.contains(&value))
           },
@@ -665,11 +673,8 @@ impl Expression {
           EvalContext::Cpu(cpu) => cpu.available_epps.contains(&value),
           EvalContext::PowerSupply(_) => false,
           EvalContext::WidestPossible => {
-            cpu::Cpu::all()
-              .context(
-                "failed to scan all CPUs and get their information for \
-                 `is-energy-performance-preference-available`",
-              )?
+            state
+              .cpus
               .iter()
               .any(|cpu| cpu.available_epps.contains(&value))
           },
@@ -685,11 +690,8 @@ impl Expression {
           EvalContext::Cpu(cpu) => cpu.available_epbs.contains(&value),
           EvalContext::PowerSupply(_) => false,
           EvalContext::WidestPossible => {
-            cpu::Cpu::all()
-              .context(
-                "failed to scan all CPUs and get their information for \
-                 `is-energy-performance-bias-available`",
-              )?
+            state
+              .cpus
               .iter()
               .any(|cpu| cpu.available_epbs.contains(&value))
           },
