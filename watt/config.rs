@@ -81,7 +81,7 @@ impl CpuDelta {
       Some(numbers) => {
         let numbers = numbers
           .eval(state)?
-          .ok_or_else(|| anyhow!("`cpu.for` resolved to undefined"))?;
+          .context("`cpu.for` resolved to undefined")?;
         let numbers = numbers
           .try_into_list()
           .context("`cpu.for` was not a list")?;
@@ -295,7 +295,7 @@ impl PowerDelta {
       Some(names) => {
         let names = names
           .eval(state)?
-          .ok_or_else(|| anyhow!("`power.for` resolved to undefined"))?;
+          .context("`power.for` resolved to undefined")?;
         let names = names
           .try_into_list()
           .context("`power.for` was not a list")?;
