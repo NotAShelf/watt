@@ -1,11 +1,13 @@
 use std::{
+  cell,
+  collections::HashMap,
   fs,
   path::Path,
+  sync::Arc,
 };
 
 use anyhow::{
   Context,
-  anyhow,
   bail,
 };
 use serde::{
@@ -24,7 +26,7 @@ fn is_default<T: Default + PartialEq>(value: &T) -> bool {
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
-pub struct CpuDelta {
+pub struct CpusDelta {
   /// The CPUs to apply the changes to. When unspecified, will be applied to
   /// all CPUs.
   ///
@@ -67,17 +69,12 @@ pub struct CpuDelta {
   pub turbo: Option<Expression>,
 }
 
-struct PendingCpuAction {
-  governor:              Option<String>,
-  epp:                   Option<String>,
-  epb:                   Option<String>,
-  frequency_mhz_minimum: Option<u64>,
-  frequency_mhz_maximum: Option<u64>,
-}
-
-impl CpuDelta {
-  pub fn apply(&self, state: &EvalState<'_>) -> anyhow::Result<()> {
-    let mut cpus = match &self.for_ {
+impl CpusDelta {
+  pub fn eval(
+    &self,
+    state: &EvalState<'_>,
+  ) -> anyhow::Result<(HashMap<Arc<cpu::Cpu>, CpuDelta>, Option<bool>)> {
+    let cpus = match &self.for_ {
       Some(numbers) => {
         let numbers = numbers
           .eval(state)?
@@ -98,10 +95,6 @@ impl CpuDelta {
             bail!("invalid CPU in `cpu.for`: {number}");
           }
 
-          if number > u32::MAX as f64 {
-            bail!("CPU in `cpu.for` too big: {number}");
-          }
-
           cpus.push(cpu::Cpu::new(number as u32, &cache)?);
         }
 
@@ -113,146 +106,145 @@ impl CpuDelta {
       },
     };
 
-    let mut pending_actions = Vec::with_capacity(cpus.len());
+    let mut deltas = HashMap::with_capacity(cpus.len());
+    let cpus = cpus.into_iter().map(Arc::from);
 
-    for cpu in &cpus {
-      let cpu_state = EvalState {
-        current_cpu: Some(cpu),
-        ..*state
-      };
+    for cpu in cpus {
+      let state = state.in_context(EvalContext::Cpu(&cpu));
+      let mut delta = CpuDelta::default();
 
-      let mut action = PendingCpuAction {
-        governor:              None,
-        epp:                   None,
-        epb:                   None,
-        frequency_mhz_minimum: None,
-        frequency_mhz_maximum: None,
-      };
+      if let Some(governor) = &self.governor
+        && let Some(governor) = governor.eval(&state)?
+      {
+        let governor = governor
+          .try_into_string()
+          .context("`cpu.governor` was not a string")?;
 
-      if let Some(governor) = &self.governor {
-        if let Some(governor) = governor.eval(&cpu_state)? {
-          let governor = governor
-            .try_into_string()
-            .context("`cpu.governor` was not a string")?;
-
-          action.governor = Some(governor.to_string());
-        } else {
-          log::debug!("skipping cpu.governor for {cpu}: condition not met");
-        }
+        delta.governor = Some(governor);
       }
 
-      if let Some(epp) = &self.energy_performance_preference {
-        if let Some(epp) = epp.eval(&cpu_state)? {
-          let epp = epp
-            .try_into_string()
-            .context("`cpu.energy-performance-preference` was not a string")?;
+      if let Some(epp) = &self.energy_performance_preference
+        && let Some(epp) = epp.eval(&state)?
+      {
+        let epp = epp
+          .try_into_string()
+          .context("`cpu.energy-performance-preference` was not a string")?;
 
-          action.epp = Some(epp.to_string());
-        } else {
-          log::debug!(
-            "skipping cpu.energy-performance-preference for {cpu}: condition \
-             not met"
+        delta.energy_performance_preference = Some(epp);
+      }
+
+      if let Some(epb) = &self.energy_performance_bias
+        && let Some(epb) = epb.eval(&state)?
+      {
+        let epb = epb
+          .try_into_string()
+          .context("`cpu.energy-performance-bias` was not a string")?;
+
+        delta.energy_performance_bias = Some(epb);
+      }
+
+      if let Some(mhz_minimum) = &self.frequency_mhz_minimum
+        && let Some(mhz_minimum) = mhz_minimum.eval(&state)?
+      {
+        let mhz_minimum = mhz_minimum
+          .try_into_number()
+          .context("`cpu.frequency-mhz-minimum` was not a number")?;
+
+        if mhz_minimum.fract() != 0.0 {
+          bail!(
+            "invalid number for `cpu.frequency-mhz-minimum`: {mhz_minimum}"
           );
         }
+
+        delta.frequency_mhz_minimum = Some(mhz_minimum as u64);
       }
 
-      if let Some(epb) = &self.energy_performance_bias {
-        if let Some(epb) = epb.eval(&cpu_state)? {
-          let epb = epb
-            .try_into_string()
-            .context("`cpu.energy-performance-bias` was not a string")?;
+      if let Some(mhz_maximum) = &self.frequency_mhz_maximum
+        && let Some(mhz_maximum) = mhz_maximum.eval(&state)?
+      {
+        let mhz_maximum = mhz_maximum
+          .try_into_number()
+          .context("`cpu.frequency-mhz-maximum` was not a number")?;
 
-          action.epb = Some(epb.to_string());
-        } else {
-          log::debug!(
-            "skipping cpu.energy-performance-bias for {cpu}: condition not met"
+        if mhz_maximum.fract() != 0.0 {
+          bail!(
+            "invalid number for `cpu.frequency-mhz-maximum`: {mhz_maximum}"
           );
         }
+
+        delta.frequency_mhz_maximum = Some(mhz_maximum as u64);
       }
 
-      if let Some(mhz_minimum) = &self.frequency_mhz_minimum {
-        if let Some(mhz_minimum) = mhz_minimum.eval(&cpu_state)? {
-          let mhz_minimum = mhz_minimum
-            .try_into_number()
-            .context("`cpu.frequency-mhz-minimum` was not a number")?;
-
-          if mhz_minimum.fract() != 0.0 {
-            bail!(
-              "invalid number for `cpu.frequency-mhz-minimum`: {mhz_minimum}"
-            );
-          }
-
-          if mhz_minimum > u64::MAX as f64 {
-            bail!("`cpu.frequency-mhz-minimum` too big: {mhz_minimum}");
-          }
-
-          action.frequency_mhz_minimum = Some(mhz_minimum as u64);
-        } else {
-          log::debug!(
-            "skipping cpu.frequency-mhz-minimum for {cpu}: condition not met"
-          );
-        }
-      }
-
-      if let Some(mhz_maximum) = &self.frequency_mhz_maximum {
-        if let Some(mhz_maximum) = mhz_maximum.eval(&cpu_state)? {
-          let mhz_maximum = mhz_maximum
-            .try_into_number()
-            .context("`cpu.frequency-mhz-maximum` was not a number")?;
-
-          if mhz_maximum.fract() != 0.0 {
-            bail!(
-              "invalid number for `cpu.frequency-mhz-maximum`: {mhz_maximum}"
-            );
-          }
-
-          if mhz_maximum > u64::MAX as f64 {
-            bail!("`cpu.frequency-mhz-maximum` too big: {mhz_maximum}");
-          }
-
-          action.frequency_mhz_maximum = Some(mhz_maximum as u64);
-        } else {
-          log::debug!(
-            "skipping cpu.frequency-mhz-maximum for {cpu}: condition not met"
-          );
-        }
-      }
-
-      pending_actions.push(action);
+      deltas.insert(Arc::clone(&cpu), delta);
     }
 
-    for (cpu, action) in cpus.iter_mut().zip(pending_actions.iter()) {
-      if let Some(governor) = &action.governor {
-        cpu.set_governor(governor)?;
-      }
+    // This is so bad lmao
+    let turbo = if let Some(turbo) = &self.turbo
+      && let Some(turbo) = turbo.eval(state)?
+    {
+      let turbo = turbo
+        .try_into_boolean()
+        .context("`cpu.turbo` was not a boolean")?;
 
-      if let Some(epp) = &action.epp {
-        cpu.set_epp(epp)?;
-      }
+      Some(turbo)
+    } else {
+      None
+    };
 
-      if let Some(epb) = &action.epb {
-        cpu.set_epb(epb)?;
-      }
+    Ok((deltas, turbo))
+  }
+}
 
-      if let Some(mhz_minimum) = action.frequency_mhz_minimum {
-        cpu.set_frequency_mhz_minimum(mhz_minimum)?;
-      }
+#[derive(Default, Debug, Clone, PartialEq)]
+#[must_use]
+pub struct CpuDelta {
+  governor:                      Option<String>,
+  energy_performance_preference: Option<String>,
+  energy_performance_bias:       Option<String>,
+  frequency_mhz_minimum:         Option<u64>,
+  frequency_mhz_maximum:         Option<u64>,
+}
 
-      if let Some(mhz_maximum) = action.frequency_mhz_maximum {
-        cpu.set_frequency_mhz_maximum(mhz_maximum)?;
-      }
+impl CpuDelta {
+  pub fn or_else(self, that: cell::LazyCell<Self>) -> Self {
+    Self {
+      governor:                      self
+        .governor
+        .or_else(|| that.governor.clone()),
+      energy_performance_preference: self
+        .energy_performance_preference
+        .or_else(|| that.energy_performance_preference.clone()),
+      energy_performance_bias:       self
+        .energy_performance_bias
+        .or_else(|| that.energy_performance_bias.clone()),
+      frequency_mhz_minimum:         self
+        .frequency_mhz_minimum
+        .or_else(|| that.frequency_mhz_minimum),
+      frequency_mhz_maximum:         self
+        .frequency_mhz_maximum
+        .or_else(|| that.frequency_mhz_maximum),
+    }
+  }
+
+  pub fn apply(&self, cpu: &mut cpu::Cpu) -> anyhow::Result<()> {
+    if let Some(governor) = &self.governor {
+      cpu.set_governor(governor)?;
     }
 
-    if let Some(turbo) = &self.turbo {
-      if let Some(turbo) = turbo.eval(state)? {
-        let turbo = turbo
-          .try_into_boolean()
-          .context("`cpu.turbo` was not a boolean")?;
+    if let Some(epp) = &self.energy_performance_preference {
+      cpu.set_epp(epp)?;
+    }
 
-        cpu::Cpu::set_turbo(turbo)?;
-      } else {
-        log::debug!("skipping cpu.turbo: condition not met");
-      }
+    if let Some(epb) = &self.energy_performance_bias {
+      cpu.set_epb(epb)?;
+    }
+
+    if let Some(mhz_minimum) = self.frequency_mhz_minimum {
+      cpu.set_frequency_mhz_minimum(mhz_minimum)?;
+    }
+
+    if let Some(mhz_maximum) = self.frequency_mhz_maximum {
+      cpu.set_frequency_mhz_maximum(mhz_maximum)?;
     }
 
     Ok(())
@@ -261,7 +253,7 @@ impl CpuDelta {
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
-pub struct PowerDelta {
+pub struct PowersDelta {
   /// The power supplies to apply the changes to. When unspecified, will be
   /// applied to all power supplies.
   ///
@@ -289,9 +281,15 @@ pub struct PowerDelta {
   pub platform_profile: Option<Expression>,
 }
 
-impl PowerDelta {
-  pub fn apply(&self, state: &EvalState<'_>) -> anyhow::Result<()> {
-    let mut power_supplies = match &self.for_ {
+impl PowersDelta {
+  pub fn eval(
+    &self,
+    state: &EvalState<'_>,
+  ) -> anyhow::Result<(
+    HashMap<Arc<power_supply::PowerSupply>, PowerDelta>,
+    Option<String>,
+  )> {
+    let power_supplies = match &self.for_ {
       Some(names) => {
         let names = names
           .eval(state)?
@@ -313,97 +311,140 @@ impl PowerDelta {
 
         power_supplies
       },
-
       None => {
-        power_supply::PowerSupply::all()?
-          .into_iter()
-          .filter(|power_supply| power_supply.threshold_config.is_some())
-          .collect()
+        power_supply::PowerSupply::all()
+          .context("failed to get all power supplies and their information")?
       },
     };
 
-    for power_supply in &mut power_supplies {
+    let mut deltas = HashMap::with_capacity(power_supplies.len());
+    let power_supplies = power_supplies.into_iter().map(Arc::from);
+
+    for power_supply in power_supplies {
+      let state = state.in_context(EvalContext::PowerSupply(&power_supply));
+      let mut delta = PowerDelta::default();
+
       if let Some(threshold_start) = &self.charge_threshold_start
-        && let Some(threshold_start) = threshold_start.eval(state)?
+        && let Some(threshold_start) = threshold_start.eval(&state)?
       {
         let threshold_start = threshold_start
           .try_into_number()
           .context("`power.charge-threshold-start` was not a number")?;
 
-        power_supply.set_charge_threshold_start(threshold_start / 100.0)?;
+        delta.charge_threshold_start = Some(threshold_start / 100.0);
       }
 
       if let Some(threshold_end) = &self.charge_threshold_end
-        && let Some(threshold_end) = threshold_end.eval(state)?
+        && let Some(threshold_end) = threshold_end.eval(&state)?
       {
         let threshold_end = threshold_end
           .try_into_number()
           .context("`power.charge-threshold-end` was not a number")?;
 
-        power_supply.set_charge_threshold_end(threshold_end / 100.0)?;
+        delta.charge_threshold_end = Some(threshold_end / 100.0);
       }
+
+      deltas.insert(Arc::clone(&power_supply), delta);
     }
 
-    if let Some(platform_profile) = &self.platform_profile
+    let platform_profile = if let Some(platform_profile) =
+      &self.platform_profile
       && let Some(platform_profile) = platform_profile.eval(state)?
     {
       let platform_profile = platform_profile
         .try_into_string()
         .context("`power.platform-profile` was not a string")?;
 
-      power_supply::PowerSupply::set_platform_profile(platform_profile)?;
+      Some(platform_profile)
+    } else {
+      None
+    };
+
+    Ok((deltas, platform_profile))
+  }
+}
+
+#[derive(Default, Debug, Clone, PartialEq)]
+#[must_use]
+pub struct PowerDelta {
+  charge_threshold_start: Option<f64>,
+  charge_threshold_end:   Option<f64>,
+}
+
+impl PowerDelta {
+  pub fn or_else(self, that: cell::LazyCell<Self>) -> Self {
+    Self {
+      charge_threshold_start: self
+        .charge_threshold_start
+        .or_else(|| that.charge_threshold_start),
+      charge_threshold_end:   self
+        .charge_threshold_end
+        .or_else(|| that.charge_threshold_end),
+    }
+  }
+
+  pub fn apply(
+    &self,
+    power_supply: &mut power_supply::PowerSupply,
+  ) -> anyhow::Result<()> {
+    if let Some(charge_threshold_start) = self.charge_threshold_start {
+      power_supply.set_charge_threshold_start(charge_threshold_start)?;
+    }
+
+    if let Some(charge_threshold_end) = self.charge_threshold_end {
+      power_supply.set_charge_threshold_end(charge_threshold_end)?;
     }
 
     Ok(())
   }
 }
 
-macro_rules! named {
-  ($variant:ident => $value:literal) => {
-    pub mod $variant {
-      pub fn serialize<S: serde::Serializer>(
-        serializer: S,
-      ) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str($value)
-      }
-
-      pub fn deserialize<'de, D: serde::Deserializer<'de>>(
-        deserializer: D,
-      ) -> Result<(), D::Error> {
-        struct Visitor;
-
-        impl<'de> serde::de::Visitor<'de> for Visitor {
-          type Value = ();
-
-          fn expecting(
-            &self,
-            writer: &mut std::fmt::Formatter,
-          ) -> std::fmt::Result {
-            writer.write_str(concat!("\"", $value, "\""))
-          }
-
-          fn visit_str<E: serde::de::Error>(
-            self,
-            value: &str,
-          ) -> Result<Self::Value, E> {
-            if value != $value {
-              return Err(E::invalid_value(
-                serde::de::Unexpected::Str(value),
-                &self,
-              ));
-            }
-
-            Ok(())
-          }
+mod expression {
+  macro_rules! named {
+    ($variant:ident => $value:literal) => {
+      pub mod $variant {
+        pub fn serialize<S: serde::Serializer>(
+          serializer: S,
+        ) -> Result<S::Ok, S::Error> {
+          serializer.serialize_str($value)
         }
 
-        deserializer.deserialize_str(Visitor)
-      }
-    }
-  };
-}
+        pub fn deserialize<'de, D: serde::Deserializer<'de>>(
+          deserializer: D,
+        ) -> Result<(), D::Error> {
+          struct Visitor;
 
-mod expression {
+          impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = ();
+
+            fn expecting(
+              &self,
+              writer: &mut std::fmt::Formatter,
+            ) -> std::fmt::Result {
+              writer.write_str(concat!("\"", $value, "\""))
+            }
+
+            fn visit_str<E: serde::de::Error>(
+              self,
+              value: &str,
+            ) -> Result<Self::Value, E> {
+              if value != $value {
+                return Err(E::invalid_value(
+                  serde::de::Unexpected::Str(value),
+                  &self,
+                ));
+              }
+
+              Ok(())
+            }
+          }
+
+          deserializer.deserialize_str(Visitor)
+        }
+      }
+    };
+  }
+
   named!(frequency_available => "?frequency-available");
   named!(turbo_available => "?turbo-available");
 
@@ -423,6 +464,7 @@ mod expression {
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(untagged)]
+#[must_use]
 pub enum Expression {
   IsGovernorAvailable {
     #[serde(rename = "is-governor-available")]
@@ -580,23 +622,23 @@ pub enum Expression {
 }
 
 impl Expression {
-  pub fn try_into_number(&self) -> anyhow::Result<f64> {
+  pub fn try_into_number(self) -> anyhow::Result<f64> {
     let Self::Number(number) = self else {
       bail!("tried to cast '{self:?}' to a number, failed")
     };
 
-    Ok(*number)
+    Ok(number)
   }
 
-  pub fn try_into_boolean(&self) -> anyhow::Result<bool> {
+  pub fn try_into_boolean(self) -> anyhow::Result<bool> {
     let Self::Boolean(boolean) = self else {
       bail!("tried to cast '{self:?}' to a boolean, failed")
     };
 
-    Ok(*boolean)
+    Ok(boolean)
   }
 
-  pub fn try_into_string(&self) -> anyhow::Result<&String> {
+  pub fn try_into_string(self) -> anyhow::Result<String> {
     let Self::String(string) = self else {
       bail!("tried to cast '{self:?}' to a string, failed")
     };
@@ -604,7 +646,7 @@ impl Expression {
     Ok(string)
   }
 
-  pub fn try_into_list(&self) -> anyhow::Result<&Vec<Expression>> {
+  pub fn try_into_list(self) -> anyhow::Result<Vec<Expression>> {
     let Self::List(list) = self else {
       bail!("tried to cast '{self:?}' to a list, failed")
     };
@@ -631,7 +673,20 @@ pub struct EvalState<'a> {
 
   pub discharging: bool,
 
-  pub current_cpu: Option<&'a cpu::Cpu>,
+  pub context: EvalContext<'a>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum EvalContext<'a> {
+  Cpu(&'a cpu::Cpu),
+  PowerSupply(&'a power_supply::PowerSupply),
+  WidestPossible,
+}
+
+impl EvalState<'_> {
+  pub fn in_context<'a>(&self, context: EvalContext<'a>) -> EvalState<'a> {
+    EvalState { context, ..*self }
+  }
 }
 
 impl Expression {
@@ -661,16 +716,18 @@ impl Expression {
         let value = eval!(value);
         let value = value.try_into_string()?;
 
-        let available = if let Some(cpu) = state.current_cpu {
-          cpu.available_governors.contains(value)
-        } else {
-          cpu::Cpu::all()
-            .context(
-              "failed to scan all CPUs and get their information for \
-               `is-governor-available`",
-            )?
-            .iter()
-            .any(|cpu| cpu.available_governors.contains(value))
+        let available = match state.context {
+          EvalContext::Cpu(cpu) => cpu.available_governors.contains(&value),
+          EvalContext::PowerSupply(_) => false,
+          EvalContext::WidestPossible => {
+            cpu::Cpu::all()
+              .context(
+                "failed to scan all CPUs and get their information for \
+                 `is-governor-available`",
+              )?
+              .iter()
+              .any(|cpu| cpu.available_governors.contains(&value))
+          },
         };
 
         Boolean(available)
@@ -679,16 +736,18 @@ impl Expression {
         let value = eval!(value);
         let value = value.try_into_string()?;
 
-        let available = if let Some(cpu) = state.current_cpu {
-          cpu.available_epps.contains(value)
-        } else {
-          cpu::Cpu::all()
-            .context(
-              "failed to scan all CPUs and get their information for \
-               `is-energy-performance-preference-available`",
-            )?
-            .iter()
-            .any(|cpu| cpu.available_epps.contains(value))
+        let available = match state.context {
+          EvalContext::Cpu(cpu) => cpu.available_epps.contains(&value),
+          EvalContext::PowerSupply(_) => false,
+          EvalContext::WidestPossible => {
+            cpu::Cpu::all()
+              .context(
+                "failed to scan all CPUs and get their information for \
+                 `is-energy-performance-preference-available`",
+              )?
+              .iter()
+              .any(|cpu| cpu.available_epps.contains(&value))
+          },
         };
 
         Boolean(available)
@@ -697,16 +756,18 @@ impl Expression {
         let value = eval!(value);
         let value = value.try_into_string()?;
 
-        let available = if let Some(cpu) = state.current_cpu {
-          cpu.available_epbs.contains(value)
-        } else {
-          cpu::Cpu::all()
-            .context(
-              "failed to scan all CPUs and get their information for \
-               `is-energy-performance-bias-available`",
-            )?
-            .iter()
-            .any(|cpu| cpu.available_epbs.contains(value))
+        let available = match state.context {
+          EvalContext::Cpu(cpu) => cpu.available_epbs.contains(&value),
+          EvalContext::PowerSupply(_) => false,
+          EvalContext::WidestPossible => {
+            cpu::Cpu::all()
+              .context(
+                "failed to scan all CPUs and get their information for \
+                 `is-energy-performance-bias-available`",
+              )?
+              .iter()
+              .any(|cpu| cpu.available_epbs.contains(&value))
+          },
         };
 
         Boolean(available)
@@ -721,7 +782,7 @@ impl Expression {
               "failed to get available platform profiles for \
                `is-platform-profile-available`",
             )?
-            .contains(value);
+            .contains(&value);
 
         Boolean(available)
       },
@@ -847,12 +908,12 @@ impl Expression {
   }
 }
 
-fn expression_true() -> Expression {
+fn literal_true() -> Expression {
   Expression::Boolean(true)
 }
 
-fn expression_is_true(expression: &Expression) -> bool {
-  expression == &expression_true()
+fn literal_is_true(expression: &Expression) -> bool {
+  expression == &literal_true()
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -861,25 +922,25 @@ pub struct Rule {
   pub priority: u16,
 
   #[serde(
-    default = "expression_true",
+    default = "literal_true",
     rename = "if",
-    skip_serializing_if = "expression_is_true"
+    skip_serializing_if = "literal_is_true"
   )]
   pub condition: Expression,
 
   #[serde(default, skip_serializing_if = "is_default")]
-  pub cpu:   CpuDelta,
+  pub cpu:   CpusDelta,
   #[serde(default, skip_serializing_if = "is_default")]
-  pub power: PowerDelta,
+  pub power: PowersDelta,
 }
 
 impl Default for Rule {
   fn default() -> Self {
     Self {
       priority:  u16::default(),
-      condition: expression_true(),
-      cpu:       CpuDelta::default(),
-      power:     PowerDelta::default(),
+      condition: literal_true(),
+      cpu:       CpusDelta::default(),
+      power:     PowersDelta::default(),
     }
   }
 }
