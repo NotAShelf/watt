@@ -1,5 +1,4 @@
 use std::{
-  cell,
   collections::HashMap,
   fs,
   path::Path,
@@ -73,7 +72,7 @@ impl CpusDelta {
   pub fn eval(
     &self,
     state: &EvalState<'_>,
-  ) -> anyhow::Result<(HashMap<Arc<cpu::Cpu>, CpuDelta>, Option<bool>)> {
+  ) -> anyhow::Result<(HashMap<Arc<cpu::Cpu>, cpu::Delta>, Option<bool>)> {
     let cpus = match &self.for_ {
       Some(numbers) => {
         let numbers = numbers
@@ -111,7 +110,7 @@ impl CpusDelta {
 
     for cpu in cpus {
       let state = state.in_context(EvalContext::Cpu(&cpu));
-      let mut delta = CpuDelta::default();
+      let mut delta = cpu::Delta::default();
 
       if let Some(governor) = &self.governor
         && let Some(governor) = governor.eval(&state)?
@@ -195,62 +194,6 @@ impl CpusDelta {
   }
 }
 
-#[derive(Default, Debug, Clone, PartialEq)]
-#[must_use]
-pub struct CpuDelta {
-  governor:                      Option<String>,
-  energy_performance_preference: Option<String>,
-  energy_performance_bias:       Option<String>,
-  frequency_mhz_minimum:         Option<u64>,
-  frequency_mhz_maximum:         Option<u64>,
-}
-
-impl CpuDelta {
-  pub fn or_else(self, that: cell::LazyCell<Self>) -> Self {
-    Self {
-      governor:                      self
-        .governor
-        .or_else(|| that.governor.clone()),
-      energy_performance_preference: self
-        .energy_performance_preference
-        .or_else(|| that.energy_performance_preference.clone()),
-      energy_performance_bias:       self
-        .energy_performance_bias
-        .or_else(|| that.energy_performance_bias.clone()),
-      frequency_mhz_minimum:         self
-        .frequency_mhz_minimum
-        .or_else(|| that.frequency_mhz_minimum),
-      frequency_mhz_maximum:         self
-        .frequency_mhz_maximum
-        .or_else(|| that.frequency_mhz_maximum),
-    }
-  }
-
-  pub fn apply(&self, cpu: &mut cpu::Cpu) -> anyhow::Result<()> {
-    if let Some(governor) = &self.governor {
-      cpu.set_governor(governor)?;
-    }
-
-    if let Some(epp) = &self.energy_performance_preference {
-      cpu.set_epp(epp)?;
-    }
-
-    if let Some(epb) = &self.energy_performance_bias {
-      cpu.set_epb(epb)?;
-    }
-
-    if let Some(mhz_minimum) = self.frequency_mhz_minimum {
-      cpu.set_frequency_mhz_minimum(mhz_minimum)?;
-    }
-
-    if let Some(mhz_maximum) = self.frequency_mhz_maximum {
-      cpu.set_frequency_mhz_maximum(mhz_maximum)?;
-    }
-
-    Ok(())
-  }
-}
-
 #[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
 pub struct PowersDelta {
@@ -286,7 +229,7 @@ impl PowersDelta {
     &self,
     state: &EvalState<'_>,
   ) -> anyhow::Result<(
-    HashMap<Arc<power_supply::PowerSupply>, PowerDelta>,
+    HashMap<Arc<power_supply::PowerSupply>, power_supply::Delta>,
     Option<String>,
   )> {
     let power_supplies = match &self.for_ {
@@ -322,7 +265,7 @@ impl PowersDelta {
 
     for power_supply in power_supplies {
       let state = state.in_context(EvalContext::PowerSupply(&power_supply));
-      let mut delta = PowerDelta::default();
+      let mut delta = power_supply::Delta::default();
 
       if let Some(threshold_start) = &self.charge_threshold_start
         && let Some(threshold_start) = threshold_start.eval(&state)?
@@ -361,41 +304,6 @@ impl PowersDelta {
     };
 
     Ok((deltas, platform_profile))
-  }
-}
-
-#[derive(Default, Debug, Clone, PartialEq)]
-#[must_use]
-pub struct PowerDelta {
-  charge_threshold_start: Option<f64>,
-  charge_threshold_end:   Option<f64>,
-}
-
-impl PowerDelta {
-  pub fn or_else(self, that: cell::LazyCell<Self>) -> Self {
-    Self {
-      charge_threshold_start: self
-        .charge_threshold_start
-        .or_else(|| that.charge_threshold_start),
-      charge_threshold_end:   self
-        .charge_threshold_end
-        .or_else(|| that.charge_threshold_end),
-    }
-  }
-
-  pub fn apply(
-    &self,
-    power_supply: &mut power_supply::PowerSupply,
-  ) -> anyhow::Result<()> {
-    if let Some(charge_threshold_start) = self.charge_threshold_start {
-      power_supply.set_charge_threshold_start(charge_threshold_start)?;
-    }
-
-    if let Some(charge_threshold_end) = self.charge_threshold_end {
-      power_supply.set_charge_threshold_end(charge_threshold_end)?;
-    }
-
-    Ok(())
   }
 }
 

@@ -1,5 +1,8 @@
 use std::{
-  cell::OnceCell,
+  cell::{
+    self,
+    OnceCell,
+  },
   collections::HashMap,
   fmt,
   hash,
@@ -724,5 +727,61 @@ impl Cpu {
     }
 
     Ok(None)
+  }
+}
+
+#[derive(Default, Debug, Clone, PartialEq)]
+#[must_use]
+pub struct Delta {
+  pub governor:                      Option<String>,
+  pub energy_performance_preference: Option<String>,
+  pub energy_performance_bias:       Option<String>,
+  pub frequency_mhz_minimum:         Option<u64>,
+  pub frequency_mhz_maximum:         Option<u64>,
+}
+
+impl Delta {
+  pub fn or_else(self, that: cell::LazyCell<Self>) -> Self {
+    Self {
+      governor:                      self
+        .governor
+        .or_else(|| that.governor.clone()),
+      energy_performance_preference: self
+        .energy_performance_preference
+        .or_else(|| that.energy_performance_preference.clone()),
+      energy_performance_bias:       self
+        .energy_performance_bias
+        .or_else(|| that.energy_performance_bias.clone()),
+      frequency_mhz_minimum:         self
+        .frequency_mhz_minimum
+        .or_else(|| that.frequency_mhz_minimum),
+      frequency_mhz_maximum:         self
+        .frequency_mhz_maximum
+        .or_else(|| that.frequency_mhz_maximum),
+    }
+  }
+
+  pub fn apply(&self, cpu: &mut Cpu) -> anyhow::Result<()> {
+    if let Some(governor) = &self.governor {
+      cpu.set_governor(governor)?;
+    }
+
+    if let Some(epp) = &self.energy_performance_preference {
+      cpu.set_epp(epp)?;
+    }
+
+    if let Some(epb) = &self.energy_performance_bias {
+      cpu.set_epb(epb)?;
+    }
+
+    if let Some(mhz_minimum) = self.frequency_mhz_minimum {
+      cpu.set_frequency_mhz_minimum(mhz_minimum)?;
+    }
+
+    if let Some(mhz_maximum) = self.frequency_mhz_maximum {
+      cpu.set_frequency_mhz_maximum(mhz_maximum)?;
+    }
+
+    Ok(())
   }
 }

@@ -1,4 +1,5 @@
 use std::{
+  cell,
   fmt,
   hash,
   path::{
@@ -427,5 +428,37 @@ impl PowerSupply {
     fs::read("/sys/firmware/acpi/platform_profile")
       .context("failed to read platform profile")?
       .context("failed to find platform profile")
+  }
+}
+
+#[derive(Default, Debug, Clone, PartialEq)]
+#[must_use]
+pub struct Delta {
+  pub charge_threshold_start: Option<f64>,
+  pub charge_threshold_end:   Option<f64>,
+}
+
+impl Delta {
+  pub fn or_else(self, that: cell::LazyCell<Self>) -> Self {
+    Self {
+      charge_threshold_start: self
+        .charge_threshold_start
+        .or_else(|| that.charge_threshold_start),
+      charge_threshold_end:   self
+        .charge_threshold_end
+        .or_else(|| that.charge_threshold_end),
+    }
+  }
+
+  pub fn apply(&self, power_supply: &mut PowerSupply) -> anyhow::Result<()> {
+    if let Some(charge_threshold_start) = self.charge_threshold_start {
+      power_supply.set_charge_threshold_start(charge_threshold_start)?;
+    }
+
+    if let Some(charge_threshold_end) = self.charge_threshold_end {
+      power_supply.set_charge_threshold_end(charge_threshold_end)?;
+    }
+
+    Ok(())
   }
 }
