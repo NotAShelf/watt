@@ -480,6 +480,15 @@ pub enum Expression {
     b: Box<Expression>,
   },
 
+  Minimum {
+    #[serde(rename = "minimum")]
+    numbers: Vec<Expression>,
+  },
+  Maximum {
+    #[serde(rename = "maximum")]
+    numbers: Vec<Expression>,
+  },
+
   // BOOLEAN OPERATIONS
   IfElse {
     #[serde(rename = "if")]
@@ -501,6 +510,13 @@ pub enum Expression {
     #[serde(rename = "and")]
     b: Box<Expression>,
   },
+  Or {
+    #[serde(rename = "value")]
+    a: Box<Expression>,
+    #[serde(rename = "or")]
+    b: Box<Expression>,
+  },
+
   All {
     all: Vec<Expression>,
   },
@@ -762,6 +778,37 @@ impl Expression {
 
         Boolean(minimum < b && b < maximum)
       },
+      Minimum { numbers } => {
+        let mut evaled = Vec::with_capacity(numbers.len());
+
+        for number in numbers {
+          let number = eval!(number).try_into_number()?;
+          evaled.push(number);
+        }
+
+        Number(
+          evaled
+            .into_iter()
+            .min_by(f64::total_cmp)
+            .context("minimum must be given at least 1 expression")?,
+        )
+      },
+      Maximum { numbers } => {
+        let mut evaled = Vec::with_capacity(numbers.len());
+
+        for number in numbers {
+          let number = eval!(number).try_into_number()?;
+          evaled.push(number);
+        }
+
+        Number(
+          evaled
+            .into_iter()
+            .max_by(f64::total_cmp)
+            .context("maximum must be given at least 1 expression")?,
+        )
+      },
+
 
       IfElse {
         condition,
