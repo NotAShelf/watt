@@ -590,13 +590,13 @@ pub struct EvalState<'peripherals, 'context> {
 
   pub cpu_usage:                  f64,
   pub cpu_usage_volatility:       Option<f64>,
-  pub cpu_temperature:            f64,
+  pub cpu_temperature:            Option<f64>,
   pub cpu_temperature_volatility: Option<f64>,
   pub cpu_idle_seconds:           f64,
-  pub cpu_frequency_maximum:      f64,
-  pub cpu_frequency_minimum:      f64,
+  pub cpu_frequency_maximum:      Option<f64>,
+  pub cpu_frequency_minimum:      Option<f64>,
 
-  pub power_supply_charge:         f64,
+  pub power_supply_charge:         Option<f64>,
   pub power_supply_discharge_rate: Option<f64>,
 
   pub discharging: bool,
@@ -716,15 +716,15 @@ impl Expression {
 
       CpuUsage => Number(state.cpu_usage),
       CpuUsageVolatility => Number(try_ok!(state.cpu_usage_volatility)),
-      CpuTemperature => Number(state.cpu_temperature),
+      CpuTemperature => Number(try_ok!(state.cpu_temperature)),
       CpuTemperatureVolatility => {
         Number(try_ok!(state.cpu_temperature_volatility))
       },
       CpuIdleSeconds => Number(state.cpu_idle_seconds),
-      CpuFrequencyMaximum => Number(state.cpu_frequency_maximum),
-      CpuFrequencyMinimum => Number(state.cpu_frequency_minimum),
+      CpuFrequencyMaximum => Number(try_ok!(state.cpu_frequency_maximum)),
+      CpuFrequencyMinimum => Number(try_ok!(state.cpu_frequency_minimum)),
 
-      PowerSupplyCharge => Number(state.power_supply_charge),
+      PowerSupplyCharge => Number(try_ok!(state.power_supply_charge)),
       PowerSupplyDischargeRate => {
         Number(try_ok!(state.power_supply_discharge_rate))
       },

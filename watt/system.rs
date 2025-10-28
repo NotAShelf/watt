@@ -758,24 +758,22 @@ pub fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
       cpu_temperature:            system
         .cpu_log
         .back()
-        .context("CPU log is empty")?
-        .temperature,
+        .map(|log| log.temperature),
       cpu_temperature_volatility: system
         .cpu_volatility()
         .map(|vol| vol.temperature),
       cpu_idle_seconds:           last_user_activity.elapsed().as_secs_f64(),
       cpu_frequency_maximum:      cpu::Cpu::hardware_frequency_mhz_maximum()
         .context("failed to read CPU hardware maximum frequency")?
-        .unwrap_or(0) as f64,
+        .map(|u64| u64 as f64),
       cpu_frequency_minimum:      cpu::Cpu::hardware_frequency_mhz_minimum()
         .context("failed to read CPU hardware minimum frequency")?
-        .unwrap_or(0) as f64,
+        .map(|u64| u64 as f64),
 
       power_supply_charge:         system
         .power_supply_log
         .back()
-        .context("power supply log is empty")?
-        .charge,
+        .map(|log| log.charge),
       power_supply_discharge_rate: system.power_supply_discharge_rate(),
 
       discharging: system.is_discharging(),
