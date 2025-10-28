@@ -39,23 +39,23 @@ pub struct CpusDelta {
   #[serde(skip_serializing_if = "is_default")]
   pub governor: Option<Expression>,
 
-  /// Set CPU Energy Performance Preference (EPP). Short form: --epp.
+  /// Set CPU Energy Performance Preference (EPP).
   ///
   /// Type: `String`.
   #[serde(skip_serializing_if = "is_default")]
   pub energy_performance_preference: Option<Expression>,
-  /// Set CPU Energy Performance Bias (EPB). Short form: --epb.
+  /// Set CPU Energy Performance Bias (EPB).
   ///
   /// Type: `String`.
   #[serde(skip_serializing_if = "is_default")]
   pub energy_performance_bias:       Option<Expression>,
 
-  /// Set minimum CPU frequency in MHz. Short form: --freq-min.
+  /// Set minimum CPU frequency in MHz.
   ///
   /// Type: `u64`.
   #[serde(skip_serializing_if = "is_default")]
   pub frequency_mhz_minimum: Option<Expression>,
-  /// Set maximum CPU frequency in MHz. Short form: --freq-max.
+  /// Set maximum CPU frequency in MHz.
   ///
   /// Type: `u64`.
   #[serde(skip_serializing_if = "is_default")]
@@ -122,56 +122,64 @@ impl CpusDelta {
         delta.governor = Some(governor);
       }
 
-      if let Some(epp) = &self.energy_performance_preference
-        && let Some(epp) = epp.eval(&state)?
+      if let Some(energy_performance_preference) =
+        &self.energy_performance_preference
+        && let Some(energy_performance_preference) =
+          energy_performance_preference.eval(&state)?
       {
-        let epp = epp
+        let energy_performance_preference = energy_performance_preference
           .try_into_string()
           .context("`cpu.energy-performance-preference` was not a string")?;
 
-        delta.energy_performance_preference = Some(epp);
+        delta.energy_performance_preference =
+          Some(energy_performance_preference);
       }
 
-      if let Some(epb) = &self.energy_performance_bias
-        && let Some(epb) = epb.eval(&state)?
+      if let Some(energy_performance_bias) = &self.energy_performance_bias
+        && let Some(energy_performance_bias) =
+          energy_performance_bias.eval(&state)?
       {
-        let epb = epb
+        let energy_performance_bias = energy_performance_bias
           .try_into_string()
           .context("`cpu.energy-performance-bias` was not a string")?;
 
-        delta.energy_performance_bias = Some(epb);
+        delta.energy_performance_bias = Some(energy_performance_bias);
       }
 
-      if let Some(mhz_minimum) = &self.frequency_mhz_minimum
-        && let Some(mhz_minimum) = mhz_minimum.eval(&state)?
+      if let Some(frequency_mhz_minimum) = &self.frequency_mhz_minimum
+        && let Some(frequency_mhz_minimum) =
+          frequency_mhz_minimum.eval(&state)?
       {
-        let mhz_minimum = mhz_minimum
+        let frequency_mhz_minimum = frequency_mhz_minimum
           .try_into_number()
           .context("`cpu.frequency-mhz-minimum` was not a number")?;
 
-        if mhz_minimum.fract() != 0.0 {
+        if frequency_mhz_minimum.fract() != 0.0 {
           bail!(
-            "invalid number for `cpu.frequency-mhz-minimum`: {mhz_minimum}"
+            "invalid number for `cpu.frequency-mhz-minimum`: \
+             {frequency_mhz_minimum}"
           );
         }
 
-        delta.frequency_mhz_minimum = Some(mhz_minimum as u64);
+        delta.frequency_mhz_minimum = Some(frequency_mhz_minimum as u64);
       }
 
-      if let Some(mhz_maximum) = &self.frequency_mhz_maximum
-        && let Some(mhz_maximum) = mhz_maximum.eval(&state)?
+      if let Some(frequency_mhz_maximum) = &self.frequency_mhz_maximum
+        && let Some(frequency_mhz_maximum) =
+          frequency_mhz_maximum.eval(&state)?
       {
-        let mhz_maximum = mhz_maximum
+        let frequency_mhz_maximum = frequency_mhz_maximum
           .try_into_number()
           .context("`cpu.frequency-mhz-maximum` was not a number")?;
 
-        if mhz_maximum.fract() != 0.0 {
+        if frequency_mhz_maximum.fract() != 0.0 {
           bail!(
-            "invalid number for `cpu.frequency-mhz-maximum`: {mhz_maximum}"
+            "invalid number for `cpu.frequency-mhz-maximum`: \
+             {frequency_mhz_maximum}"
           );
         }
 
-        delta.frequency_mhz_maximum = Some(mhz_maximum as u64);
+        delta.frequency_mhz_maximum = Some(frequency_mhz_maximum as u64);
       }
 
       deltas.insert(Arc::clone(&cpu), delta);
@@ -520,13 +528,6 @@ pub enum Expression {
   All {
     all: Vec<Expression>,
   },
-
-  Or {
-    #[serde(rename = "value")]
-    a: Box<Expression>,
-    #[serde(rename = "or")]
-    b: Box<Expression>,
-  },
   Any {
     any: Vec<Expression>,
   },
@@ -768,16 +769,7 @@ impl Expression {
       MoreThan { a, b } => {
         Boolean(eval!(a).try_into_number()? > eval!(b).try_into_number()?)
       },
-      Equal { a, b, leeway } => {
-        let a = eval!(a).try_into_number()?;
-        let b = eval!(b).try_into_number()?;
-        let leeway = eval!(leeway).try_into_number()?;
 
-        let minimum = a - leeway;
-        let maximum = a + leeway;
-
-        Boolean(minimum < b && b < maximum)
-      },
       Minimum { numbers } => {
         let mut evaled = Vec::with_capacity(numbers.len());
 
@@ -809,6 +801,7 @@ impl Expression {
         )
       },
 
+      IsUnset { a } => Boolean(a.eval(state)?.is_none()),
 
       IfElse {
         condition,
@@ -824,11 +817,13 @@ impl Expression {
         }
       },
 
-      IsUnset { a } => Boolean(a.eval(state)?.is_none()),
-
       And { a, b } => {
         Boolean(eval!(a).try_into_boolean()? && eval!(b).try_into_boolean()?)
       },
+      Or { a, b } => {
+        Boolean(eval!(a).try_into_boolean()? || eval!(b).try_into_boolean()?)
+      },
+
       All { all } => {
         let mut all = all.iter();
 
@@ -841,9 +836,6 @@ impl Expression {
             break Boolean(false);
           }
         }
-      },
-      Or { a, b } => {
-        Boolean(eval!(a).try_into_boolean()? || eval!(b).try_into_boolean()?)
       },
       Any { any } => {
         let mut any = any.iter();
@@ -858,7 +850,19 @@ impl Expression {
           }
         }
       },
+
       Not { not } => Boolean(!eval!(not).try_into_boolean()?),
+
+      Equal { a, b, leeway } => {
+        let a = eval!(a).try_into_number()?;
+        let b = eval!(b).try_into_number()?;
+        let leeway = eval!(leeway).try_into_number()?;
+
+        let minimum = a - leeway;
+        let maximum = a + leeway;
+
+        Boolean(minimum < b && b < maximum)
+      },
     }))
   }
 }
