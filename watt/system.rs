@@ -648,13 +648,18 @@ pub fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
 
   let cancelled = Arc::new(AtomicBool::new(false));
 
-  log::debug!("setting ctrl-c handler...");
-  let cancelled_ = Arc::clone(&cancelled);
-  ctrlc::set_handler(move || {
-    log::info!("received shutdown signal");
-    cancelled_.store(true, Ordering::SeqCst);
-  })
-  .context("failed to set ctrl-c handler")?;
+  {
+    log::debug!("setting ctrl-c handler...");
+    ctrlc::set_handler({
+      let cancelled = Arc::clone(&cancelled);
+
+      move || {
+        log::info!("received shutdown signal");
+        cancelled.store(true, Ordering::SeqCst);
+      }
+    })
+    .context("failed to set ctrl-c handler")?;
+  }
 
   let mut system = System::default();
   let mut last_polling_delay = None::<Duration>;
