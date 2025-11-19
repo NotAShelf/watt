@@ -213,15 +213,15 @@ impl Cpu {
     let Self { number, .. } = *self;
 
     let frequency_khz = fs::read_n::<u64>(format!(
-      "/sys/devices/system/cpu/cpu{number}/cpufreq/scaling_cur_freq"
+      "/sys/devices/system/cpu/cpu{number}/cpufreq/cpuinfo_cur_freq"
     ))
     .with_context(|| format!("failed to parse {self} frequency"))?;
     let frequency_khz_minimum = fs::read_n::<u64>(format!(
-      "/sys/devices/system/cpu/cpu{number}/cpufreq/scaling_min_freq"
+      "/sys/devices/system/cpu/cpu{number}/cpufreq/cpuinfo_min_freq"
     ))
     .with_context(|| format!("failed to parse {self} frequency minimum"))?;
     let frequency_khz_maximum = fs::read_n::<u64>(format!(
-      "/sys/devices/system/cpu/cpu{number}/cpufreq/scaling_max_freq"
+      "/sys/devices/system/cpu/cpu{number}/cpufreq/cpuinfo_max_freq"
     ))
     .with_context(|| format!("failed to parse {self} frequency maximum"))?;
 
@@ -507,7 +507,7 @@ impl Cpu {
   }
 
   pub fn set_frequency_mhz_minimum(
-    &mut self,
+    &self,
     frequency_mhz: u64,
   ) -> anyhow::Result<()> {
     let Self { number, .. } = *self;
@@ -529,8 +529,6 @@ impl Cpu {
       )
     })?;
 
-    self.frequency_mhz_minimum = Some(frequency_mhz);
-
     Ok(())
   }
 
@@ -541,7 +539,7 @@ impl Cpu {
     let Self { number, .. } = self;
 
     let Some(minimum_frequency_khz) = fs::read_n::<u64>(format!(
-      "/sys/devices/system/cpu/cpu{number}/cpufreq/scaling_min_freq"
+      "/sys/devices/system/cpu/cpu{number}/cpufreq/cpuinfo_min_freq"
     ))
     .with_context(|| format!("failed to read {self} minimum frequency"))?
     else {
@@ -551,8 +549,8 @@ impl Cpu {
 
     if new_frequency_mhz * 1000 < minimum_frequency_khz {
       bail!(
-        "new minimum frequency ({new_frequency_mhz} MHz) cannot be lower than \
-         the minimum frequency ({} MHz) for {self}",
+        "new software minimum frequency ({new_frequency_mhz} MHz) cannot be \
+         lower than the hardware minimum frequency ({} MHz) for {self}",
         minimum_frequency_khz / 1000,
       );
     }
@@ -561,7 +559,7 @@ impl Cpu {
   }
 
   pub fn set_frequency_mhz_maximum(
-    &mut self,
+    &self,
     frequency_mhz: u64,
   ) -> anyhow::Result<()> {
     let Self { number, .. } = *self;
@@ -582,8 +580,6 @@ impl Cpu {
          changing maximum frequency"
       )
     })?;
-
-    self.frequency_mhz_maximum = Some(frequency_mhz);
 
     Ok(())
   }
@@ -607,8 +603,8 @@ impl Cpu {
 
     if new_frequency_mhz * 1000 > maximum_frequency_khz {
       bail!(
-        "new maximum frequency ({new_frequency_mhz} MHz) cannot be higher \
-         than the maximum frequency ({} MHz) for {self}",
+        "new software maximum frequency ({new_frequency_mhz} MHz) cannot be \
+         higher than the hardware maximum frequency ({} MHz) for {self}",
         maximum_frequency_khz / 1000,
       );
     }
