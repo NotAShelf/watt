@@ -4,6 +4,7 @@ use std::{
     HashSet,
     VecDeque,
   },
+  mem,
   path::Path,
   sync::{
     Arc,
@@ -784,7 +785,27 @@ pub fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
       power_supplies: &system.power_supplies,
     };
 
-    for rule in &config.rules {
+    let mut cpu_deltas: HashMap<Arc<cpu::Cpu>, cpu::Delta> = system
+      .cpus
+      .iter()
+      .map(|cpu| (Arc::clone(cpu), cpu::Delta::default()))
+      .collect();
+    let mut cpu_turbo: Option<bool> = None;
+
+    let mut power_deltas: HashMap<
+      Arc<power_supply::PowerSupply>,
+      power_supply::Delta,
+    > = system
+      .power_supplies
+      .iter()
+      .map(|power_supply| {
+        (Arc::clone(power_supply), power_supply::Delta::default())
+      })
+      .collect();
+    let mut power_platform_profile: Option<String> = None;
+
+    // Higher priority rule first, so we can short-circuit.
+    for rule in config.rules.iter().rev() {
       let Some(condition) = rule.condition.eval(&state)? else {
         continue;
       };
@@ -794,10 +815,73 @@ pub fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
         .context("`if` was not a boolean")?;
 
       if condition {
-        // TODO: Actually do something!!!
-        rule.cpu.eval(&state)?;
-        rule.power.eval(&state)?;
+        let cpu_some = {
+          let (cpu_deltas_lo, cpu_turbo_lo) = rule.cpu.eval(&state)?;
+
+          let deltas_some = cpu_deltas.iter_mut().all(|(cpu, delta)| {
+            let delta_lo = cpu_deltas_lo
+              .get(cpu)
+              .expect("cpu deltas and cpus should match");
+
+            *delta = mem::take(delta).or(delta_lo);
+
+            delta.is_some()
+          });
+
+          cpu_turbo = cpu_turbo.or(cpu_turbo_lo);
+
+          deltas_some && cpu_turbo.is_some()
+        };
+
+        let power_some = {
+          let (power_deltas_lo, power_platform_profile_lo) =
+            rule.power.eval(&state)?;
+
+          let deltas_some = power_deltas.iter_mut().all(|(power, delta)| {
+            let delta_lo = power_deltas_lo
+              .get(power)
+              .expect("power deltas and power supplies should match");
+
+            *delta = mem::take(delta).or(delta_lo);
+
+            delta.is_some()
+          });
+
+          power_platform_profile =
+            power_platform_profile.or(power_platform_profile_lo);
+
+          deltas_some && power_platform_profile.is_some()
+        };
+
+        if cpu_some && power_some {
+          log::debug!(
+            "got a full delta from rules, short circuting evaluation"
+          );
+          break;
+        }
       }
+    }
+
+    for (cpu, delta) in &cpu_deltas {
+      delta
+        .apply(&mut (**cpu).clone())
+        .with_context(|| format!("failed to apply delta to {cpu}"))?;
+    }
+
+    if let Some(turbo) = cpu_turbo {
+      cpu::Cpu::set_turbo(turbo, cpu_deltas.keys().map(|arc| &**arc))
+        .context("failed to set CPU turbo")?;
+    }
+
+    for (power, delta) in power_deltas {
+      delta
+        .apply(&mut (*power).clone())
+        .with_context(|| format!("failed to apply delta to {power}"))?;
+    }
+
+    if let Some(platform_profile) = power_platform_profile {
+      power_supply::PowerSupply::set_platform_profile(&platform_profile)
+        .context("failed to set power supply platform profile")?;
     }
 
     let elapsed = start.elapsed();

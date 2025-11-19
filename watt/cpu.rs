@@ -1,8 +1,5 @@
 use std::{
-  cell::{
-    self,
-    OnceCell,
-  },
+  cell::OnceCell,
   collections::HashMap,
   fmt,
   hash,
@@ -723,7 +720,7 @@ impl Delta {
       && self.frequency_mhz_maximum.is_some()
   }
 
-  pub fn or_else(self, that: cell::LazyCell<Self>) -> Self {
+  pub fn or(self, that: &Self) -> Self {
     Self {
       governor:                      self
         .governor
@@ -736,10 +733,10 @@ impl Delta {
         .or_else(|| that.energy_performance_bias.clone()),
       frequency_mhz_minimum:         self
         .frequency_mhz_minimum
-        .or_else(|| that.frequency_mhz_minimum),
+        .or(that.frequency_mhz_minimum),
       frequency_mhz_maximum:         self
         .frequency_mhz_maximum
-        .or_else(|| that.frequency_mhz_maximum),
+        .or(that.frequency_mhz_maximum),
     }
   }
 

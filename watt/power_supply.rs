@@ -1,5 +1,4 @@
 use std::{
-  cell,
   fmt,
   hash,
   path::PathBuf,
@@ -416,14 +415,14 @@ impl Delta {
     self.charge_threshold_start.is_some() && self.charge_threshold_end.is_some()
   }
 
-  pub fn or_else(self, that: cell::LazyCell<Self>) -> Self {
+  pub fn or(self, that: &Self) -> Self {
     Self {
       charge_threshold_start: self
         .charge_threshold_start
-        .or_else(|| that.charge_threshold_start),
+        .or(that.charge_threshold_start),
       charge_threshold_end:   self
         .charge_threshold_end
-        .or_else(|| that.charge_threshold_end),
+        .or(that.charge_threshold_end),
     }
   }
 
