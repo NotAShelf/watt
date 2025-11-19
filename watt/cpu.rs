@@ -715,6 +715,14 @@ pub struct Delta {
 }
 
 impl Delta {
+  pub fn is_some(&self) -> bool {
+    self.governor.is_some()
+      && self.energy_performance_preference.is_some()
+      && self.energy_performance_bias.is_some()
+      && self.frequency_mhz_minimum.is_some()
+      && self.frequency_mhz_maximum.is_some()
+  }
+
   pub fn or_else(self, that: cell::LazyCell<Self>) -> Self {
     Self {
       governor:                      self

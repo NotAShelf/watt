@@ -412,6 +412,10 @@ pub struct Delta {
 }
 
 impl Delta {
+  pub fn is_some(&self) -> bool {
+    self.charge_threshold_start.is_some() && self.charge_threshold_end.is_some()
+  }
+
   pub fn or_else(self, that: cell::LazyCell<Self>) -> Self {
     Self {
       charge_threshold_start: self
