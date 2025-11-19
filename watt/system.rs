@@ -181,25 +181,27 @@ impl System {
       self.power_supply_log.pop_front();
     }
 
-    let power_supply_log = PowerSupplyLog {
-      at,
-      charge: {
-        let (charge_sum, charge_nr) = self.power_supplies.iter().fold(
-          (0.0, 0u32),
-          |(sum, count), power_supply| {
-            if let Some(charge_percent) = power_supply.charge_percent {
-              (sum + charge_percent, count + 1)
-            } else {
-              (sum, count)
-            }
-          },
-        );
+    if !self.power_supplies.is_empty() {
+      let power_supply_log = PowerSupplyLog {
+        at,
+        charge: {
+          let (charge_sum, charge_nr) = self.power_supplies.iter().fold(
+            (0.0, 0u32),
+            |(sum, count), power_supply| {
+              if let Some(charge_percent) = power_supply.charge_percent {
+                (sum + charge_percent, count + 1)
+              } else {
+                (sum, count)
+              }
+            },
+          );
 
-        charge_sum / charge_nr as f64
-      },
-    };
-    log::debug!("appending power supply log item: {power_supply_log:?}");
-    self.power_supply_log.push_back(power_supply_log);
+          charge_sum / charge_nr as f64
+        },
+      };
+      log::debug!("appending power supply log item: {power_supply_log:?}");
+      self.power_supply_log.push_back(power_supply_log);
+    }
 
     Ok(())
   }
