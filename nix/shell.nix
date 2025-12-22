@@ -1,24 +1,43 @@
 {
   mkShell,
+  rustPlatform,
+  taplo,
   cargo,
   rustc,
-  rustfmt,
+  clang,
   clippy,
+  lldb,
   rust-analyzer-unwrapped,
-  taplo,
-  rustPlatform,
-}:
-mkShell {
-  packages = [
-    cargo
-    rustc
-    clippy # lints
-    (rustfmt.override {asNightly = true;})
-    rust-analyzer-unwrapped
+  rustfmt,
+  cargo-nextest,
+}: let
+  inherit (rustc) llvmPackages;
+in
+  mkShell {
+    name = "ndg-devshell";
+    packages = [
+      taplo # TOML formatter
 
-    # TOML formatter
-    taplo
-  ];
+      # Build tool
+      cargo
+      rustc
+      clang
+      llvmPackages.lld # linker
 
-  env.RUST_SRC_PATH = "${rustPlatform.rustLibSrc}";
-}
+      # Tooling
+      clippy # lints
+      lldb # debugger
+      rust-analyzer-unwrapped # LSP
+      (rustfmt.override {asNightly = true;}) # formatter
+
+      # Additional Cargo utils
+      cargo-nextest
+    ];
+
+    env = {
+      RUST_SRC_PATH = rustPlatform.rustLibSrc;
+
+      LIBCLANG_PATH = "${llvmPackages.libclang.lib}/lib";
+      RUSTFLAGS = "-C linker=clang -C link-arg=-fuse-ld=lld";
+    };
+  }
