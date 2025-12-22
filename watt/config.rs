@@ -157,14 +157,18 @@ impl CpusDelta {
           .try_into_number()
           .context("`cpu.frequency-mhz-minimum` was not a number")?;
 
-        if frequency_mhz_minimum.fract() != 0.0 {
-          bail!(
-            "invalid number for `cpu.frequency-mhz-minimum`: \
-             {frequency_mhz_minimum}"
+        let rounded_value = if frequency_mhz_minimum.fract() != 0.0 {
+          let rounded = frequency_mhz_minimum.round() as u64;
+          log::warn!(
+            "`cpu.frequency-mhz-minimum` yielded a float value \
+             ({frequency_mhz_minimum}), rounding to {rounded}"
           );
-        }
+          rounded
+        } else {
+          frequency_mhz_minimum as u64
+        };
 
-        delta.frequency_mhz_minimum = Some(frequency_mhz_minimum as u64);
+        delta.frequency_mhz_minimum = Some(rounded_value);
       }
 
       if let Some(frequency_mhz_maximum) = &self.frequency_mhz_maximum
@@ -175,14 +179,18 @@ impl CpusDelta {
           .try_into_number()
           .context("`cpu.frequency-mhz-maximum` was not a number")?;
 
-        if frequency_mhz_maximum.fract() != 0.0 {
-          bail!(
-            "invalid number for `cpu.frequency-mhz-maximum`: \
-             {frequency_mhz_maximum}"
+        let rounded_value = if frequency_mhz_maximum.fract() != 0.0 {
+          let rounded = frequency_mhz_maximum.round() as u64;
+          log::warn!(
+            "`cpu.frequency-mhz-maximum` yielded a float value \
+             ({frequency_mhz_maximum}), rounding to {rounded}"
           );
-        }
+          rounded
+        } else {
+          frequency_mhz_maximum as u64
+        };
 
-        delta.frequency_mhz_maximum = Some(frequency_mhz_maximum as u64);
+        delta.frequency_mhz_maximum = Some(rounded_value);
       }
 
       deltas.insert(Arc::clone(&cpu), delta);
