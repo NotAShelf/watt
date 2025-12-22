@@ -972,3 +972,176 @@ impl DaemonConfig {
     Ok(config)
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use std::sync::Arc;
+
+  use proptest::prelude::*;
+
+  use super::*;
+
+  proptest! {
+    #[test]
+    fn test_multiply_float(
+      base_freq in 1000u64..10000u64,
+      multiplier in 0.1f64..1.0f64
+    ) {
+      // Create a mock CPU with all required fields
+      // FIXME: figure out if there is a less ugly way of testing this and
+      // share CPU state across tests
+      let cpu = Arc::new(cpu::Cpu {
+        number: 0,
+        has_cpufreq: true,
+        available_governors: vec![],
+        governor: None,
+        frequency_mhz: Some(base_freq),
+        frequency_mhz_minimum: Some(1000),
+        frequency_mhz_maximum: Some(base_freq),
+        available_epps: vec![],
+        epp: None,
+        available_epbs: vec![],
+        epb: None,
+        stat: cpu::CpuStat::default(),
+        info: None,
+      });
+
+      let mut cpus = HashSet::new();
+      cpus.insert(cpu.clone());
+
+      let power_supplies = HashSet::new();
+
+      // Create an eval state with the base frequency
+      let state = EvalState {
+        frequency_available: true,
+        turbo_available: false,
+        cpu_usage: 0.5,
+        cpu_usage_volatility: Some(0.1),
+        cpu_temperature: Some(50.0),
+        cpu_temperature_volatility: Some(5.0),
+        cpu_idle_seconds: 10.0,
+        cpu_frequency_maximum: Some(base_freq as f64),
+        cpu_frequency_minimum: Some(1000.0),
+        power_supply_charge: Some(0.8),
+        power_supply_discharge_rate: Some(10.0),
+        discharging: false,
+        context: EvalContext::Cpu(&cpu),
+        cpus: &cpus,
+        power_supplies: &power_supplies,
+      };
+
+      // Create an expression like: { value = "$cpu-frequency-maximum", multiply = 0.65 }
+      let expr = Expression::Multiply {
+        a: Box::new(Expression::CpuFrequencyMaximum),
+        b: Box::new(Expression::Number(multiplier)),
+      };
+
+      // Evaluate the expression
+      let result = expr.eval(&state);
+
+      // Before the fix, this would succeed but then crash when converting to u64
+      // After the fix, this should succeed and round the result
+      prop_assert!(result.is_ok());
+
+      if let Ok(Some(Expression::Number(value))) = result {
+        // The result might be a float
+        let _expected_float = base_freq as f64 * multiplier;
+
+        // Create a CpusDelta with the frequency_mhz_maximum field
+        let cpu_delta = CpusDelta {
+          for_: None,
+          governor: None,
+          energy_performance_preference: None,
+          energy_performance_bias: None,
+          frequency_mhz_minimum: None,
+          frequency_mhz_maximum: Some(Expression::Number(value)),
+          turbo: None,
+        };
+
+        // Try to evaluate it - this should not panic after the fix
+        let eval_result = cpu_delta.eval(&state);
+
+        // This test should pass after the fix is applied
+        prop_assert!(
+          eval_result.is_ok(),
+          "Evaluation should succeed with float frequency values"
+        );
+      }
+    }
+  }
+
+  // Specific test case that would have crashed before the fix
+  // Example: 5000 MHz * 0.65 = 3250.0 (no fractional part, but it's a float)
+  // Example: 3333 MHz * 0.65 = 2166.45 (has fractional part)
+  #[test]
+  fn test_rounding() {
+    let cpu = Arc::new(cpu::Cpu {
+      number:                0,
+      has_cpufreq:           true,
+      available_governors:   vec![],
+      governor:              None,
+      frequency_mhz:         Some(3333),
+      frequency_mhz_minimum: Some(1000),
+      frequency_mhz_maximum: Some(3333),
+      available_epps:        vec![],
+      epp:                   None,
+      available_epbs:        vec![],
+      epb:                   None,
+      stat:                  cpu::CpuStat::default(),
+      info:                  None,
+    });
+
+    let mut cpus = HashSet::new();
+    cpus.insert(cpu.clone());
+
+    let power_supplies = HashSet::new();
+
+    let state = EvalState {
+      frequency_available:         true,
+      turbo_available:             false,
+      cpu_usage:                   0.5,
+      cpu_usage_volatility:        Some(0.1),
+      cpu_temperature:             Some(50.0),
+      cpu_temperature_volatility:  Some(5.0),
+      cpu_idle_seconds:            10.0,
+      cpu_frequency_maximum:       Some(3333.0),
+      cpu_frequency_minimum:       Some(1000.0),
+      power_supply_charge:         Some(0.8),
+      power_supply_discharge_rate: Some(10.0),
+      discharging:                 false,
+      context:                     EvalContext::Cpu(&cpu),
+      cpus:                        &cpus,
+      power_supplies:              &power_supplies,
+    };
+
+    // 3333 * 0.65 = 2166.45
+    let cpu_delta = CpusDelta {
+      for_:                          None,
+      governor:                      None,
+      energy_performance_preference: None,
+      energy_performance_bias:       None,
+      frequency_mhz_minimum:         None,
+      frequency_mhz_maximum:         Some(Expression::Multiply {
+        a: Box::new(Expression::CpuFrequencyMaximum),
+        b: Box::new(Expression::Number(0.65)),
+      }),
+      turbo:                         None,
+    };
+
+    // Previously this would bail! with "invalid number for ...". With the
+    // rounding changes this should succeed, and round to 2166
+    let result = cpu_delta.eval(&state);
+
+    assert!(
+      result.is_ok(),
+      "Should handle float results from multiplication"
+    );
+
+    if let Ok((deltas, _)) = result {
+      let delta = deltas.get(&cpu).unwrap();
+      assert!(delta.frequency_mhz_maximum.is_some());
+      let freq = delta.frequency_mhz_maximum.unwrap();
+      assert_eq!(freq, 2166); // should be rounded to 2166
+    }
+  }
+}
