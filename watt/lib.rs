@@ -36,5 +36,7 @@ pub fn main() -> anyhow::Result<()> {
   let config = config::DaemonConfig::load_from(cli.config.as_deref())
     .context("failed to load daemon config")?;
 
+  log::info!("starting watt daemon");
+
   system::run_daemon(config)
 }

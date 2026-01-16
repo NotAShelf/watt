@@ -115,7 +115,11 @@ const POWER_SUPPLY_PATH: &str = "/sys/class/power_supply";
 
 impl PowerSupply {
   pub fn all() -> anyhow::Result<Vec<PowerSupply>> {
+    log::info!("detecting power supplies...");
+
     let mut power_supplies = Vec::new();
+
+    log::debug!("scanning power supplies in {POWER_SUPPLY_PATH}");
 
     for entry in fs::read_dir(POWER_SUPPLY_PATH)
       .context("failed to read power supply entries")?
@@ -166,10 +170,14 @@ impl PowerSupply {
       power_supplies.push(power_supply);
     }
 
+    log::info!("detected {} power supplies", power_supplies.len());
+
     Ok(power_supplies)
   }
 
   fn scan(&mut self) -> anyhow::Result<()> {
+    log::trace!("scanning power supply '{}'", self.name);
+
     if !self.path.exists() {
       bail!("{self} does not exist");
     }
@@ -188,6 +196,8 @@ impl PowerSupply {
 
     self.is_from_peripheral = 'is_from_peripheral: {
       let name_lower = self.name.to_lowercase();
+
+      log::trace!("power supply '{}' type: {}", self.name, self.type_);
 
       // Common peripheral battery names.
       if name_lower.contains("mouse")
@@ -281,6 +291,12 @@ impl PowerSupply {
             && self.path.join(config.path_end).exists()
         })
         .copied();
+
+      log::debug!(
+        "power supply '{}' threshold config: {:?}",
+        self.name,
+        self.threshold_config
+      );
     }
 
     Ok(())
@@ -353,6 +369,8 @@ impl PowerSupply {
   }
 
   pub fn get_available_platform_profiles() -> anyhow::Result<Vec<String>> {
+    log::trace!("reading available platform profiles");
+
     let path = "/sys/firmware/acpi/platform_profile_choices";
 
     let Some(content) = fs::read(path)
@@ -377,6 +395,8 @@ impl PowerSupply {
   ///
   /// [`The Kernel docs`]: <https://docs.kernel.org/userspace-api/sysfs-platform_profile.html>
   pub fn set_platform_profile(profile: &str) -> anyhow::Result<()> {
+    log::info!("setting platform profile to '{profile}'");
+
     let profiles = Self::get_available_platform_profiles()?;
 
     if !profiles
@@ -397,6 +417,8 @@ impl PowerSupply {
   }
 
   pub fn platform_profile() -> anyhow::Result<String> {
+    log::trace!("reading current platform profile");
+
     fs::read("/sys/firmware/acpi/platform_profile")
       .context("failed to read platform profile")?
       .context("failed to find platform profile")

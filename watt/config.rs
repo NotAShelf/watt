@@ -76,6 +76,8 @@ impl CpusDelta {
     &self,
     state: &EvalState<'_, '_>,
   ) -> anyhow::Result<(HashMap<Arc<cpu::Cpu>, cpu::Delta>, Option<bool>)> {
+    log::debug!("evaluating CPU deltas...");
+
     let cpus = match &self.for_ {
       Some(numbers) => {
         let numbers = numbers
@@ -110,6 +112,8 @@ impl CpusDelta {
     };
 
     let mut deltas = HashMap::with_capacity(cpus.len());
+
+    log::trace!("filtering CPUs by number: {cpus:?}");
 
     for cpu in cpus {
       let state = state.in_context(EvalContext::Cpu(&cpu));
@@ -251,6 +255,8 @@ impl PowersDelta {
     HashMap<Arc<power_supply::PowerSupply>, power_supply::Delta>,
     Option<String>,
   )> {
+    log::debug!("evaluating power supply deltas...");
+
     let power_supplies = match &self.for_ {
       Some(names) => {
         let names = names
@@ -281,6 +287,8 @@ impl PowersDelta {
     };
 
     let mut deltas = HashMap::with_capacity(power_supplies.len());
+
+    log::trace!("filtering power supplies by name: {power_supplies:?}");
 
     for power_supply in power_supplies {
       let state = state.in_context(EvalContext::PowerSupply(&power_supply));
@@ -638,6 +646,8 @@ impl Expression {
   ) -> anyhow::Result<Option<Expression>> {
     use Expression::*;
 
+    log::trace!("evaluating expression: {self:?}");
+
     macro_rules! try_ok {
       ($expression:expr) => {
         match $expression {
@@ -945,6 +955,8 @@ impl DaemonConfig {
     {
       let mut priorities = Vec::with_capacity(config.rules.len());
 
+      log::debug!("validating rule priorities...");
+
       for rule in &config.rules {
         if priorities.contains(&rule.priority) {
           bail!("each config rule must have a different priority")
@@ -966,6 +978,8 @@ impl DaemonConfig {
     }
 
     config.rules.sort_by_key(|rule| rule.priority);
+
+    log::debug!("sorted {} rules by priority", config.rules.len());
 
     log::debug!("loaded config: {config:#?}");
 

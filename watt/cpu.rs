@@ -116,8 +116,12 @@ impl Cpu {
 
     const PATH: &str = "/sys/devices/system/cpu";
 
+    log::info!("detecting CPUs...");
+
     let mut cpus = vec![];
     let cache = CpuScanCache::default();
+
+    log::debug!("scanning CPU entries in {PATH}");
 
     for entry in fs::read_dir(PATH)
       .context("failed to read CPU entries")?
@@ -146,16 +150,21 @@ impl Cpu {
 
     // Fall back if sysfs iteration above fails to find any cpufreq CPUs.
     if cpus.is_empty() {
+      log::warn!("no CPUs found in sysfs, using logical CPU count fallback");
       for number in 0..num_cpus::get() as u32 {
         cpus.push(from_number(number, &cache)?);
       }
     }
+
+    log::info!("detected {} CPUs", cpus.len());
 
     Ok(cpus)
   }
 
   /// Scan CPU, tuning local copy of settings.
   fn scan(&mut self, cache: &CpuScanCache) -> anyhow::Result<()> {
+    log::debug!("scanning CPU {}", self.number);
+
     let Self { number, .. } = self;
 
     if !fs::exists(format!("/sys/devices/system/cpu/cpu{number}")) {
@@ -164,6 +173,8 @@ impl Cpu {
 
     self.has_cpufreq =
       fs::exists(format!("/sys/devices/system/cpu/cpu{number}/cpufreq"));
+
+    log::trace!("CPU {} has cpufreq: {}", self.number, self.has_cpufreq);
 
     if self.has_cpufreq {
       self.scan_governor()?;
@@ -179,6 +190,8 @@ impl Cpu {
   }
 
   fn scan_governor(&mut self) -> anyhow::Result<()> {
+    log::trace!("scanning governor for CPU {}", self.number);
+
     let Self { number, .. } = *self;
 
     self.governor = fs::read(format!(
@@ -210,6 +223,8 @@ impl Cpu {
   }
 
   fn scan_frequency(&mut self) -> anyhow::Result<()> {
+    log::trace!("scanning frequency for CPU {}", self.number);
+
     let Self { number, .. } = *self;
 
     let frequency_khz = fs::read_n::<u64>(format!(
@@ -233,6 +248,8 @@ impl Cpu {
   }
 
   fn scan_epp(&mut self) -> anyhow::Result<()> {
+    log::trace!("scanning EPP for CPU {}", self.number);
+
     let Self { number, .. } = *self;
 
     self.epp = fs::read(format!(
@@ -263,6 +280,8 @@ impl Cpu {
   }
 
   fn scan_epb(&mut self) -> anyhow::Result<()> {
+    log::trace!("scanning EPB for CPU {}", self.number);
+
     let Self { number, .. } = self;
 
     self.epb = fs::read(format!(
@@ -300,6 +319,8 @@ impl Cpu {
   }
 
   fn scan_stat(&mut self, cache: &CpuScanCache) -> anyhow::Result<()> {
+    log::trace!("scanning stat for CPU {}", self.number);
+
     // OnceCell::get_or_try_init is unstable. Cope:
     let stat = match cache.stat.get() {
       Some(stat) => stat,
@@ -349,6 +370,8 @@ impl Cpu {
   }
 
   fn scan_info(&mut self, cache: &CpuScanCache) -> anyhow::Result<()> {
+    log::trace!("scanning info for CPU {}", self.number);
+
     // OnceCell::get_or_try_init is unstable. Cope:
     let info = match cache.info.get() {
       Some(stat) => stat,
@@ -436,6 +459,8 @@ impl Cpu {
 
     self.governor = Some(governor.to_owned());
 
+    log::info!("CPU {} governor set to {}", self.number, governor);
+
     Ok(())
   }
 
@@ -470,6 +495,8 @@ impl Cpu {
 
     self.epp = Some(epp.to_owned());
 
+    log::info!("CPU {} EPP set to {}", self.number, epp);
+
     Ok(())
   }
 
@@ -503,6 +530,8 @@ impl Cpu {
 
     self.epb = Some(epb.to_owned());
 
+    log::info!("CPU {} EPB set to {}", self.number, epb);
+
     Ok(())
   }
 
@@ -528,6 +557,12 @@ impl Cpu {
          changing minimum frequency"
       )
     })?;
+
+    log::info!(
+      "CPU {} min frequency set to {} MHz",
+      self.number,
+      frequency_mhz
+    );
 
     Ok(())
   }
@@ -581,6 +616,12 @@ impl Cpu {
       )
     })?;
 
+    log::info!(
+      "CPU {} max frequency set to {} MHz",
+      self.number,
+      frequency_mhz
+    );
+
     Ok(())
   }
 
@@ -616,6 +657,8 @@ impl Cpu {
     on: bool,
     mut cpus: impl Iterator<Item = &'a Self>,
   ) -> anyhow::Result<()> {
+    log::info!("setting CPU turbo boost to {on}");
+
     let value_boost = match on {
       true => "1",  // boost = 1 means turbo is enabled.
       false => "0", // boost = 0 means turbo is disabled.
@@ -667,6 +710,8 @@ impl Cpu {
   }
 
   pub fn hardware_frequency_mhz_maximum() -> anyhow::Result<Option<u64>> {
+    log::trace!("reading hardware frequency limits");
+
     fs::read_n::<u64>("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq")
       .context("failed to read CPU hardware maximum frequency")
       .map(|x| x.map(|freq| freq / 1000))
@@ -679,6 +724,8 @@ impl Cpu {
   }
 
   pub fn turbo() -> anyhow::Result<Option<bool>> {
+    log::trace!("reading turbo boost status");
+
     if let Some(content) =
       fs::read_n::<u64>("/sys/devices/system/cpu/intel_pstate/no_turbo")
         .context("failed to read CPU turbo boost status")?

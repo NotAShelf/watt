@@ -207,6 +207,8 @@ impl System {
   }
 
   fn scan_temperatures(&mut self) -> anyhow::Result<()> {
+    log::debug!("scanning CPU temperatures...");
+
     const PATH: &str = "/sys/class/hwmon";
 
     let mut temperatures = HashMap::new();
@@ -414,6 +416,8 @@ impl System {
   }
 
   fn scan_load_average(&mut self) -> anyhow::Result<()> {
+    log::trace!("scanning load average");
+
     let content = fs::read("/proc/loadavg")
       .context("failed to read load average from '/proc/loadavg'")?
       .context("'/proc/loadavg' doesn't exist, are you on linux?")?;
@@ -582,6 +586,8 @@ impl System {
   /// So a return value of Some(0.3) means the battery has been
   /// discharging 30% per hour.
   fn power_supply_discharge_rate(&self) -> Option<f64> {
+    log::trace!("calculating power supply discharge rate");
+
     let mut last_charge = None;
 
     // A list of increasing charge percentages.
@@ -667,6 +673,8 @@ pub fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
   let last_user_activity = Instant::now();
 
   while !cancelled.load(Ordering::SeqCst) {
+    log::debug!("starting main polling loop iteration");
+
     system.scan()?;
 
     let delay = {
@@ -875,10 +883,17 @@ pub fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
         .with_context(|| format!("failed to apply delta to {cpu}"))?;
     }
 
+    log::info!("applying CPU deltas to {} CPUs", cpu_deltas.len());
+
     if let Some(turbo) = cpu_turbo {
       cpu::Cpu::set_turbo(turbo, cpu_deltas.keys().map(|arc| &**arc))
         .context("failed to set CPU turbo")?;
     }
+
+    log::info!(
+      "applying power supply deltas to {} devices",
+      power_deltas.len()
+    );
 
     for (power, delta) in power_deltas {
       delta
