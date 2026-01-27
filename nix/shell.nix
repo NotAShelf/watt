@@ -14,7 +14,7 @@
   inherit (rustc) llvmPackages;
 in
   mkShell {
-    name = "ndg-devshell";
+    name = "watt-dev";
     packages = [
       taplo # TOML formatter
 
