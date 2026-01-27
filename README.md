@@ -1,4 +1,4 @@
-<!-- markdownlint-disable MD033-->
+<!-- markdownlint-disable MD013 MD033-->
 
 <h1 id="header" align="center">
     <pre>Watt</pre>
@@ -38,36 +38,50 @@ Linux systems. It provides intelligent control of your CPU, governors,
 frequencies and power-saving features to help optimize performance and battery
 life overall.
 
-It is greatly inspired by auto-cpufreq, but rewritten from ground up to provide
-a smoother experience with a more efficient and more correct codebase. Some
+It is _greatly_ inspired by auto-cpufreq and similar tools, but is rewritten
+from ground up to provide a smoother experience with the fraction of its runtime
+cost with an emphasis on efficiency, correctness and future-proofing. Some
 features are omitted, and it is _not_ a drop-in replacement for auto-cpufreq,
-but most common usecases are already implemented.
+but most common usecases are already implemented or planned to be implemented.
+In addition, Watt features a very powerful configuration DSL to allow cooking up
+intricate power management rules to get the _best possible performance_ out of
+your system.
 
 Watt is written in Rust, because "languages such as JS and Python should never
 be used for system level daemons" [^1] Overhead is little to none, and
 performance is as high as it can be, which should be a standard for all system
 daemons.
 
-[^1]: [Wise words](https://github.com/flukejones/asusctl)
+[^1]: Wise words from
+    [the author of asusctl](https://github.com/flukejones/asusctl)
 
 ## Features
 
+Watt is a tiny binary with a small footprint, but it packs a bunch. Namely:
+
+- **Daemon Mode**: Run in background with adaptive polling to minimize overhead.
 - **Real-time CPU Management**: Monitor and control CPU governors, frequencies,
   and turbo boost.
-- **Intelligent Power Management**: Different profiles for AC and battery
-  operation.
-- **Dynamic Turbo Boost Control**: Automatically enables/disables turbo based on
-  CPU load and temperature.
-- **Fine-tuned Controls**: Adjust energy performance preferences, biases, and
-  frequency limits.
-- **Per-core Control**: Apply settings globally or to specific CPU cores.
-- **Battery Management**: Monitor battery status and power consumption.
-- **System Load Tracking**: Track system load and make intelligent decisions.
-- **Daemon Mode**: Run in background with adaptive polling to minimize overhead.
 - **Conflict Detection**: Identifies and warns about conflicts with other power
   management tools.
+- **Powerful Config DSL**: Built on TOML, Watt features a robust configuration
+  DSL to allow configuring the daemon _exactly_ to your needs.
+  - **Intelligent Power Management**: Different profiles for AC and battery
+    operation.
+  - **Dynamic Turbo Boost Control**: Automatically enables/disables turbo based
+    on CPU load and temperature.
+  - **Fine-tuned Controls**: Adjust energy performance preferences, biases, and
+    frequency limits.
+  - **Per-core Control**: Apply settings globally or to specific CPU cores.
+  - **Battery Management**: Monitor battery status and power consumption.
+  - **System Load Tracking**: Track system load and make intelligent decisions.
 
 ## Usage
+
+Using Watt is quite simple. It comes with a powerful default configuration
+tested on a variety of systems to provide better performance out of the box.
+Unless the user wishes to configure Watt from ground up, it's enough to simply
+start the Watt daemon and leave it at that.
 
 ### Basic Commands
 
@@ -92,61 +106,57 @@ sudo watt --config /path/to/config.toml
 
 ### CPU Management
 
-Watt operates primarily as a daemon that automatically manages CPU and power
-settings based on the configuration rules. For manual CPU management, you can
-use the `cpu` command (requires the `cpu` binary to be available):
+Watt operates primarily as a daemon that runs in the background and
+automatically manages CPU and power settings based on set configuration rules,
+using the various kernel power management APIs. All CPU settings are specified
+in the configuration file:
 
-```sh
-# Set CPU governor for all cores
-sudo cpu set --governor performance
+```toml
+[[rule]]
+if = "?discharging"
+priority = 10
 
-# Set CPU governor for specific cores
-sudo cpu set --governor powersave --for 0,1,2
-
-# Set Energy Performance Preference (EPP)
-sudo cpu set --energy-performance-preference performance
-
-# Set Energy Performance Bias (EPB)
-sudo cpu set --energy-performance-bias balance_performance
-
-# Set frequency limits
-sudo cpu set --frequency-mhz-minimum 800 --frequency-mhz-maximum 3000
-
-# Enable/disable turbo boost
-sudo cpu set --turbo true
-sudo cpu set --turbo false
-
-# Apply multiple settings at once
-sudo cpu set --governor schedutil --energy-performance-preference balance_performance --turbo true
+cpu.governor = "powersave"
+cpu.energy-performance-preference = "power"
+cpu.turbo = false
 ```
 
-> [!NOTE]
-> The `cpu` and `power` commands require the watt binary to be installed and
-> available as symlinks or copies with those names. Package managers typically
-> handle this setup automatically.
+You can apply settings to specific CPU cores using the `cpu.for` option:
+
+```toml
+[[rule]]
+cpu.for = [0, 1]  # Apply to first two cores
+cpu.governor = "performance"
+```
 
 ### Power Management
 
-For manual power management, you can use the `power` command:
+Power settings are also specified in the configuration file:
 
-```sh
-# Set battery charging thresholds to extend battery lifespan
-sudo power set --charge-threshold-start 40 --charge-threshold-end 80
+```toml
+[[rule]]
+if = "?discharging"
+priority = 10
+
+# Set battery charging thresholds (as percentages, 0.0-1.0)
+power.charge-threshold-start = 0.4
+power.charge-threshold-end = 0.8
 
 # Set ACPI platform profile
-sudo power set --platform-profile low-power
+power.platform-profile = "low-power"
 
-# Apply power settings to specific power supplies
-sudo power set --for BAT0 --charge-threshold-start 30 --charge-threshold-end 70
+# Apply to specific power supplies
+power.for = ["BAT0"]
 ```
 
 Battery charging thresholds help extend battery longevity by preventing constant
 charging to 100%. Different laptop vendors implement this feature differently,
 but Watt attempts to support multiple vendor implementations including:
 
-- Lenovo ThinkPad/IdeaPad (Standard implementation)
+- Lenovo ThinkPad/IdeaPad
 - ASUS laptops
 - Huawei laptops
+- Framework laptops
 - Other devices using the standard Linux power_supply API
 
 > [!NOTE]
@@ -162,9 +172,9 @@ but Watt attempts to support multiple vendor implementations including:
 # High performance for sustained workloads with thermal protection
 [[rule]]
 if.all = [
-  { value = "%cpu-usage", is-more-than = 0.8 },
-  { value = "$cpu-idle-seconds", is-less-than = 30.0 },
-  { value = "$cpu-temperature", is-less-than = 75.0 },
+  { is-more-than = 0.8, value = "%cpu-usage" },
+  { is-less-than = 30.0, value = "$cpu-idle-seconds" },
+  { is-less-than = 75.0, value = "$cpu-temperature" },
 ]
 priority = 80
 
@@ -180,7 +190,7 @@ cpu.turbo = true
 [[rule]]
 if.all = [
   "?discharging",
-  { value = "%power-supply-charge", is-less-than = 0.3 }
+  { is-less-than = 0.3, value = "%power-supply-charge" }
 ]
 priority = 90
 
@@ -194,7 +204,7 @@ power.platform-profile = "low-power"
 [[rule]]
 if.all = [
   "?discharging",
-  { value = "%power-supply-charge", is-less-than = 0.5 }
+  { is-less-than = 0.5, value = "%power-supply-charge" }
 ]
 priority = 30
 
@@ -208,10 +218,7 @@ cpu.turbo = false
 ```toml
 # Adaptive frequency scaling based on temperature
 [[rule]]
-if = {
-  value = { value = "$cpu-temperature", minus = 50.0 },
-  is-more-than = 10.0
-}
+if = { is-more-than = 10.0, value = { value = "$cpu-temperature", minus = 50.0 } }
 priority = 60
 
 cpu.frequency-mhz-maximum = 2400
@@ -265,8 +272,25 @@ Watt includes a powerful expression language for defining conditions:
 - `"%power-supply-charge"` - Battery charge percentage (0.0-1.0)
 - `"%power-supply-discharge-rate"` - Current discharge rate
 - `"?discharging"` - Boolean indicating if system is on battery power
+- `"?frequency-available"` - Boolean indicating if CPU frequency control is
+  available
+- `"?turbo-available"` - Boolean indicating if turbo boost control is available
 
 The expression language only has boolean and 64-bit float values.
+
+#### Predicates
+
+Predicates check if a specific value is available on the system:
+
+```toml
+if.is-governor-available = "powersave"
+if.is-energy-performance-preference-available = "balance_performance"
+if.is-energy-performance-bias-available = "5"
+if.is-platform-profile-available = "low-power"
+```
+
+Each will be `true` only if the named value is available on your system. If the
+argument is not a string, Watt will fail with a configuration error.
 
 #### Operators
 
@@ -274,12 +298,13 @@ The expression language only has boolean and 64-bit float values.
   parameter)
 - **Logical**: `and`, `or`, `not`, `all`, `any`
 - **Arithmetic**: `plus`, `minus`, `multiply`, `divide`, `power`
+- **Aggregation**: `minimum`, `maximum` - take a list of expressions
 
 You can use operators with TOML attribute sets:
 
 ```toml
 [[rule]]
-if = { value = <expression>, <operator> = <parameter> }
+if = { is-more-than = "%cpu-usage", value = 0.8 }
 ```
 
 However, `all` and `any` do not take a `value` argument, but instead take a list
@@ -290,131 +315,141 @@ of expressions as the parameter:
 if = { all = [ <expression>, <expression2> ] }
 ```
 
-Some predicates take arguments as TOML objects. For example, to check if a
-specific governor, energy performance preference, or energy performance bias is
-available:
+#### Conditional Values
+
+Settings can be conditionally applied based on availability:
 
 ```toml
-if.is-governor-available = "powersave"
-if.is-energy-performance-preference-available = "balance_performance"
-if.is-energy-performance-bias-available = "5"
+cpu.governor = { if.is-governor-available = "powersave", then = "powersave" }
+cpu.energy-performance-preference = { if.is-energy-performance-preference-available = "balance_performance", then = "balance_performance" }
+cpu.energy-performance-bias = { if.is-energy-performance-bias-available = "5", then = "5" }
+cpu.frequency-mhz-maximum = { if = "?frequency-available", then = 2000 }
+cpu.turbo = { if = "?turbo-available", then = true }
 ```
 
-Each will be `true` only if the named value is available on your system. If the
-argument is not a string, Watt will fail with a configuration error.
+If the condition is not met, the setting will not be applied.
 
 ### Basic Configuration Example
 
 ```toml
 # Emergency thermal protection (highest priority)
 [[rule]]
-if = { value = "$cpu-temperature", is-more-than = 85.0 }
+if = { is-more-than = 85.0, value = "$cpu-temperature" }
 priority = 100
 
-cpu.energy-performance-preference = "power"
-cpu.frequency-mhz-maximum = 2000
-cpu.governor = "powersave"
-cpu.turbo = false
+cpu.energy-performance-bias = { if.is-energy-performance-bias-available = "power", then = "power" }
+cpu.energy-performance-preference = { if.is-energy-performance-preference-available = "power", then = "power" }
+cpu.frequency-mhz-maximum = { if = "?frequency-available", then = 2000 }
+cpu.governor = { if.is-governor-available = "powersave", then = "powersave" }
+cpu.turbo = { if = "?turbo-available", then = false }
 
 # Critical battery preservation
 [[rule]]
-if.all = [ "?discharging", { value = "%power-supply-charge", is-less-than = 0.3 } ]
+if.all = [ "?discharging", { is-less-than = 0.3, value = "%power-supply-charge" } ]
 priority = 90
 
-cpu.energy-performance-preference = "power"
+cpu.energy-performance-bias = { if.is-energy-performance-bias-available = "power", then = "power" }
+cpu.energy-performance-preference = { if.is-energy-performance-preference-available = "power", then = "power" }
 cpu.frequency-mhz-maximum = 800
-cpu.governor = "powersave"
-cpu.turbo = false
-power.platform-profile = "low-power"
+cpu.governor = { if.is-governor-available = "powersave", then = "powersave" }
+cpu.turbo = { if = "?turbo-available", then = false }
+power.platform-profile = { if.is-platform-profile-available = "low-power", then = "low-power" }
 
 # High performance mode for sustained high load
 [[rule]]
 if.all = [
-  { value = "%cpu-usage", is-more-than = 0.8 },
-  { value = "$cpu-idle-seconds", is-less-than = 30.0 },
-  { value = "$cpu-temperature", is-less-than = 75.0 },
+  { is-more-than = 0.8, value = "%cpu-usage" },
+  { is-less-than = 30.0, value = "$cpu-idle-seconds" },
+  { is-less-than = 75.0, value = "$cpu-temperature" },
 ]
 priority = 80
 
-cpu.energy-performance-preference = "performance"
-cpu.governor = "performance"
-cpu.turbo = true
+cpu.energy-performance-bias = { if.is-energy-performance-bias-available = "performance", then = "performance" }
+cpu.energy-performance-preference = { if.is-energy-performance-preference-available = "performance", then = "performance" }
+cpu.governor = { if.is-governor-available = "performance", then = "performance" }
+cpu.turbo = { if = "?turbo-available", then = true }
 
 # Performance mode when not discharging
 [[rule]]
 if.all = [
   { not = "?discharging" },
-  { value = "%cpu-usage", is-more-than = 0.1 },
-  { value = "$cpu-temperature", is-less-than = 80.0 },
+  { is-more-than = 0.1, value = "%cpu-usage" },
+  { is-less-than = 80.0, value = "$cpu-temperature" },
 ]
 priority = 70
 
-cpu.energy-performance-bias = "balance_performance"
-cpu.energy-performance-preference = "performance"
-cpu.governor = "performance"
-cpu.turbo = true
+cpu.energy-performance-bias = { if.is-energy-performance-bias-available = "balance_performance", then = "balance_performance" }
+cpu.energy-performance-preference = { if.is-energy-performance-preference-available = "performance", then = "performance" }
+cpu.governor = { if.is-governor-available = "performance", then = "performance" }
+cpu.turbo = { if = "?turbo-available", then = true }
 
 # Moderate performance for medium load
 [[rule]]
 if.all = [
-  { value = "%cpu-usage", is-more-than = 0.4 },
-  { value = "%cpu-usage", is-less-than = 0.8 },
+  { is-more-than = 0.4, value = "%cpu-usage" },
+  { is-less-than = 0.8, value = "%cpu-usage" },
 ]
 priority = 60
 
-cpu.energy-performance-preference = "balance_performance"
-cpu.governor = "schedutil"
+cpu.energy-performance-bias = { if.is-energy-performance-bias-available = "balance_performance", then = "balance_performance" }
+cpu.energy-performance-preference = { if.is-energy-performance-preference-available = "balance_performance", then = "balance_performance" }
+cpu.governor = { if.is-governor-available = "schedutil", then = "schedutil" }
 
 # Power saving during low activity
 [[rule]]
 if.all = [
-  { value = "%cpu-usage", is-less-than = 0.2 },
-  { value = "$cpu-idle-seconds", is-more-than = 60.0 },
+  { is-less-than = 0.2, value = "%cpu-usage" },
+  { is-more-than = 60.0, value = "$cpu-idle-seconds" },
 ]
 priority = 50
 
-cpu.energy-performance-preference = "power"
-cpu.governor = "powersave"
-cpu.turbo = false
+cpu.energy-performance-bias = { if.is-energy-performance-bias-available = "power", then = "power" }
+cpu.energy-performance-preference = { if.is-energy-performance-preference-available = "power", then = "power" }
+cpu.governor = { if.is-governor-available = "powersave", then = "powersave" }
+cpu.turbo = { if = "?turbo-available", then = false }
 
 # Extended idle power optimization
 [[rule]]
-if = { value = "$cpu-idle-seconds", is-more-than = 300.0 }
+if = { is-more-than = 300.0, value = "$cpu-idle-seconds" }
 priority = 40
 
-cpu.energy-performance-preference = "power"
-cpu.frequency-mhz-maximum = 1600
-cpu.governor = "powersave"
-cpu.turbo = false
+cpu.energy-performance-bias = { if.is-energy-performance-bias-available = "power", then = "power" }
+cpu.energy-performance-preference = { if.is-energy-performance-preference-available = "power", then = "power" }
+cpu.frequency-mhz-maximum = { if = "?frequency-available", then = 1600 }
+cpu.governor = { if.is-governor-available = "powersave", then = "powersave" }
+cpu.turbo = { if = "?turbo-available", then = false }
 
 # Battery conservation when discharging
 [[rule]]
-if.all = [ "?discharging", { value = "%power-supply-charge", is-less-than = 0.5 } ]
+if.all = [ "?discharging", { is-less-than = 0.5, value = "%power-supply-charge" } ]
 priority = 30
 
-cpu.energy-performance-preference = "power"
-cpu.frequency-mhz-maximum = 2000
-cpu.governor = "powersave"
-cpu.turbo = false
-power.platform-profile = "low-power"
+cpu.energy-performance-bias = { if.is-energy-performance-bias-available = "power", then = "power" }
+cpu.energy-performance-preference = { if.is-energy-performance-preference-available = "power", then = "power" }
+cpu.frequency-mhz-maximum = { if = "?frequency-available", then = 2000 }
+cpu.governor = { if.is-governor-available = "powersave", then = "powersave" }
+cpu.turbo = { if = "?turbo-available", then = false }
+power.platform-profile = { if.is-platform-profile-available = "low-power", then = "low-power" }
 
 # General battery mode
 [[rule]]
 if = "?discharging"
 priority = 20
 
-cpu.energy-performance-bias = "balance_power"
-cpu.energy-performance-preference = "power"
-cpu.frequency-mhz-maximum = 1800
-cpu.frequency-mhz-minimum = 200
-cpu.governor = "powersave"
-cpu.turbo = false
+cpu.energy-performance-bias = { if.is-energy-performance-bias-available = "balance_power", then = "balance_power" }
+cpu.energy-performance-preference = { if.is-energy-performance-preference-available = "power", then = "power" }
+cpu.frequency-mhz-maximum = { if = "?frequency-available", then = 1800 }
+cpu.frequency-mhz-minimum = { if = "?frequency-available", then = 200 }
+cpu.governor = { if.is-governor-available = "powersave", then = "powersave" }
+cpu.turbo = { if = "?turbo-available", then = false }
 
 # Balanced performance for general use - Default fallback rule
 [[rule]]
 priority = 0
-cpu.energy-performance-preference = "balance_performance"
-cpu.governor = "schedutil"
+
+cpu.energy-performance-bias = { if.is-energy-performance-bias-available = "balance_performance", then = "balance_performance" }
+cpu.energy-performance-preference = { if.is-energy-performance-preference-available = "balance_performance", then = "balance_performance" }
+cpu.governor = { if.is-governor-available = "schedutil", then = "schedutil" }
 ```
 
 ### CPU Settings
@@ -447,20 +482,51 @@ Available CPU configuration options:
   cpu.energy-performance-bias = { if.is-energy-performance-bias-available = "5", then = "5" }
   ```
 
-- `frequency-mhz-minimum` - Minimum CPU frequency in MHz
-- `frequency-mhz-maximum` - Maximum CPU frequency in MHz
-- `turbo` - Enable/disable turbo boost (boolean)
-- `for` - Apply settings to specific CPU cores (list of core IDs)
+- `frequency-mhz-minimum` - Minimum CPU frequency in MHz. Can use conditional
+  expression:
+
+  ```toml
+  cpu.frequency-mhz-minimum = { if = "?frequency-available", then = 200 }
+  ```
+
+- `frequency-mhz-maximum` - Maximum CPU frequency in MHz. Can use conditional
+  expression:
+
+  ```toml
+  cpu.frequency-mhz-maximum = { if = "?frequency-available", then = 3000 }
+  ```
+
+- `turbo` - Enable/disable turbo boost (boolean). Can use conditional
+  expression:
+
+  ```toml
+  cpu.turbo = { if = "?turbo-available", then = true }
+  ```
+
+- `for` - Apply settings to specific CPU cores (list of core IDs):
+
+  ```toml
+  cpu.for = [0, 1, 2]
+  ```
 
 ### Power Settings
 
 Available power management options:
 
 - `platform-profile` - ACPI platform profile (`performance`, `balanced`,
-  `low-power`)
-- `charge-threshold-start` - Battery charge level to start charging (0-100%)
-- `charge-threshold-end` - Battery charge level to stop charging (0-100%)
-- `for` - Apply settings to specific power supplies (list of supply names)
+  `low-power`). Can use conditional expression:
+
+  ```toml
+  power.platform-profile = { if.is-platform-profile-available = "low-power", then = "low-power" }
+  ```
+
+- `charge-threshold-start` - Battery charge level to start charging (0.0-1.0)
+- `charge-threshold-end` - Battery charge level to stop charging (0.0-1.0)
+- `for` - Apply settings to specific power supplies (list of supply names):
+
+  ```toml
+  power.for = ["BAT0"]
+  ```
 
 ## Troubleshooting
 
