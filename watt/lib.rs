@@ -48,13 +48,14 @@ pub fn main() -> anyhow::Result<()> {
 
   log::info!("starting watt daemon");
 
-  let lock_path = env::var("XDG_RUNTIME_DIR")
-    .map(|dir| PathBuf::from(dir).join("watt.pid"))
-    .unwrap_or_else(|_| PathBuf::from("/run/watt.pid"));
+  let lock_path = env::var_os("XDG_RUNTIME_DIR")
+    .map_or_else(|| PathBuf::from("/run"), PathBuf::from)
+    .join("watt.pid");
 
-  let _lock = lock::LockFile::acquire(&lock_path, cli.force).context(
-    format!("failed to acquire pid lock at {}", lock_path.display()),
-  )?;
+  let _lock =
+    lock::LockFile::acquire(&lock_path, cli.force).with_context(|| {
+      format!("failed to acquire pid lock at {}", lock_path.display())
+    })?;
 
   system::run_daemon(config)
 }
