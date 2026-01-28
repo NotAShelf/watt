@@ -1,4 +1,7 @@
-use std::path::PathBuf;
+use std::{
+  env,
+  path::PathBuf,
+};
 
 use anyhow::Context as _;
 use clap::Parser as _;
@@ -11,6 +14,8 @@ pub mod fs;
 
 pub mod config;
 
+pub mod lock;
+
 #[derive(clap::Parser, Debug)]
 #[command(version, about)]
 pub struct Cli {
@@ -20,6 +25,11 @@ pub struct Cli {
   /// The daemon config path.
   #[arg(long, env = "WATT_CONFIG")]
   config: Option<PathBuf>,
+
+  /// Force running even if another instance is already running. Potentially
+  /// destructive.
+  #[arg(long)]
+  force: bool,
 }
 
 pub fn main() -> anyhow::Result<()> {
@@ -37,6 +47,14 @@ pub fn main() -> anyhow::Result<()> {
     .context("failed to load daemon config")?;
 
   log::info!("starting watt daemon");
+
+  let lock_path = env::var("XDG_RUNTIME_DIR")
+    .map(|dir| PathBuf::from(dir).join("watt.pid"))
+    .unwrap_or_else(|_| PathBuf::from("/run/watt.pid"));
+
+  let _lock = lock::LockFile::acquire(&lock_path, cli.force).context(
+    format!("failed to acquire pid lock at {}", lock_path.display()),
+  )?;
 
   system::run_daemon(config)
 }
