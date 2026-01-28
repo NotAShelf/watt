@@ -18,13 +18,11 @@ anyhow.workspace              = true
 clap.workspace                = true
 clap-verbosity-flag.workspace = true
 ctrlc.workspace               = true
-derive_more.workspace         = true
 env_logger.workspace          = true
 log.workspace                 = true
 nix.workspace                 = true
 num_cpus.workspace            = true
 serde.workspace               = true
-thiserror.workspace           = true
 toml.workspace                = true
 yansi.workspace               = true
 
