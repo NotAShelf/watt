@@ -71,7 +71,7 @@ jobs:
 
       - name: Prepare binary
         run: |
-          cp target/${{ matrix.target }}/release/tempus ${{ matrix.name }}
+          cp target/${{ matrix.target }}/release/watt ${{ matrix.name }}
 
       - name: Upload Release Asset
         uses: softprops/action-gh-release@v2
