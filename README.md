@@ -11,10 +11,10 @@
           alt="Build Status"
         />
     </a>
-    <a alt="Docs" href="https://notashelf.github.io/watt/watt/index.html">
+    <a alt="License" href="https://github.com/notashelf/watt/blob/master/LICENSE">
         <img
-          src="https://github.com/NotAShelf/watt/actions/workflows/docs.yml/badge.svg"
-          alt="Documentation Status"
+          src="https://img.shields.io/github/license/notashelf/watt?label=License"
+          alt="License"
         />
     </a>
 </div>
