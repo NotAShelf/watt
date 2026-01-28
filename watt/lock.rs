@@ -2,11 +2,15 @@ use std::{
   error::Error,
   fmt,
   fs::{
+    self,
     File,
     OpenOptions,
   },
   ops,
-  os::unix::fs::OpenOptionsExt,
+  os::unix::fs::{
+    DirBuilderExt,
+    OpenOptionsExt,
+  },
   path::{
     Path,
     PathBuf,
@@ -64,6 +68,31 @@ impl LockFile {
   }
 
   pub fn acquire(lock_path: &Path) -> Result<Self, LockFileError> {
+    // Ensure parent directory exists with proper permissions
+    if let Some(parent) = lock_path.parent() {
+      if !parent.exists() {
+        fs::DirBuilder::new()
+          .mode(0o755)
+          .recursive(true)
+          .create(parent)
+          .map_err(|error| {
+            log::error!(
+              "failed to create lock directory {}: {}",
+              parent.display(),
+              error
+            );
+            LockFileError {
+              path:    lock_path.to_owned(),
+              message: Some(format!(
+                "cannot create directory {}: {}",
+                parent.display(),
+                error
+              )),
+            }
+          })?;
+      }
+    }
+
     #[allow(clippy::suspicious_open_options)]
     let file = OpenOptions::new()
       .create(true)

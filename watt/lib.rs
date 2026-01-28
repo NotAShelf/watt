@@ -40,13 +40,8 @@ pub fn main() -> anyhow::Result<()> {
 
   log::info!("starting watt daemon");
 
-  let lock_path = PathBuf::from("/run/watt.lock");
-  let _lock = lock::LockFile::acquire(&lock_path).with_context(|| {
-    format!(
-      "failed to acquire exclusive lock at {}",
-      lock_path.display()
-    )
-  })?;
+  let lock_path = PathBuf::from("/run/watt/lock");
+  let _lock = lock::LockFile::acquire(&lock_path)?;
 
   system::run_daemon(config)
 }
