@@ -25,7 +25,7 @@ pub fn read_dir(path: impl AsRef<Path>) -> anyhow::Result<Option<fs::ReadDir>> {
     Err(error) => {
       Err(error).context(format!(
         "failed to read directory '{path}'",
-        path = path.display()
+        path = path.display(),
       ))
     },
   }

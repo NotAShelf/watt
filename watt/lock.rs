@@ -38,9 +38,13 @@ pub struct LockFileError {
 
 impl fmt::Display for LockFileError {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    write!(f, "failed to acquire lock on {}", self.path.display())?;
-    if let Some(msg) = &self.message {
-      write!(f, ": {}", msg)?;
+    write!(
+      f,
+      "failed to acquire lock on {path}",
+      path = self.path.display(),
+    )?;
+    if let Some(message) = &self.message {
+      write!(f, ": {message}")?;
     }
     Ok(())
   }
@@ -69,28 +73,26 @@ impl LockFile {
 
   pub fn acquire(lock_path: &Path) -> Result<Self, LockFileError> {
     // Ensure parent directory exists with proper permissions
-    if let Some(parent) = lock_path.parent() {
-      if !parent.exists() {
-        fs::DirBuilder::new()
-          .mode(0o755)
-          .recursive(true)
-          .create(parent)
-          .map_err(|error| {
-            log::error!(
-              "failed to create lock directory {}: {}",
-              parent.display(),
-              error
-            );
-            LockFileError {
-              path:    lock_path.to_owned(),
-              message: Some(format!(
-                "cannot create directory {}: {}",
-                parent.display(),
-                error
-              )),
-            }
-          })?;
-      }
+    if let Some(parent) = lock_path.parent()
+      && !parent.exists()
+    {
+      fs::DirBuilder::new()
+        .mode(0o755)
+        .recursive(true)
+        .create(parent)
+        .map_err(|error| {
+          log::error!(
+            "failed to create lock directory {parent}: {error}",
+            parent = parent.display(),
+          );
+          LockFileError {
+            path:    lock_path.to_owned(),
+            message: Some(format!(
+              "cannot create directory {parent}: {error}",
+              parent = parent.display(),
+            )),
+          }
+        })?;
     }
 
     #[allow(clippy::suspicious_open_options)]
@@ -102,9 +104,8 @@ impl LockFile {
       .open(lock_path)
       .map_err(|error| {
         log::error!(
-          "failed to open lock file at {}: {}",
-          lock_path.display(),
-          error
+          "failed to open lock file at {path}: {error}",
+          path = lock_path.display(),
         );
         LockFileError {
           path:    lock_path.to_owned(),
@@ -116,12 +117,12 @@ impl LockFile {
       |(_, error)| {
         let message = if error == nix::errno::Errno::EWOULDBLOCK {
           log::error!(
-            "another watt instance is already running (lock held on {})",
-            lock_path.display()
+            "another watt instance is already running (lock held on {path})",
+            path = lock_path.display(),
           );
           Some("another instance is running".to_string())
         } else {
-          log::error!("failed to acquire lock: {}", error);
+          log::error!("failed to acquire lock: {error}");
           Some(error.to_string())
         };
 

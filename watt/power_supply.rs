@@ -170,13 +170,13 @@ impl PowerSupply {
       power_supplies.push(power_supply);
     }
 
-    log::info!("detected {} power supplies", power_supplies.len());
+    log::info!("detected {len} power supplies", len = power_supplies.len());
 
     Ok(power_supplies)
   }
 
   fn scan(&mut self) -> anyhow::Result<()> {
-    log::trace!("scanning power supply '{}'", self.name);
+    log::trace!("scanning power supply '{name}'", name = self.name);
 
     if !self.path.exists() {
       bail!("{self} does not exist");
@@ -197,7 +197,7 @@ impl PowerSupply {
     self.is_from_peripheral = 'is_from_peripheral: {
       let name_lower = self.name.to_lowercase();
 
-      log::trace!("power supply '{}' type: {}", self.name, self.type_);
+      log::trace!("power supply '{name}' type: {type_}", name = self.name, type_ = self.type_);
 
       // Common peripheral battery names.
       if name_lower.contains("mouse")
@@ -293,9 +293,9 @@ impl PowerSupply {
         .copied();
 
       log::debug!(
-        "power supply '{}' threshold config: {:?}",
-        self.name,
-        self.threshold_config
+        "power supply '{name}' threshold config: {threshold_config:?}",
+        name = self.name,
+        threshold_config = self.threshold_config,
       );
     }
 

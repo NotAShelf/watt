@@ -406,7 +406,7 @@ impl System {
       };
       log::debug!(
         "temperature content: {celsius} celsius",
-        celsius = temperature_mc as f64 / 1000.0
+        celsius = temperature_mc as f64 / 1000.0,
       );
 
       temperatures.insert(number, temperature_mc as f64 / 1000.0);
@@ -830,6 +830,11 @@ pub fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
         .context("`if` was not a boolean")?;
 
       if condition {
+        log::info!(
+          "rule '{name}' condition evaluated to true! evaluating members...",
+          name = rule.name,
+        );
+
         let cpu_some = {
           let (cpu_deltas_lo, cpu_turbo_lo) = rule.cpu.eval(&state)?;
 
@@ -883,7 +888,7 @@ pub fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
         .with_context(|| format!("failed to apply delta to {cpu}"))?;
     }
 
-    log::info!("applying CPU deltas to {} CPUs", cpu_deltas.len());
+    log::info!("applying CPU deltas to {len} CPUs", len = cpu_deltas.len());
 
     if let Some(turbo) = cpu_turbo {
       cpu::Cpu::set_turbo(turbo, cpu_deltas.keys().map(|arc| &**arc))
@@ -891,8 +896,8 @@ pub fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
     }
 
     log::info!(
-      "applying power supply deltas to {} devices",
-      power_deltas.len()
+      "applying power supply deltas to {len} devices",
+      len = power_deltas.len(),
     );
 
     for (power, delta) in power_deltas {
