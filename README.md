@@ -287,6 +287,7 @@ if.is-governor-available = "powersave"
 if.is-energy-performance-preference-available = "balance_performance"
 if.is-energy-performance-bias-available = "5"
 if.is-platform-profile-available = "low-power"
+if.is-driver-loaded = "intel_pstate"
 ```
 
 Each will be `true` only if the named value is available on your system. If the
