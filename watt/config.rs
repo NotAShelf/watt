@@ -902,6 +902,7 @@ fn literal_is_true(expression: &Expression) -> bool {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Rule {
+  pub name:     String,
   pub priority: u16,
 
   #[serde(
@@ -920,6 +921,7 @@ pub struct Rule {
 impl Default for Rule {
   fn default() -> Self {
     Self {
+      name:      String::default(),
       priority:  u16::default(),
       condition: literal_true(),
       cpu:       CpusDelta::default(),
