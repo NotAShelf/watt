@@ -723,6 +723,10 @@ impl Cpu {
       .map(|x| x.map(|freq| freq / 1000))
   }
 
+  pub fn is_intel_pstate() -> bool {
+    fs::exists("/sys/devices/system/cpu/intel_pstate")
+  }
+
   pub fn turbo() -> anyhow::Result<Option<bool>> {
     log::trace!("reading turbo boost status");
 
