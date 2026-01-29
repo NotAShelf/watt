@@ -792,8 +792,7 @@ pub fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
         .map(|log| log.charge),
       power_supply_discharge_rate: system.power_supply_discharge_rate(),
 
-      discharging:  system.is_discharging(),
-      intel_pstate: cpu::Cpu::is_intel_pstate(),
+      discharging: system.is_discharging(),
 
       context: config::EvalContext::WidestPossible,
 
