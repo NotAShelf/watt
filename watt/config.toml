@@ -34,8 +34,8 @@ if.all = [
 ]
 priority = 80
 
-cpu.energy-performance-bias       = { if.all = [{ not = "?intel-pstate" }, { is-energy-performance-bias-available = "performance" }], then = "performance" }
-cpu.energy-performance-preference = { if.all = [{ not = "?intel-pstate" }, { is-energy-performance-preference-available = "performance" }], then = "performance" }
+cpu.energy-performance-bias       = { if.all = [{ not.is-driver-loaded = "intel_pstate" }, { is-energy-performance-bias-available = "performance" }], then = "performance" }
+cpu.energy-performance-preference = { if.all = [{ not.is-driver-loaded = "intel_pstate" }, { is-energy-performance-preference-available = "performance" }], then = "performance" }
 cpu.governor                      = { if.is-governor-available = "performance", then = "performance" }
 cpu.turbo                         = { if = "?turbo-available", then = true }
 
@@ -48,8 +48,8 @@ if.all = [
 ]
 priority = 70
 
-cpu.energy-performance-bias       = { if.all = [{ not = "?intel-pstate" }, { is-energy-performance-bias-available = "balance_performance" }], then = "balance_performance" }
-cpu.energy-performance-preference = { if.all = [{ not = "?intel-pstate" }, { is-energy-performance-preference-available = "performance" }], then = "performance" }
+cpu.energy-performance-bias       = { if.all = [{ not.is-driver-loaded = "intel_pstate" }, { is-energy-performance-bias-available = "balance_performance" }], then = "balance_performance" }
+cpu.energy-performance-preference = { if.all = [{ not.is-driver-loaded = "intel_pstate" }, { is-energy-performance-preference-available = "performance" }], then = "performance" }
 cpu.governor                      = { if.is-governor-available = "performance", then = "performance" }
 cpu.turbo                         = { if = "?turbo-available", then = true }
 

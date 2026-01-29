@@ -395,7 +395,6 @@ mod expression {
   named!(power_supply_discharge_rate => "%power-supply-discharge-rate");
 
   named!(discharging => "?discharging");
-  named!(intel_pstate => "?intel-pstate");
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -416,6 +415,10 @@ pub enum Expression {
   },
   IsPlatformProfileAvailable {
     #[serde(rename = "is-platform-profile-available")]
+    value: Box<Expression>,
+  },
+  IsDriverLoaded {
+    #[serde(rename = "is-driver-loaded")]
     value: Box<Expression>,
   },
 
@@ -454,9 +457,6 @@ pub enum Expression {
 
   #[serde(with = "expression::discharging")]
   Discharging,
-
-  #[serde(with = "expression::intel_pstate")]
-  IntelPstate,
 
   Boolean(bool),
 
@@ -619,8 +619,7 @@ pub struct EvalState<'peripherals, 'context> {
   pub power_supply_charge:         Option<f64>,
   pub power_supply_discharge_rate: Option<f64>,
 
-  pub discharging:  bool,
-  pub intel_pstate: bool,
+  pub discharging: bool,
 
   pub context: EvalContext<'context>,
 
@@ -734,6 +733,12 @@ impl Expression {
 
         Boolean(available)
       },
+      IsDriverLoaded { value } => {
+        let value = eval!(value);
+        let value = value.try_into_string()?;
+
+        Boolean(crate::fs::exists(format!("/sys/module/{value}")))
+      },
       FrequencyAvailable => Boolean(state.frequency_available),
       TurboAvailable => Boolean(state.turbo_available),
 
@@ -753,7 +758,6 @@ impl Expression {
       },
 
       Discharging => Boolean(state.discharging),
-      IntelPstate => Boolean(state.intel_pstate),
 
       literal @ (Boolean(_) | Number(_) | String(_)) => literal.clone(),
 
@@ -1047,7 +1051,6 @@ mod tests {
         power_supply_charge: Some(0.8),
         power_supply_discharge_rate: Some(10.0),
         discharging: false,
-        intel_pstate: false,
         context: EvalContext::Cpu(&cpu),
         cpus: &cpus,
         power_supplies: &power_supplies,
@@ -1132,7 +1135,6 @@ mod tests {
       power_supply_charge:         Some(0.8),
       power_supply_discharge_rate: Some(10.0),
       discharging:                 false,
-      intel_pstate:                false,
       context:                     EvalContext::Cpu(&cpu),
       cpus:                        &cpus,
       power_supplies:              &power_supplies,
