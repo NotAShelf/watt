@@ -156,14 +156,14 @@ impl Cpu {
       }
     }
 
-    log::info!("detected {} CPUs", cpus.len());
+    log::info!("detected {len} CPUs", len = cpus.len());
 
     Ok(cpus)
   }
 
   /// Scan CPU, tuning local copy of settings.
   fn scan(&mut self, cache: &CpuScanCache) -> anyhow::Result<()> {
-    log::debug!("scanning CPU {}", self.number);
+    log::debug!("scanning CPU {number}", number = self.number);
 
     let Self { number, .. } = self;
 
@@ -174,7 +174,7 @@ impl Cpu {
     self.has_cpufreq =
       fs::exists(format!("/sys/devices/system/cpu/cpu{number}/cpufreq"));
 
-    log::trace!("CPU {} has cpufreq: {}", self.number, self.has_cpufreq);
+    log::trace!("CPU {number} has cpufreq: {has_cpufreq}", number = self.number, has_cpufreq = self.has_cpufreq);
 
     if self.has_cpufreq {
       self.scan_governor()?;
@@ -190,7 +190,7 @@ impl Cpu {
   }
 
   fn scan_governor(&mut self) -> anyhow::Result<()> {
-    log::trace!("scanning governor for CPU {}", self.number);
+    log::trace!("scanning governor for CPU {number}", number = self.number);
 
     let Self { number, .. } = *self;
 
@@ -223,7 +223,7 @@ impl Cpu {
   }
 
   fn scan_frequency(&mut self) -> anyhow::Result<()> {
-    log::trace!("scanning frequency for CPU {}", self.number);
+    log::trace!("scanning frequency for CPU {number}", number = self.number);
 
     let Self { number, .. } = *self;
 
@@ -248,7 +248,7 @@ impl Cpu {
   }
 
   fn scan_epp(&mut self) -> anyhow::Result<()> {
-    log::trace!("scanning EPP for CPU {}", self.number);
+    log::trace!("scanning EPP for CPU {number}", number = self.number);
 
     let Self { number, .. } = *self;
 
@@ -280,7 +280,7 @@ impl Cpu {
   }
 
   fn scan_epb(&mut self) -> anyhow::Result<()> {
-    log::trace!("scanning EPB for CPU {}", self.number);
+    log::trace!("scanning EPB for CPU {number}", number = self.number);
 
     let Self { number, .. } = self;
 
@@ -319,7 +319,7 @@ impl Cpu {
   }
 
   fn scan_stat(&mut self, cache: &CpuScanCache) -> anyhow::Result<()> {
-    log::trace!("scanning stat for CPU {}", self.number);
+    log::trace!("scanning stat for CPU {number}", number = self.number);
 
     // OnceCell::get_or_try_init is unstable. Cope:
     let stat = match cache.stat.get() {
@@ -370,7 +370,7 @@ impl Cpu {
   }
 
   fn scan_info(&mut self, cache: &CpuScanCache) -> anyhow::Result<()> {
-    log::trace!("scanning info for CPU {}", self.number);
+    log::trace!("scanning info for CPU {number}", number = self.number);
 
     // OnceCell::get_or_try_init is unstable. Cope:
     let info = match cache.info.get() {
@@ -459,7 +459,7 @@ impl Cpu {
 
     self.governor = Some(governor.to_owned());
 
-    log::info!("CPU {} governor set to {}", self.number, governor);
+    log::info!("CPU {number} governor set to {governor}", number = self.number);
 
     Ok(())
   }
@@ -495,7 +495,7 @@ impl Cpu {
 
     self.epp = Some(epp.to_owned());
 
-    log::info!("CPU {} EPP set to {}", self.number, epp);
+    log::info!("CPU {number} EPP set to {epp}", number = self.number);
 
     Ok(())
   }
@@ -530,7 +530,7 @@ impl Cpu {
 
     self.epb = Some(epb.to_owned());
 
-    log::info!("CPU {} EPB set to {}", self.number, epb);
+    log::info!("CPU {number} EPB set to {epb}", number = self.number);
 
     Ok(())
   }
@@ -559,9 +559,8 @@ impl Cpu {
     })?;
 
     log::info!(
-      "CPU {} min frequency set to {} MHz",
-      self.number,
-      frequency_mhz
+      "CPU {number} min frequency set to {frequency_mhz} MHz",
+      number = self.number,
     );
 
     Ok(())
@@ -585,8 +584,8 @@ impl Cpu {
     if new_frequency_mhz * 1000 < minimum_frequency_khz {
       bail!(
         "new software minimum frequency ({new_frequency_mhz} MHz) cannot be \
-         lower than the hardware minimum frequency ({} MHz) for {self}",
-        minimum_frequency_khz / 1000,
+         lower than the hardware minimum frequency ({mhz} MHz) for {self}",
+        mhz = minimum_frequency_khz / 1000,
       );
     }
 
@@ -617,9 +616,8 @@ impl Cpu {
     })?;
 
     log::info!(
-      "CPU {} max frequency set to {} MHz",
-      self.number,
-      frequency_mhz
+      "CPU {number} max frequency set to {frequency_mhz} MHz",
+      number = self.number,
     );
 
     Ok(())
@@ -645,8 +643,8 @@ impl Cpu {
     if new_frequency_mhz * 1000 > maximum_frequency_khz {
       bail!(
         "new software maximum frequency ({new_frequency_mhz} MHz) cannot be \
-         higher than the hardware maximum frequency ({} MHz) for {self}",
-        maximum_frequency_khz / 1000,
+         higher than the hardware maximum frequency ({mhz} MHz) for {self}",
+        mhz = maximum_frequency_khz / 1000,
       );
     }
 

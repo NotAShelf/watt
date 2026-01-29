@@ -734,8 +734,7 @@ impl Expression {
         Boolean(available)
       },
       IsDriverLoaded { value } => {
-        let value = eval!(value);
-        let value = value.try_into_string()?;
+        let value = eval!(value).try_into_string()?;
 
         Boolean(crate::fs::exists(format!("/sys/module/{value}")))
       },
@@ -991,7 +990,7 @@ impl DaemonConfig {
 
     config.rules.sort_by_key(|rule| rule.priority);
 
-    log::debug!("sorted {} rules by priority", config.rules.len());
+    log::debug!("sorted {len} rules by priority", len = config.rules.len());
 
     log::debug!("loaded config: {config:#?}");
 
