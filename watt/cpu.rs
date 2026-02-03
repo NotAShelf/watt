@@ -174,7 +174,11 @@ impl Cpu {
     self.has_cpufreq =
       fs::exists(format!("/sys/devices/system/cpu/cpu{number}/cpufreq"));
 
-    log::trace!("CPU {number} has cpufreq: {has_cpufreq}", number = self.number, has_cpufreq = self.has_cpufreq);
+    log::trace!(
+      "CPU {number} has cpufreq: {has_cpufreq}",
+      number = self.number,
+      has_cpufreq = self.has_cpufreq
+    );
 
     if self.has_cpufreq {
       self.scan_governor()?;
@@ -459,7 +463,10 @@ impl Cpu {
 
     self.governor = Some(governor.to_owned());
 
-    log::info!("CPU {number} governor set to {governor}", number = self.number);
+    log::info!(
+      "CPU {number} governor set to {governor}",
+      number = self.number
+    );
 
     Ok(())
   }

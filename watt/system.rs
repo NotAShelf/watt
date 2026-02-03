@@ -6,14 +6,7 @@ use std::{
   },
   mem,
   path::Path,
-  sync::{
-    Arc,
-    atomic::{
-      AtomicBool,
-      Ordering,
-    },
-  },
-  thread,
+  sync::Arc,
   time::{
     Duration,
     Instant,
@@ -24,23 +17,28 @@ use anyhow::{
   Context,
   bail,
 };
+use tokio::{
+  signal,
+  sync::RwLock,
+};
 
 use crate::{
   config,
   cpu,
   fs,
   power_supply,
+  profile,
 };
 
 #[derive(Debug)]
-struct CpuLog {
-  at: Instant,
+pub struct CpuLog {
+  pub at: Instant,
 
   /// CPU usage between 0-1, a percentage.
-  usage: f64,
+  pub usage: f64,
 
   /// CPU temperature in celsius.
-  temperature: f64,
+  pub temperature: f64,
 }
 
 #[derive(Debug)]
@@ -51,7 +49,7 @@ struct CpuVolatility {
 }
 
 #[derive(Debug)]
-struct PowerSupplyLog {
+pub struct PowerSupplyLog {
   at: Instant,
 
   /// Charge 0-1, as a percentage.
@@ -59,23 +57,25 @@ struct PowerSupplyLog {
 }
 
 #[derive(Default, Debug)]
-struct System {
-  is_ac: bool,
+pub struct System {
+  pub is_ac: bool,
 
-  load_average_1min:  f64,
-  load_average_5min:  f64,
-  load_average_15min: f64,
+  pub load_average_1min:  f64,
+  pub load_average_5min:  f64,
+  pub load_average_15min: f64,
 
   /// All CPUs.
-  cpus:             HashSet<Arc<cpu::Cpu>>,
+  pub cpus: HashSet<Arc<cpu::Cpu>>,
+
   /// CPU usage and temperature log.
-  cpu_log:          VecDeque<CpuLog>,
-  cpu_temperatures: HashMap<u32, f64>,
+  pub cpu_log:          VecDeque<CpuLog>,
+  pub cpu_temperatures: HashMap<u32, f64>,
 
   /// All power supplies.
-  power_supplies:   HashSet<Arc<power_supply::PowerSupply>>,
+  pub power_supplies: HashSet<Arc<power_supply::PowerSupply>>,
+
   /// Power supply status log.
-  power_supply_log: VecDeque<PowerSupplyLog>,
+  pub power_supply_log: VecDeque<PowerSupplyLog>,
 }
 
 impl System {
@@ -574,7 +574,7 @@ impl System {
         .is_none_or(|volatility| volatility.usage < 0.05)
   }
 
-  fn is_discharging(&self) -> bool {
+  pub fn is_discharging(&self) -> bool {
     self.power_supplies.iter().any(|power_supply| {
       power_supply.charge_state.as_deref() == Some("Discharging")
     })
@@ -624,6 +624,15 @@ impl System {
   }
 }
 
+#[derive(Debug)]
+pub struct DaemonState {
+  pub system:               System,
+  pub config:               config::DaemonConfig,
+  pub profile:              profile::ProfileState,
+  pub last_applied_rules:   Vec<String>,
+  pub performance_degraded: Option<String>,
+}
+
 /// Calculate the idle time multiplier based on system idle time.
 ///
 /// Returns a multiplier between 1.0 and 5.0:
@@ -647,102 +656,319 @@ fn idle_multiplier(idle_for: Duration) -> f64 {
   (1.0 + factor).clamp(1.0, 5.0)
 }
 
-pub fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
-  assert!(config.rules.is_sorted_by_key(|rule| rule.priority));
+fn compute_poll_delay(
+  system: &System,
+  last_polling_delay: Option<Duration>,
+  last_user_activity: Instant,
+) -> Duration {
+  let mut delay = Duration::from_secs(5);
+
+  if system.is_discharging() {
+    match system.power_supply_discharge_rate() {
+      Some(discharge_rate) => {
+        if discharge_rate > 0.2 {
+          delay *= 3;
+        } else if discharge_rate > 0.1 {
+          delay *= 2;
+        } else {
+          delay /= 2;
+          delay *= 3;
+        }
+      },
+
+      None => delay *= 2,
+    }
+  }
+
+  if system.is_cpu_idle() {
+    let idle_for = last_user_activity.elapsed();
+
+    if idle_for > Duration::from_secs(30) {
+      let factor = idle_multiplier(idle_for);
+
+      log::debug!(
+        "system has been idle for {seconds} seconds (approx {minutes} \
+         minutes), applying idle factor: {factor:.2}x",
+        seconds = idle_for.as_secs(),
+        minutes = idle_for.as_secs() / 60,
+      );
+
+      delay = Duration::from_secs_f64(delay.as_secs_f64() * factor);
+    }
+  }
+
+  if let Some(volatility) = system.cpu_volatility()
+    && (volatility.usage > 0.1 || volatility.temperature > 0.02)
+  {
+    delay = (delay / 2).max(Duration::from_secs(1));
+  }
+
+  let delay = match last_polling_delay {
+    Some(last_delay) => {
+      Duration::from_secs_f64(
+        delay.as_secs_f64() * 0.3 + last_delay.as_secs_f64() * 0.7,
+      )
+    },
+
+    None => delay,
+  };
+
+  Duration::from_secs_f64(delay.as_secs_f64().clamp(1.0, 30.0))
+}
+
+fn detect_performance_degradation(_system: &System) -> Option<String> {
+  // TODO: implement temperature or throttling based detection.
+  None
+}
+
+pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
+  if !config.rules.is_sorted_by_key(|rule| rule.priority) {
+    bail!("daemon config rules must be sorted by priority");
+  }
 
   log::info!("starting daemon...");
 
-  let cancelled = Arc::new(AtomicBool::new(false));
+  let state = Arc::new(RwLock::new(DaemonState {
+    system: System::default(),
+    config,
+    profile: profile::ProfileState::new(),
+    last_applied_rules: Vec::new(),
+    performance_degraded: None,
+  }));
 
   {
-    log::debug!("setting ctrl-c handler...");
-    ctrlc::set_handler({
-      let cancelled = Arc::clone(&cancelled);
-
-      move || {
-        log::info!("received shutdown signal");
-        cancelled.store(true, Ordering::SeqCst);
+    let dbus_state = Arc::clone(&state);
+    tokio::spawn(async move {
+      if let Err(error) =
+        crate::dbus::server::start_dbus_server(dbus_state).await
+      {
+        log::error!("D-Bus server exited with error: {error}");
       }
-    })
-    .context("failed to set ctrl-c handler")?;
+    });
   }
 
-  let mut system = System::default();
   let mut last_polling_delay = None::<Duration>;
-  // TODO: Set this somewhere.
+  // TODO: Track user activity events instead of initializing at start.
   let last_user_activity = Instant::now();
+  let shutdown_signal = signal::ctrl_c();
+  tokio::pin!(shutdown_signal);
 
-  while !cancelled.load(Ordering::SeqCst) {
+  // Initial delay before first poll
+  let mut sleep_for = Duration::from_secs(0);
+
+  loop {
+    // Wait for either shutdown signal or the next poll time
+    tokio::select! {
+      _ = &mut shutdown_signal => {
+        log::info!("received shutdown signal");
+        break;
+      }
+      _ = tokio::time::sleep(sleep_for) => {
+        // Continue with polling iteration
+      }
+    }
+
     log::debug!("starting main polling loop iteration");
+    let start = Instant::now();
 
-    system.scan()?;
+    let delay;
 
-    let delay = {
-      let mut delay = Duration::from_secs(5);
+    {
+      let mut guard = state.write().await;
 
-      // We are on battery, so we must be more conservative with our polling.
-      if system.is_discharging() {
-        match system.power_supply_discharge_rate() {
-          Some(discharge_rate) => {
-            if discharge_rate > 0.2 {
-              delay *= 3;
-            } else if discharge_rate > 0.1 {
-              delay *= 2;
-            } else {
-              // *= 1.5;
-              delay /= 2;
-              delay *= 3;
-            }
-          },
+      guard.system.scan()?;
 
-          // If we can't determine the discharge rate, that means that
-          // we were very recently started. Which is user activity.
-          None => {
-            delay *= 2;
-          },
-        }
-      }
+      guard.performance_degraded =
+        detect_performance_degradation(&guard.system);
 
-      if system.is_cpu_idle() {
-        let idle_for = last_user_activity.elapsed();
+      let eval_state = config::EvalState {
+        frequency_available: guard
+          .system
+          .cpus
+          .iter()
+          .any(|cpu| cpu.frequency_mhz.is_some()),
+        turbo_available:     cpu::Cpu::turbo()
+          .context(
+            "failed to read CPU turbo boost status for `is-turbo-available`",
+          )?
+          .is_some(),
 
-        if idle_for > Duration::from_secs(30) {
-          let factor = idle_multiplier(idle_for);
+        cpu_usage:                  guard
+          .system
+          .cpu_log
+          .back()
+          .context("CPU log is empty")?
+          .usage,
+        cpu_usage_volatility:       guard
+          .system
+          .cpu_volatility()
+          .map(|vol| vol.usage),
+        cpu_temperature:            guard
+          .system
+          .cpu_log
+          .back()
+          .map(|log| log.temperature),
+        cpu_temperature_volatility: guard
+          .system
+          .cpu_volatility()
+          .map(|vol| vol.temperature),
+        cpu_idle_seconds:           last_user_activity.elapsed().as_secs_f64(),
+        cpu_frequency_maximum:      cpu::Cpu::hardware_frequency_mhz_maximum()
+          .context("failed to read CPU hardware maximum frequency")?
+          .map(|u64| u64 as f64),
+        cpu_frequency_minimum:      cpu::Cpu::hardware_frequency_mhz_minimum()
+          .context("failed to read CPU hardware minimum frequency")?
+          .map(|u64| u64 as f64),
 
-          log::debug!(
-            "system has been idle for {seconds} seconds (approx {minutes} \
-             minutes), applying idle factor: {factor:.2}x",
-            seconds = idle_for.as_secs(),
-            minutes = idle_for.as_secs() / 60,
-          );
+        power_supply_charge:         guard
+          .system
+          .power_supply_log
+          .back()
+          .map(|log| log.charge),
+        power_supply_discharge_rate: guard.system.power_supply_discharge_rate(),
 
-          delay = Duration::from_secs_f64(delay.as_secs_f64() * factor);
-        }
-      }
+        discharging: guard.system.is_discharging(),
 
-      if let Some(volatility) = system.cpu_volatility()
-        && (volatility.usage > 0.1 || volatility.temperature > 0.02)
-      {
-        delay = (delay / 2).max(Duration::from_secs(1));
-      }
+        power_profile_preference: guard.profile.get_effective_profile(),
 
-      let delay = match last_polling_delay {
-        Some(last_delay) => {
-          Duration::from_secs_f64(
-            // 30% of current computed delay, 70% of last delay.
-            delay.as_secs_f64() * 0.3 + last_delay.as_secs_f64() * 0.7,
-          )
-        },
+        context: config::EvalContext::WidestPossible,
 
-        None => delay,
+        cpus:           &guard.system.cpus,
+        power_supplies: &guard.system.power_supplies,
       };
 
-      let delay = Duration::from_secs_f64(delay.as_secs_f64().clamp(1.0, 30.0));
+      let mut cpu_deltas: HashMap<Arc<cpu::Cpu>, cpu::Delta> = guard
+        .system
+        .cpus
+        .iter()
+        .map(|cpu| (Arc::clone(cpu), cpu::Delta::default()))
+        .collect();
+      let mut cpu_turbo: Option<bool> = None;
 
+      let mut power_deltas: HashMap<
+        Arc<power_supply::PowerSupply>,
+        power_supply::Delta,
+      > = guard
+        .system
+        .power_supplies
+        .iter()
+        .map(|power_supply| {
+          (Arc::clone(power_supply), power_supply::Delta::default())
+        })
+        .collect();
+      let mut power_platform_profile: Option<String> = None;
+
+      let mut last_applied_rules = Vec::new();
+
+      for rule in guard.config.rules.iter().rev() {
+        let Some(condition) = rule.condition.eval(&eval_state)? else {
+          continue;
+        };
+
+        let condition = condition
+          .try_into_boolean()
+          .context("`if` was not a boolean")?;
+
+        if condition {
+          log::info!(
+            "rule '{name}' condition evaluated to true! evaluating members...",
+            name = rule.name,
+          );
+
+          last_applied_rules.push(rule.name.clone());
+
+          let cpu_some = {
+            let (cpu_deltas_lo, cpu_turbo_lo) = rule.cpu.eval(&eval_state)?;
+
+            let deltas_some = cpu_deltas.iter_mut().all(|(cpu, delta)| {
+              let delta_lo = cpu_deltas_lo
+                .get(cpu)
+                .expect("cpu deltas and cpus should match");
+
+              *delta = mem::take(delta).or(delta_lo);
+
+              delta.is_some()
+            });
+
+            cpu_turbo = cpu_turbo.or(cpu_turbo_lo);
+
+            deltas_some && cpu_turbo.is_some()
+          };
+
+          let power_some = {
+            let (power_deltas_lo, power_platform_profile_lo) =
+              rule.power.eval(&eval_state)?;
+
+            let deltas_some = power_deltas.iter_mut().all(|(power, delta)| {
+              let delta_lo = power_deltas_lo
+                .get(power)
+                .expect("power deltas and power supplies should match");
+
+              *delta = mem::take(delta).or(delta_lo);
+
+              delta.is_some()
+            });
+
+            power_platform_profile =
+              power_platform_profile.or(power_platform_profile_lo);
+
+            deltas_some && power_platform_profile.is_some()
+          };
+
+          if cpu_some && power_some {
+            log::debug!(
+              "got a full delta from rules, short circuting evaluation"
+            );
+            break;
+          }
+        }
+      }
+
+      for (cpu, delta) in &cpu_deltas {
+        delta
+          .apply(&mut (**cpu).clone())
+          .with_context(|| format!("failed to apply delta to {cpu}"))?;
+      }
+
+      log::info!("applying CPU deltas to {len} CPUs", len = cpu_deltas.len());
+
+      if let Some(turbo) = cpu_turbo {
+        cpu::Cpu::set_turbo(turbo, cpu_deltas.keys().map(|arc| &**arc))
+          .context("failed to set CPU turbo")?;
+      }
+
+      log::info!(
+        "applying power supply deltas to {len} devices",
+        len = power_deltas.len(),
+      );
+
+      for (power, delta) in power_deltas {
+        delta
+          .apply(&mut (*power).clone())
+          .with_context(|| format!("failed to apply delta to {power}"))?;
+      }
+
+      if let Some(platform_profile) = power_platform_profile {
+        power_supply::PowerSupply::set_platform_profile(&platform_profile)
+          .context("failed to set power supply platform profile")?;
+      }
+
+      delay = compute_poll_delay(
+        &guard.system,
+        last_polling_delay,
+        last_user_activity,
+      );
+      guard.last_applied_rules = last_applied_rules;
       last_polling_delay = Some(delay);
 
-      delay
-    };
+      let elapsed = start.elapsed();
+      log::info!(
+        "filtered and applied rules in {seconds} seconds or {minutes} minutes",
+        seconds = elapsed.as_secs_f64(),
+        minutes = elapsed.as_secs_f64() / 60.0,
+      );
+    }
+
     log::info!(
       "next poll will be in {seconds} seconds or {minutes} minutes, possibly \
        delayed if application of rules takes more than the polling delay",
@@ -750,178 +976,11 @@ pub fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
       minutes = delay.as_secs_f64() / 60.0,
     );
 
-    log::info!("filtering rules and applying them...");
-
-    let start = Instant::now();
-
-    let state = config::EvalState {
-      frequency_available: system
-        .cpus
-        .iter()
-        .any(|cpu| cpu.frequency_mhz.is_some()),
-      turbo_available:     cpu::Cpu::turbo()
-        .context(
-          "failed to read CPU turbo boost status for `is-turbo-available`",
-        )?
-        .is_some(),
-
-      cpu_usage:                  system
-        .cpu_log
-        .back()
-        .context("CPU log is empty")?
-        .usage,
-      cpu_usage_volatility:       system.cpu_volatility().map(|vol| vol.usage),
-      cpu_temperature:            system
-        .cpu_log
-        .back()
-        .map(|log| log.temperature),
-      cpu_temperature_volatility: system
-        .cpu_volatility()
-        .map(|vol| vol.temperature),
-      cpu_idle_seconds:           last_user_activity.elapsed().as_secs_f64(),
-      cpu_frequency_maximum:      cpu::Cpu::hardware_frequency_mhz_maximum()
-        .context("failed to read CPU hardware maximum frequency")?
-        .map(|u64| u64 as f64),
-      cpu_frequency_minimum:      cpu::Cpu::hardware_frequency_mhz_minimum()
-        .context("failed to read CPU hardware minimum frequency")?
-        .map(|u64| u64 as f64),
-
-      power_supply_charge:         system
-        .power_supply_log
-        .back()
-        .map(|log| log.charge),
-      power_supply_discharge_rate: system.power_supply_discharge_rate(),
-
-      discharging: system.is_discharging(),
-
-      context: config::EvalContext::WidestPossible,
-
-      cpus:           &system.cpus,
-      power_supplies: &system.power_supplies,
-    };
-
-    let mut cpu_deltas: HashMap<Arc<cpu::Cpu>, cpu::Delta> = system
-      .cpus
-      .iter()
-      .map(|cpu| (Arc::clone(cpu), cpu::Delta::default()))
-      .collect();
-    let mut cpu_turbo: Option<bool> = None;
-
-    let mut power_deltas: HashMap<
-      Arc<power_supply::PowerSupply>,
-      power_supply::Delta,
-    > = system
-      .power_supplies
-      .iter()
-      .map(|power_supply| {
-        (Arc::clone(power_supply), power_supply::Delta::default())
-      })
-      .collect();
-    let mut power_platform_profile: Option<String> = None;
-
-    // Higher priority rule first, so we can short-circuit.
-    for rule in config.rules.iter().rev() {
-      let Some(condition) = rule.condition.eval(&state)? else {
-        continue;
-      };
-
-      let condition = condition
-        .try_into_boolean()
-        .context("`if` was not a boolean")?;
-
-      if condition {
-        log::info!(
-          "rule '{name}' condition evaluated to true! evaluating members...",
-          name = rule.name,
-        );
-
-        let cpu_some = {
-          let (cpu_deltas_lo, cpu_turbo_lo) = rule.cpu.eval(&state)?;
-
-          let deltas_some = cpu_deltas.iter_mut().all(|(cpu, delta)| {
-            let delta_lo = cpu_deltas_lo
-              .get(cpu)
-              .expect("cpu deltas and cpus should match");
-
-            *delta = mem::take(delta).or(delta_lo);
-
-            delta.is_some()
-          });
-
-          cpu_turbo = cpu_turbo.or(cpu_turbo_lo);
-
-          deltas_some && cpu_turbo.is_some()
-        };
-
-        let power_some = {
-          let (power_deltas_lo, power_platform_profile_lo) =
-            rule.power.eval(&state)?;
-
-          let deltas_some = power_deltas.iter_mut().all(|(power, delta)| {
-            let delta_lo = power_deltas_lo
-              .get(power)
-              .expect("power deltas and power supplies should match");
-
-            *delta = mem::take(delta).or(delta_lo);
-
-            delta.is_some()
-          });
-
-          power_platform_profile =
-            power_platform_profile.or(power_platform_profile_lo);
-
-          deltas_some && power_platform_profile.is_some()
-        };
-
-        if cpu_some && power_some {
-          log::debug!(
-            "got a full delta from rules, short circuting evaluation"
-          );
-          break;
-        }
-      }
-    }
-
-    for (cpu, delta) in &cpu_deltas {
-      delta
-        .apply(&mut (**cpu).clone())
-        .with_context(|| format!("failed to apply delta to {cpu}"))?;
-    }
-
-    log::info!("applying CPU deltas to {len} CPUs", len = cpu_deltas.len());
-
-    if let Some(turbo) = cpu_turbo {
-      cpu::Cpu::set_turbo(turbo, cpu_deltas.keys().map(|arc| &**arc))
-        .context("failed to set CPU turbo")?;
-    }
-
-    log::info!(
-      "applying power supply deltas to {len} devices",
-      len = power_deltas.len(),
-    );
-
-    for (power, delta) in power_deltas {
-      delta
-        .apply(&mut (*power).clone())
-        .with_context(|| format!("failed to apply delta to {power}"))?;
-    }
-
-    if let Some(platform_profile) = power_platform_profile {
-      power_supply::PowerSupply::set_platform_profile(&platform_profile)
-        .context("failed to set power supply platform profile")?;
-    }
-
     let elapsed = start.elapsed();
-    log::info!(
-      "filtered and applied rules in {seconds} seconds or {minutes} minutes",
-      seconds = elapsed.as_secs_f64(),
-      minutes = elapsed.as_secs_f64() / 60.0,
-    );
-
-    thread::sleep(delay.saturating_sub(elapsed));
+    sleep_for = delay.saturating_sub(elapsed);
   }
 
-  log::info!("stopping polling loop and thus ..");
+  log::info!("stopping polling loop and shutting down");
 
   Ok(())
 }

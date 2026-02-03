@@ -25,6 +25,9 @@ num_cpus.workspace            = true
 serde.workspace               = true
 toml.workspace                = true
 yansi.workspace               = true
+zbus.workspace                = true
+tokio.workspace               = true
+async-trait.workspace         = true
 
 [dev-dependencies]
 proptest = "1.9.0"

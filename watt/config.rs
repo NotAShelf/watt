@@ -395,6 +395,7 @@ mod expression {
   named!(power_supply_discharge_rate => "%power-supply-discharge-rate");
 
   named!(discharging => "?discharging");
+  named!(power_profile_preference => "$power-profile-preference");
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -457,6 +458,9 @@ pub enum Expression {
 
   #[serde(with = "expression::discharging")]
   Discharging,
+
+  #[serde(with = "expression::power_profile_preference")]
+  PowerProfilePreference,
 
   Boolean(bool),
 
@@ -621,6 +625,8 @@ pub struct EvalState<'peripherals, 'context> {
 
   pub discharging: bool,
 
+  pub power_profile_preference: crate::profile::PowerProfile,
+
   pub context: EvalContext<'context>,
 
   pub cpus:           &'peripherals HashSet<Arc<cpu::Cpu>>,
@@ -757,6 +763,10 @@ impl Expression {
       },
 
       Discharging => Boolean(state.discharging),
+
+      PowerProfilePreference => {
+        String(state.power_profile_preference.as_str().to_owned())
+      },
 
       literal @ (Boolean(_) | Number(_) | String(_)) => literal.clone(),
 
@@ -1050,6 +1060,7 @@ mod tests {
         power_supply_charge: Some(0.8),
         power_supply_discharge_rate: Some(10.0),
         discharging: false,
+        power_profile_preference: crate::profile::PowerProfile::Balanced,
         context: EvalContext::Cpu(&cpu),
         cpus: &cpus,
         power_supplies: &power_supplies,
@@ -1134,6 +1145,7 @@ mod tests {
       power_supply_charge:         Some(0.8),
       power_supply_discharge_rate: Some(10.0),
       discharging:                 false,
+      power_profile_preference:    crate::profile::PowerProfile::Balanced,
       context:                     EvalContext::Cpu(&cpu),
       cpus:                        &cpus,
       power_supplies:              &power_supplies,
