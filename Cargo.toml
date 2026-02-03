@@ -19,16 +19,17 @@ clap                  = { features = [ "derive", "env" ], version = "4.6.1" }
 clap-verbosity-flag   = "3.0.4"
 clap_complete         = "4.6.2"
 clap_complete_nushell = "4.6.0"
-ctrlc                 = "3.5.2"
 env_logger            = "0.11.10"
 humantime             = "2.3.0"
 jiff                  = "0.2.24"
 log                   = "0.4.29"
-nix                   = { features = [ "fs" ], version = "0.31.2" }
+nix                   = { features = [ "fs", "process", "signal" ], version = "0.31.2" }
 num_cpus              = "1.17.0"
 serde                 = { features = [ "derive" ], version = "1.0.228" }
 toml                  = "1.1.2"
 yansi                 = { features = [ "detect-env", "detect-tty" ], version = "1.0.1" }
+zbus                  = { default-features = false, features = [ "tokio" ], version = "5.13.2" }
+tokio                 = { features = [ "macros", "rt-multi-thread", "signal", "time" ], version = "1.49.0" }
 
 [profile.release]
 codegen-units = 1

@@ -432,6 +432,7 @@ mod expression {
   named!(battery_health => "%battery-health");
 
   named!(discharging => "?discharging");
+  named!(power_profile_preference => "$power-profile-preference");
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -537,6 +538,9 @@ pub enum Expression {
 
   #[serde(with = "expression::discharging")]
   Discharging,
+
+  #[serde(with = "expression::power_profile_preference")]
+  PowerProfilePreference,
 
   Boolean(bool),
 
@@ -705,6 +709,8 @@ pub struct EvalState<'peripherals, 'context> {
   pub battery_health: Option<f64>,
 
   pub discharging: bool,
+
+  pub power_profile_preference: crate::profile::PowerProfile,
 
   pub context: EvalContext<'context>,
 
@@ -931,6 +937,10 @@ impl Expression {
       },
 
       Discharging => Boolean(state.discharging),
+
+      PowerProfilePreference => {
+        String(state.power_profile_preference.as_str().to_owned())
+      },
 
       literal @ (Boolean(_) | Number(_) | String(_)) => literal.clone(),
 
@@ -1229,6 +1239,7 @@ mod tests {
         battery_cycles: Some(100.0),
         battery_health: Some(0.95),
         discharging: false,
+        power_profile_preference: crate::profile::PowerProfile::Balanced,
         context: EvalContext::Cpu(&cpu),
         cpus: &cpus,
         power_supplies: &power_supplies,
@@ -1319,6 +1330,7 @@ mod tests {
       battery_cycles:              Some(100.0),
       battery_health:              Some(0.95),
       discharging:                 false,
+      power_profile_preference:    crate::profile::PowerProfile::Balanced,
       context:                     EvalContext::Cpu(&cpu),
       cpus:                        &cpus,
       power_supplies:              &power_supplies,
@@ -1397,6 +1409,7 @@ mod tests {
       battery_cycles:              None,
       battery_health:              None,
       discharging:                 false,
+      power_profile_preference:    crate::profile::PowerProfile::Balanced,
       context:                     EvalContext::Cpu(&cpu),
       cpus:                        &cpus,
       power_supplies:              &power_supplies,
