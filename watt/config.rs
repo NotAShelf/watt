@@ -51,7 +51,7 @@ pub struct CpusDelta {
   ///
   /// Type: `String`.
   #[serde(skip_serializing_if = "is_default")]
-  pub energy_performance_bias:       Option<Expression>,
+  pub energy_perf_bias:              Option<Expression>,
 
   /// Set minimum CPU frequency in MHz.
   ///
@@ -142,15 +142,14 @@ impl CpusDelta {
           Some(energy_performance_preference);
       }
 
-      if let Some(energy_performance_bias) = &self.energy_performance_bias
-        && let Some(energy_performance_bias) =
-          energy_performance_bias.eval(&state)?
+      if let Some(energy_perf_bias) = &self.energy_perf_bias
+        && let Some(energy_perf_bias) = energy_perf_bias.eval(&state)?
       {
-        let energy_performance_bias = energy_performance_bias
+        let energy_perf_bias = energy_perf_bias
           .try_into_string()
-          .context("`cpu.energy-performance-bias` was not a string")?;
+          .context("`cpu.energy-perf-bias` was not a string")?;
 
-        delta.energy_performance_bias = Some(energy_performance_bias);
+        delta.energy_perf_bias = Some(energy_perf_bias);
       }
 
       if let Some(frequency_mhz_minimum) = &self.frequency_mhz_minimum
@@ -409,8 +408,8 @@ pub enum Expression {
     #[serde(rename = "is-energy-performance-preference-available")]
     value: Box<Expression>,
   },
-  IsEnergyPerformanceBiasAvailable {
-    #[serde(rename = "is-energy-performance-bias-available")]
+  IsEnergyPerfBiasAvailable {
+    #[serde(rename = "is-energy-perf-bias-available")]
     value: Box<Expression>,
   },
   IsPlatformProfileAvailable {
@@ -702,7 +701,7 @@ impl Expression {
 
         Boolean(available)
       },
-      IsEnergyPerformanceBiasAvailable { value } => {
+      IsEnergyPerfBiasAvailable { value } => {
         let value = eval!(value);
         let value = value.try_into_string()?;
 
@@ -1077,7 +1076,7 @@ mod tests {
           for_: None,
           governor: None,
           energy_performance_preference: None,
-          energy_performance_bias: None,
+          energy_perf_bias: None,
           frequency_mhz_minimum: None,
           frequency_mhz_maximum: Some(Expression::Number(value)),
           turbo: None,
@@ -1144,7 +1143,7 @@ mod tests {
       for_:                          None,
       governor:                      None,
       energy_performance_preference: None,
-      energy_performance_bias:       None,
+      energy_perf_bias:              None,
       frequency_mhz_minimum:         None,
       frequency_mhz_maximum:         Some(Expression::Multiply {
         a: Box::new(Expression::CpuFrequencyMaximum),

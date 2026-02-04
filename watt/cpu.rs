@@ -174,7 +174,11 @@ impl Cpu {
     self.has_cpufreq =
       fs::exists(format!("/sys/devices/system/cpu/cpu{number}/cpufreq"));
 
-    log::trace!("CPU {number} has cpufreq: {has_cpufreq}", number = self.number, has_cpufreq = self.has_cpufreq);
+    log::trace!(
+      "CPU {number} has cpufreq: {has_cpufreq}",
+      number = self.number,
+      has_cpufreq = self.has_cpufreq
+    );
 
     if self.has_cpufreq {
       self.scan_governor()?;
@@ -285,12 +289,13 @@ impl Cpu {
     let Self { number, .. } = self;
 
     self.epb = fs::read(format!(
-      "/sys/devices/system/cpu/cpu{number}/cpufreq/energy_performance_bias"
+      "/sys/devices/system/cpu/cpu{number}/power/energy_perf_bias"
     ))
     .with_context(|| format!("failed to read {self} EPB"))?;
 
     if self.epb.is_some() {
       self.available_epbs = vec![
+        "0".to_owned(),
         "1".to_owned(),
         "2".to_owned(),
         "3".to_owned(),
@@ -308,9 +313,8 @@ impl Cpu {
         "15".to_owned(),
         "performance".to_owned(),
         "balance-performance".to_owned(),
-        "balance_performance".to_owned(), // Alternative form with underscore.
+        "normal".to_owned(),
         "balance-power".to_owned(),
-        "balance_power".to_owned(), // Alternative form with underscore.
         "power".to_owned(),
       ];
     }
@@ -459,7 +463,10 @@ impl Cpu {
 
     self.governor = Some(governor.to_owned());
 
-    log::info!("CPU {number} governor set to {governor}", number = self.number);
+    log::info!(
+      "CPU {number} governor set to {governor}",
+      number = self.number
+    );
 
     Ok(())
   }
@@ -516,9 +523,7 @@ impl Cpu {
     }
 
     fs::write(
-      format!(
-        "/sys/devices/system/cpu/cpu{number}/cpufreq/energy_performance_bias"
-      ),
+      format!("/sys/devices/system/cpu/cpu{number}/power/energy_perf_bias"),
       epb,
     )
     .with_context(|| {
@@ -751,7 +756,7 @@ impl Cpu {
 pub struct Delta {
   pub governor:                      Option<String>,
   pub energy_performance_preference: Option<String>,
-  pub energy_performance_bias:       Option<String>,
+  pub energy_perf_bias:              Option<String>,
   pub frequency_mhz_minimum:         Option<u64>,
   pub frequency_mhz_maximum:         Option<u64>,
 }
@@ -760,7 +765,7 @@ impl Delta {
   pub fn is_some(&self) -> bool {
     self.governor.is_some()
       && self.energy_performance_preference.is_some()
-      && self.energy_performance_bias.is_some()
+      && self.energy_perf_bias.is_some()
       && self.frequency_mhz_minimum.is_some()
       && self.frequency_mhz_maximum.is_some()
   }
@@ -773,9 +778,9 @@ impl Delta {
       energy_performance_preference: self
         .energy_performance_preference
         .or_else(|| that.energy_performance_preference.clone()),
-      energy_performance_bias:       self
-        .energy_performance_bias
-        .or_else(|| that.energy_performance_bias.clone()),
+      energy_perf_bias:              self
+        .energy_perf_bias
+        .or_else(|| that.energy_perf_bias.clone()),
       frequency_mhz_minimum:         self
         .frequency_mhz_minimum
         .or(that.frequency_mhz_minimum),
@@ -794,7 +799,7 @@ impl Delta {
       cpu.set_epp(epp)?;
     }
 
-    if let Some(epb) = &self.energy_performance_bias {
+    if let Some(epb) = &self.energy_perf_bias {
       cpu.set_epb(epb)?;
     }
 
