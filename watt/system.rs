@@ -838,18 +838,17 @@ pub fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
         let cpu_some = {
           let (cpu_deltas_lo, cpu_turbo_lo) = rule.cpu.eval(&state)?;
 
-          let deltas_some = cpu_deltas.iter_mut().all(|(cpu, delta)| {
+          for (cpu, delta) in cpu_deltas.iter_mut() {
             let delta_lo = cpu_deltas_lo
               .get(cpu)
               .expect("cpu deltas and cpus should match");
 
             *delta = mem::take(delta).or(delta_lo);
-
-            delta.is_some()
-          });
+          }
 
           cpu_turbo = cpu_turbo.or(cpu_turbo_lo);
 
+          let deltas_some = cpu_deltas.values().all(|delta| delta.is_some());
           deltas_some && cpu_turbo.is_some()
         };
 
@@ -857,19 +856,18 @@ pub fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
           let (power_deltas_lo, power_platform_profile_lo) =
             rule.power.eval(&state)?;
 
-          let deltas_some = power_deltas.iter_mut().all(|(power, delta)| {
+          for (power, delta) in power_deltas.iter_mut() {
             let delta_lo = power_deltas_lo
               .get(power)
               .expect("power deltas and power supplies should match");
 
             *delta = mem::take(delta).or(delta_lo);
-
-            delta.is_some()
-          });
+          }
 
           power_platform_profile =
             power_platform_profile.or(power_platform_profile_lo);
 
+          let deltas_some = power_deltas.values().all(|delta| delta.is_some());
           deltas_some && power_platform_profile.is_some()
         };
 
