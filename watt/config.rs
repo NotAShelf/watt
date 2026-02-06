@@ -1054,6 +1054,7 @@ mod tests {
         available_epbs: vec![],
         epb: None,
         stat: cpu::CpuStat::default(),
+        previous_stat: None,
         info: None,
       });
 
@@ -1141,6 +1142,7 @@ mod tests {
       available_epbs:        vec![],
       epb:                   None,
       stat:                  cpu::CpuStat::default(),
+      previous_stat:         None,
       info:                  None,
     });
 
