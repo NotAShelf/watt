@@ -23,6 +23,7 @@ env_logger            = "0.11.8"
 log                   = "0.4.28"
 nix                   = { features = [ "fs" ], version = "0.31.1" }
 num_cpus              = "1.17.0"
+humantime             = "2.3.0"
 serde                 = { features = [ "derive" ], version = "1.0.228" }
 toml                  = "0.9.8"
 yansi                 = { features = [ "detect-env", "detect-tty" ], version = "1.0.1" }

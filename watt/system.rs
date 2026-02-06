@@ -86,7 +86,7 @@ impl System {
       let start = Instant::now();
 
       // Preserve previous stats for delta calculation
-      let previous_stats: std::collections::HashMap<u32, cpu::CpuStat> = self
+      let previous_stats: HashMap<u32, cpu::CpuStat> = self
         .cpus
         .iter()
         .map(|cpu| (cpu.number, cpu.stat.clone()))

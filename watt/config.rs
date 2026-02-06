@@ -2,6 +2,7 @@ use std::{
   collections::{
     HashMap,
     HashSet,
+    VecDeque,
   },
   fs,
   path::Path,
@@ -20,6 +21,7 @@ use serde::{
 use crate::{
   cpu,
   power_supply,
+  system,
 };
 
 fn is_default<T: Default + PartialEq>(value: &T) -> bool {
@@ -433,6 +435,11 @@ pub enum Expression {
   #[serde(with = "expression::cpu_usage_volatility")]
   CpuUsageVolatility,
 
+  CpuUsageSince {
+    #[serde(rename = "cpu-usage-since")]
+    duration: String,
+  },
+
   #[serde(with = "expression::cpu_temperature")]
   CpuTemperature,
 
@@ -624,6 +631,7 @@ pub struct EvalState<'peripherals, 'context> {
 
   pub cpus:           &'peripherals HashSet<Arc<cpu::Cpu>>,
   pub power_supplies: &'peripherals HashSet<Arc<power_supply::PowerSupply>>,
+  pub cpu_log:        &'peripherals VecDeque<system::CpuLog>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -741,6 +749,27 @@ impl Expression {
       TurboAvailable => Boolean(state.turbo_available),
 
       CpuUsage => Number(state.cpu_usage),
+      CpuUsageSince { duration } => {
+        let duration = humantime::parse_duration(duration)
+          .with_context(|| format!("failed to parse duration '{duration}'"))?;
+        let recent_logs: Vec<&system::CpuLog> = state
+          .cpu_log
+          .iter()
+          .rev()
+          .take_while(|log| log.at.elapsed() < duration)
+          .collect();
+
+        if recent_logs.len() < 2 {
+          // Return None for insufficient data, consistent with volatility
+          // expressions
+          return Ok(None);
+        }
+
+        Number(
+          recent_logs.iter().map(|log| log.usage).sum::<f64>()
+            / recent_logs.len() as f64,
+        )
+      },
       CpuUsageVolatility => Number(try_ok!(state.cpu_usage_volatility)),
       CpuTemperature => Number(try_ok!(state.cpu_temperature)),
       CpuTemperatureVolatility => {
@@ -1034,6 +1063,7 @@ mod tests {
       cpus.insert(cpu.clone());
 
       let power_supplies = HashSet::new();
+      let cpu_log = VecDeque::new();
 
       // Create an eval state with the base frequency
       let state = EvalState {
@@ -1052,6 +1082,7 @@ mod tests {
         context: EvalContext::Cpu(&cpu),
         cpus: &cpus,
         power_supplies: &power_supplies,
+        cpu_log: &cpu_log,
       };
 
       // Create an expression like: { value = "$cpu-frequency-maximum", multiply = 0.65 }
@@ -1119,6 +1150,7 @@ mod tests {
     cpus.insert(cpu.clone());
 
     let power_supplies = HashSet::new();
+    let cpu_log = VecDeque::new();
 
     let state = EvalState {
       frequency_available:         true,
@@ -1136,6 +1168,7 @@ mod tests {
       context:                     EvalContext::Cpu(&cpu),
       cpus:                        &cpus,
       power_supplies:              &power_supplies,
+      cpu_log:                     &cpu_log,
     };
 
     // 3333 * 0.65 = 2166.45
