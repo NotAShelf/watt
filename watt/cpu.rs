@@ -51,8 +51,27 @@ impl CpuStat {
     self.idle + self.iowait
   }
 
-  pub fn usage(&self) -> f64 {
-    1.0 - self.idle() as f64 / self.total() as f64
+  /// Calculates usage based on delta between this stat and a previous stat.
+  /// This gives the current CPU usage percentage over the time interval.
+  pub fn usage_delta(&self, previous: &CpuStat) -> f64 {
+    let total_delta = self.total().saturating_sub(previous.total()) as f64;
+    let idle_delta = self.idle().saturating_sub(previous.idle()) as f64;
+
+    if total_delta == 0.0 {
+      return 0.0;
+    }
+
+    1.0 - idle_delta / total_delta
+  }
+
+  /// Calculates usage since boot (average utilization).
+  /// This is the historical average, not current usage.
+  pub fn usage_average(&self) -> f64 {
+    let total = self.total() as f64;
+    if total == 0.0 {
+      return 0.0;
+    }
+    1.0 - self.idle() as f64 / total
   }
 }
 
@@ -75,8 +94,10 @@ pub struct Cpu {
   pub available_epbs: Vec<String>,
   pub epb:            Option<String>,
 
-  pub stat: CpuStat,
-  pub info: Option<Arc<HashMap<String, String>>>,
+  pub stat:          CpuStat,
+  /// Previous stat reading for calculating current usage.
+  pub previous_stat: Option<CpuStat>,
+  pub info:          Option<Arc<HashMap<String, String>>>,
 }
 
 impl PartialEq for Cpu {
@@ -102,6 +123,14 @@ impl fmt::Display for Cpu {
 }
 
 impl Cpu {
+  /// Returns current CPU usage based on delta from previous reading.
+  /// Returns 0.0 on first reading when no previous stat is available.
+  pub fn current_usage(&self) -> f64 {
+    match &self.previous_stat {
+      Some(prev) => self.stat.usage_delta(prev),
+      None => 0.0,
+    }
+  }
   /// Get all CPUs.
   pub fn all() -> anyhow::Result<Vec<Cpu>> {
     fn from_number(number: u32, cache: &CpuScanCache) -> anyhow::Result<Cpu> {
@@ -364,6 +393,10 @@ impl Cpu {
           .context("CPU stat cache was not initialized")?
       },
     };
+
+    // Store current stat as previous before updating to enable delta
+    // calculation
+    self.previous_stat = Some(self.stat.clone());
 
     self.stat = stat
       .get(&self.number)
