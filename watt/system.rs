@@ -32,15 +32,15 @@ use crate::{
   power_supply,
 };
 
-#[derive(Debug)]
-struct CpuLog {
-  at: Instant,
+#[derive(Debug, Clone, PartialEq)]
+pub struct CpuLog {
+  pub at: Instant,
 
   /// CPU usage between 0-1, a percentage.
-  usage: f64,
+  pub usage: f64,
 
   /// CPU temperature in celsius.
-  temperature: f64,
+  pub temperature: f64,
 }
 
 #[derive(Debug)]
@@ -84,10 +84,22 @@ impl System {
 
     {
       let start = Instant::now();
+
+      // Preserve previous stats for delta calculation
+      let previous_stats: HashMap<u32, cpu::CpuStat> = self
+        .cpus
+        .iter()
+        .map(|cpu| (cpu.number, cpu.stat.clone()))
+        .collect();
+
       self.cpus = cpu::Cpu::all()
         .context("failed to scan CPUs")?
         .into_iter()
-        .map(Arc::from)
+        .map(|mut cpu| {
+          // Transfer previous stat for this CPU
+          cpu.previous_stat = previous_stats.get(&cpu.number).cloned();
+          Arc::from(cpu)
+        })
         .collect();
       log::info!(
         "scanned all CPUs in {millis}ms",
@@ -167,7 +179,7 @@ impl System {
     let cpu_log = CpuLog {
       at,
 
-      usage: self.cpus.iter().map(|cpu| cpu.stat.usage()).sum::<f64>()
+      usage: self.cpus.iter().map(|cpu| cpu.current_usage()).sum::<f64>()
         / self.cpus.len() as f64,
 
       temperature: self.cpu_temperatures.values().sum::<f64>()
@@ -798,6 +810,7 @@ pub fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
 
       cpus:           &system.cpus,
       power_supplies: &system.power_supplies,
+      cpu_log:        &system.cpu_log,
     };
 
     let mut cpu_deltas: HashMap<Arc<cpu::Cpu>, cpu::Delta> = system
