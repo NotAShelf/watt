@@ -197,7 +197,11 @@ impl PowerSupply {
     self.is_from_peripheral = 'is_from_peripheral: {
       let name_lower = self.name.to_lowercase();
 
-      log::trace!("power supply '{name}' type: {type_}", name = self.name, type_ = self.type_);
+      log::trace!(
+        "power supply '{name}' type: {type_}",
+        name = self.name,
+        type_ = self.type_
+      );
 
       // Common peripheral battery names.
       if name_lower.contains("mouse")

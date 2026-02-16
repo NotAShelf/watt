@@ -19,6 +19,7 @@ clap.workspace                = true
 clap-verbosity-flag.workspace = true
 ctrlc.workspace               = true
 env_logger.workspace          = true
+humantime.workspace           = true
 log.workspace                 = true
 nix.workspace                 = true
 num_cpus.workspace            = true
