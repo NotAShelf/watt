@@ -24,6 +24,13 @@ use crate::{
   system,
 };
 
+type CpuDeltas = HashMap<Arc<cpu::Cpu>, cpu::Delta>;
+type CpuEvalResult = anyhow::Result<(CpuDeltas, Option<bool>)>;
+type PowerSupplyDeltas =
+  HashMap<Arc<power_supply::PowerSupply>, power_supply::Delta>;
+type PowerSupplyEvalResult =
+  anyhow::Result<(PowerSupplyDeltas, Option<String>)>;
+
 fn is_default<T: Default + PartialEq>(value: &T) -> bool {
   *value == T::default()
 }
@@ -74,10 +81,7 @@ pub struct CpusDelta {
 }
 
 impl CpusDelta {
-  pub fn eval(
-    &self,
-    state: &EvalState<'_, '_>,
-  ) -> anyhow::Result<(HashMap<Arc<cpu::Cpu>, cpu::Delta>, Option<bool>)> {
+  pub fn eval(&self, state: &EvalState<'_, '_>) -> CpuEvalResult {
     log::debug!("evaluating CPU deltas...");
 
     let cpus = match &self.for_ {
@@ -249,13 +253,7 @@ pub struct PowersDelta {
 }
 
 impl PowersDelta {
-  pub fn eval(
-    &self,
-    state: &EvalState<'_, '_>,
-  ) -> anyhow::Result<(
-    HashMap<Arc<power_supply::PowerSupply>, power_supply::Delta>,
-    Option<String>,
-  )> {
+  pub fn eval(&self, state: &EvalState<'_, '_>) -> PowerSupplyEvalResult {
     log::debug!("evaluating power supply deltas...");
 
     let power_supplies = match &self.for_ {
@@ -1248,34 +1246,21 @@ mod tests {
       cpu_log:                     &cpu_log,
     };
 
-    let result_volatility = Expression::CpuUsageVolatility.eval(&state);
+    let result = Expression::CpuUsageVolatility.eval(&state);
     assert!(
-      result_volatility.is_ok(),
-      "CpuUsageVolatility eval should succeed"
-    );
-    assert_eq!(
-      result_volatility.unwrap(),
-      None,
+      result.is_ok() && result.as_ref().unwrap().is_none(),
       "CpuUsageVolatility should return None with insufficient data"
     );
 
-    let result_temp = Expression::CpuTemperature.eval(&state);
-    assert!(result_temp.is_ok(), "CpuTemperature eval should succeed");
-    assert_eq!(
-      result_temp.unwrap(),
-      None,
+    let result = Expression::CpuTemperature.eval(&state);
+    assert!(
+      result.is_ok() && result.as_ref().unwrap().is_none(),
       "CpuTemperature should return None with insufficient data"
     );
 
-    let result_temp_volatility =
-      Expression::CpuTemperatureVolatility.eval(&state);
+    let result = Expression::CpuTemperatureVolatility.eval(&state);
     assert!(
-      result_temp_volatility.is_ok(),
-      "CpuTemperatureVolatility eval should succeed"
-    );
-    assert_eq!(
-      result_temp_volatility.unwrap(),
-      None,
+      result.is_ok() && result.as_ref().unwrap().is_none(),
       "CpuTemperatureVolatility should return None with insufficient data"
     );
   }
