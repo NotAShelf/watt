@@ -63,16 +63,6 @@ impl CpuStat {
 
     1.0 - idle_delta / total_delta
   }
-
-  /// Calculates usage since boot (average utilization).
-  /// This is the historical average, not current usage.
-  pub fn usage_average(&self) -> f64 {
-    let total = self.total() as f64;
-    if total == 0.0 {
-      return 0.0;
-    }
-    1.0 - self.idle() as f64 / total
-  }
 }
 
 #[derive(Default, Debug, Clone)]
