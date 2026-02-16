@@ -1203,4 +1203,80 @@ mod tests {
       assert_eq!(freq, 2166); // should be rounded to 2166
     }
   }
+
+  #[test]
+  fn test_volatility_expressions_with_insufficient_data() {
+    let cpu = Arc::new(cpu::Cpu {
+      number:                0,
+      has_cpufreq:           true,
+      available_governors:   vec![],
+      governor:              None,
+      frequency_mhz:         Some(3333),
+      frequency_mhz_minimum: Some(1000),
+      frequency_mhz_maximum: Some(3333),
+      available_epps:        vec![],
+      epp:                   None,
+      available_epbs:        vec![],
+      epb:                   None,
+      stat:                  cpu::CpuStat::default(),
+      previous_stat:         None,
+      info:                  None,
+    });
+
+    let mut cpus = HashSet::new();
+    cpus.insert(cpu.clone());
+
+    let power_supplies = HashSet::new();
+    let cpu_log = VecDeque::new();
+
+    let state = EvalState {
+      frequency_available:         true,
+      turbo_available:             false,
+      cpu_usage:                   0.0,
+      cpu_usage_volatility:        None,
+      cpu_temperature:             None,
+      cpu_temperature_volatility:  None,
+      cpu_idle_seconds:            0.0,
+      cpu_frequency_maximum:       Some(3333.0),
+      cpu_frequency_minimum:       Some(1000.0),
+      power_supply_charge:         None,
+      power_supply_discharge_rate: None,
+      discharging:                 false,
+      context:                     EvalContext::Cpu(&cpu),
+      cpus:                        &cpus,
+      power_supplies:              &power_supplies,
+      cpu_log:                     &cpu_log,
+    };
+
+    let result_volatility = Expression::CpuUsageVolatility.eval(&state);
+    assert!(
+      result_volatility.is_ok(),
+      "CpuUsageVolatility eval should succeed"
+    );
+    assert_eq!(
+      result_volatility.unwrap(),
+      None,
+      "CpuUsageVolatility should return None with insufficient data"
+    );
+
+    let result_temp = Expression::CpuTemperature.eval(&state);
+    assert!(result_temp.is_ok(), "CpuTemperature eval should succeed");
+    assert_eq!(
+      result_temp.unwrap(),
+      None,
+      "CpuTemperature should return None with insufficient data"
+    );
+
+    let result_temp_volatility =
+      Expression::CpuTemperatureVolatility.eval(&state);
+    assert!(
+      result_temp_volatility.is_ok(),
+      "CpuTemperatureVolatility eval should succeed"
+    );
+    assert_eq!(
+      result_temp_volatility.unwrap(),
+      None,
+      "CpuTemperatureVolatility should return None with insufficient data"
+    );
+  }
 }
