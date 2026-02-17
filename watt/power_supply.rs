@@ -257,7 +257,7 @@ impl PowerSupply {
         .with_context(|| format!("failed to read {self} charge percent"))?
         .map(|percent| percent as f64 / 100.0);
 
-      self.cycles = fs::read_n::<u64>(self.path.join("cycles"))
+      self.cycles = fs::read_n::<u64>(self.path.join("cycle_count"))
         .with_context(|| format!("failed to read {self} cycle count"))?;
 
       // Battery health as a percentage (0-100)
