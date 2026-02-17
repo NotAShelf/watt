@@ -232,56 +232,51 @@ impl System {
     }
 
     // Aggregate battery cycle count and health
-    if !self.power_supplies.is_empty() {
-      let batteries: Vec<_> = self
-        .power_supplies
-        .iter()
-        .filter(|ps| ps.type_ == "Battery" && !ps.is_from_peripheral)
-        .collect();
+    let batteries: Vec<_> = self
+      .power_supplies
+      .iter()
+      .filter(|ps| ps.type_ == "Battery" && !ps.is_from_peripheral)
+      .collect();
 
-      if !batteries.is_empty() {
-        // Calculate average cycle count across all batteries
-        let (cycle_sum, cycles) =
-          batteries
-            .iter()
-            .fold((0u64, 0u32), |(sum, count), power_supply| {
-              if let Some(cycles) = power_supply.cycles {
-                (sum + cycles, count + 1)
-              } else {
-                (sum, count)
-              }
-            });
-
-        self.battery_cycles = if cycles > 0 {
-          Some(cycle_sum as f64 / cycles as f64)
-        } else {
-          None
-        };
-
-        // Calculate average health across all batteries
-        let (health_sum, health_count) =
-          batteries
-            .iter()
-            .fold((0.0, 0u32), |(sum, count), power_supply| {
-              if let Some(health) = power_supply.health {
-                (sum + health, count + 1)
-              } else {
-                (sum, count)
-              }
-            });
-
-        self.battery_health = if health_count > 0 {
-          Some(health_sum / health_count as f64)
-        } else {
-          None
-        };
-      } else {
-        self.battery_cycles = None;
-        self.battery_health = None;
-      }
-    } else {
+    if self.power_supplies.is_empty() || batteries.is_empty() {
       self.battery_cycles = None;
       self.battery_health = None;
+    } else {
+      // Calculate average cycle count across all batteries
+      let (cycle_sum, cycles) =
+        batteries
+          .iter()
+          .fold((0u64, 0u32), |(sum, count), power_supply| {
+            if let Some(cycles) = power_supply.cycles {
+              (sum + cycles, count + 1)
+            } else {
+              (sum, count)
+            }
+          });
+
+      self.battery_cycles = if cycles > 0 {
+        Some(cycle_sum as f64 / cycles as f64)
+      } else {
+        None
+      };
+
+      // Calculate average health across all batteries
+      let (health_sum, health_count) =
+        batteries
+          .iter()
+          .fold((0.0, 0u32), |(sum, count), power_supply| {
+            if let Some(health) = power_supply.health {
+              (sum + health, count + 1)
+            } else {
+              (sum, count)
+            }
+          });
+
+      self.battery_health = if health_count > 0 {
+        Some(health_sum / health_count as f64)
+      } else {
+        None
+      };
     }
 
     Ok(())
