@@ -394,10 +394,6 @@ mod expression {
 
   named!(cpu_core_count => "%cpu-core-count");
 
-  named!(load_average_1m => "$load-average-1m");
-  named!(load_average_5m => "$load-average-5m");
-  named!(load_average_15m => "$load-average-15m");
-
   named!(lid_closed => "?lid-closed");
 
   named!(hour_of_day => "$hour-of-day");
@@ -474,14 +470,10 @@ pub enum Expression {
   #[serde(with = "expression::cpu_core_count")]
   CpuCoreCount,
 
-  #[serde(with = "expression::load_average_1m")]
-  LoadAverage1m,
-
-  #[serde(with = "expression::load_average_5m")]
-  LoadAverage5m,
-
-  #[serde(with = "expression::load_average_15m")]
-  LoadAverage15m,
+  #[serde(rename = "load-average-since")]
+  LoadAverageSince {
+    duration: String,
+  },
 
   #[serde(with = "expression::lid_closed")]
   LidClosed,
@@ -661,10 +653,6 @@ pub struct EvalState<'peripherals, 'context> {
   pub cpu_idle_seconds:           f64,
   pub cpu_frequency_maximum:      Option<f64>,
   pub cpu_frequency_minimum:      Option<f64>,
-
-  pub load_average_1m:  f64,
-  pub load_average_5m:  f64,
-  pub load_average_15m: f64,
 
   pub lid_closed: bool,
 
@@ -846,9 +834,25 @@ impl Expression {
 
       CpuCoreCount => Number(state.cpus.len() as f64),
 
-      LoadAverage1m => Number(state.load_average_1m),
-      LoadAverage5m => Number(state.load_average_5m),
-      LoadAverage15m => Number(state.load_average_15m),
+      LoadAverageSince { duration } => {
+        let duration = humantime::parse_duration(duration)
+          .with_context(|| format!("failed to parse duration '{duration}'"))?;
+        let recent_logs: Vec<&system::CpuLog> = state
+          .cpu_log
+          .iter()
+          .rev()
+          .take_while(|log| log.at.elapsed() < duration)
+          .collect();
+
+        if recent_logs.len() < 2 {
+          return Ok(None);
+        }
+
+        Number(
+          recent_logs.iter().map(|log| log.load_average).sum::<f64>()
+            / recent_logs.len() as f64,
+        )
+      },
 
       LidClosed => Boolean(state.lid_closed),
 
@@ -1160,9 +1164,6 @@ mod tests {
         cpu_idle_seconds: 10.0,
         cpu_frequency_maximum: Some(base_freq as f64),
         cpu_frequency_minimum: Some(1000.0),
-        load_average_1m: 0.5,
-        load_average_5m: 0.6,
-        load_average_15m: 0.7,
         lid_closed: false,
         power_supply_charge: Some(0.8),
         power_supply_discharge_rate: Some(10.0),
@@ -1253,9 +1254,6 @@ mod tests {
       cpu_idle_seconds:            10.0,
       cpu_frequency_maximum:       Some(3333.0),
       cpu_frequency_minimum:       Some(1000.0),
-      load_average_1m:             0.5,
-      load_average_5m:             0.6,
-      load_average_15m:            0.7,
       lid_closed:                  false,
       power_supply_charge:         Some(0.8),
       power_supply_discharge_rate: Some(10.0),
@@ -1334,9 +1332,6 @@ mod tests {
       cpu_idle_seconds:            0.0,
       cpu_frequency_maximum:       Some(3333.0),
       cpu_frequency_minimum:       Some(1000.0),
-      load_average_1m:             0.0,
-      load_average_5m:             0.0,
-      load_average_15m:            0.0,
       lid_closed:                  false,
       power_supply_charge:         None,
       power_supply_discharge_rate: None,

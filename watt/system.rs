@@ -41,6 +41,9 @@ pub struct CpuLog {
 
   /// CPU temperature in celsius.
   pub temperature: f64,
+
+  /// Load average.
+  pub load_average: f64,
 }
 
 #[derive(Debug)]
@@ -200,6 +203,8 @@ impl System {
 
       temperature: self.cpu_temperatures.values().sum::<f64>()
         / self.cpu_temperatures.len() as f64,
+
+      load_average: self.load_average_1min,
     };
     log::debug!("appending CPU log item: {cpu_log:?}");
     self.cpu_log.push_back(cpu_log);
@@ -960,10 +965,6 @@ pub fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
       cpu_frequency_minimum:      cpu::Cpu::hardware_frequency_mhz_minimum()
         .context("failed to read CPU hardware minimum frequency")?
         .map(|u64| u64 as f64),
-
-      load_average_1m:  system.load_average_1min,
-      load_average_5m:  system.load_average_5min,
-      load_average_15m: system.load_average_15min,
 
       lid_closed: system.lid_closed,
 
