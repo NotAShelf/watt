@@ -392,14 +392,21 @@ mod expression {
 
   named!(cpu_scaling_maximum => "$cpu-scaling-maximum");
 
+  named!(cpu_core_count => "%cpu-core-count");
+
   named!(load_average_1m => "$load-average-1m");
   named!(load_average_5m => "$load-average-5m");
   named!(load_average_15m => "$load-average-15m");
+
+  named!(lid_closed => "?lid-closed");
 
   named!(hour_of_day => "$hour-of-day");
 
   named!(power_supply_charge => "%power-supply-charge");
   named!(power_supply_discharge_rate => "%power-supply-discharge-rate");
+
+  named!(battery_cycles => "$battery-cycles");
+  named!(battery_health => "%battery-health");
 
   named!(discharging => "?discharging");
 }
@@ -464,6 +471,9 @@ pub enum Expression {
   #[serde(with = "expression::cpu_scaling_maximum")]
   CpuScalingMaximum,
 
+  #[serde(with = "expression::cpu_core_count")]
+  CpuCoreCount,
+
   #[serde(with = "expression::load_average_1m")]
   LoadAverage1m,
 
@@ -473,6 +483,9 @@ pub enum Expression {
   #[serde(with = "expression::load_average_15m")]
   LoadAverage15m,
 
+  #[serde(with = "expression::lid_closed")]
+  LidClosed,
+
   #[serde(with = "expression::hour_of_day")]
   HourOfDay,
 
@@ -481,6 +494,12 @@ pub enum Expression {
 
   #[serde(with = "expression::power_supply_discharge_rate")]
   PowerSupplyDischargeRate,
+
+  #[serde(with = "expression::battery_cycles")]
+  BatteryCycles,
+
+  #[serde(with = "expression::battery_health")]
+  BatteryHealth,
 
   #[serde(with = "expression::discharging")]
   Discharging,
@@ -645,12 +664,19 @@ pub struct EvalState<'peripherals, 'context> {
 
   pub cpu_scaling_maximum: Option<f64>,
 
+  pub cpu_core_count: u32,
+
   pub load_average_1m:  f64,
   pub load_average_5m:  f64,
   pub load_average_15m: f64,
 
+  pub lid_closed: bool,
+
   pub power_supply_charge:         Option<f64>,
   pub power_supply_discharge_rate: Option<f64>,
+
+  pub battery_cycles: Option<f64>,
+  pub battery_health: Option<f64>,
 
   pub discharging: bool,
 
@@ -814,9 +840,13 @@ impl Expression {
 
       CpuScalingMaximum => Number(try_ok!(state.cpu_scaling_maximum)),
 
+      CpuCoreCount => Number(state.cpu_core_count as f64),
+
       LoadAverage1m => Number(state.load_average_1m),
       LoadAverage5m => Number(state.load_average_5m),
       LoadAverage15m => Number(state.load_average_15m),
+
+      LidClosed => Boolean(state.lid_closed),
 
       HourOfDay => {
         let ts = jiff::Timestamp::now()
@@ -829,6 +859,9 @@ impl Expression {
       PowerSupplyDischargeRate => {
         Number(try_ok!(state.power_supply_discharge_rate))
       },
+
+      BatteryCycles => Number(try_ok!(state.battery_cycles)),
+      BatteryHealth => Number(try_ok!(state.battery_health)),
 
       Discharging => Boolean(state.discharging),
 
@@ -1124,11 +1157,15 @@ mod tests {
         cpu_frequency_maximum: Some(base_freq as f64),
         cpu_frequency_minimum: Some(1000.0),
         cpu_scaling_maximum: Some(base_freq as f64),
+        cpu_core_count: 1,
         load_average_1m: 0.5,
         load_average_5m: 0.6,
         load_average_15m: 0.7,
+        lid_closed: false,
         power_supply_charge: Some(0.8),
         power_supply_discharge_rate: Some(10.0),
+        battery_cycles: Some(100.0),
+        battery_health: Some(0.95),
         discharging: false,
         context: EvalContext::Cpu(&cpu),
         cpus: &cpus,
@@ -1215,11 +1252,15 @@ mod tests {
       cpu_frequency_maximum:       Some(3333.0),
       cpu_frequency_minimum:       Some(1000.0),
       cpu_scaling_maximum:         Some(3500.0),
+      cpu_core_count:              1,
       load_average_1m:             0.5,
       load_average_5m:             0.6,
       load_average_15m:            0.7,
+      lid_closed:                  false,
       power_supply_charge:         Some(0.8),
       power_supply_discharge_rate: Some(10.0),
+      battery_cycles:              Some(100.0),
+      battery_health:              Some(0.95),
       discharging:                 false,
       context:                     EvalContext::Cpu(&cpu),
       cpus:                        &cpus,
@@ -1294,11 +1335,15 @@ mod tests {
       cpu_frequency_maximum:       Some(3333.0),
       cpu_frequency_minimum:       Some(1000.0),
       cpu_scaling_maximum:         Some(3500.0),
+      cpu_core_count:              1,
       load_average_1m:             0.0,
       load_average_5m:             0.0,
       load_average_15m:            0.0,
+      lid_closed:                  false,
       power_supply_charge:         None,
       power_supply_discharge_rate: None,
+      battery_cycles:              None,
+      battery_health:              None,
       discharging:                 false,
       context:                     EvalContext::Cpu(&cpu),
       cpus:                        &cpus,
