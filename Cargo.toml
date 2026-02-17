@@ -21,6 +21,7 @@ clap_complete_nushell = "4.6.0"
 ctrlc                 = "3.5.2"
 env_logger            = "0.11.10"
 humantime             = "2.3.0"
+jiff                  = "0.2.24"
 log                   = "0.4.29"
 nix                   = { features = [ "fs" ], version = "0.31.2" }
 num_cpus              = "1.17.0"
