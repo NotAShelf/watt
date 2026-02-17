@@ -35,6 +35,16 @@ fn is_default<T: Default + PartialEq>(value: &T) -> bool {
   *value == T::default()
 }
 
+fn find_battery<'a>(
+  power_supplies: &'a HashSet<Arc<power_supply::PowerSupply>>,
+  name: &str,
+) -> Option<&'a power_supply::PowerSupply> {
+  power_supplies
+    .iter()
+    .find(|ps| ps.name == name && ps.type_ == "Battery")
+    .map(|arc| arc.as_ref())
+}
+
 #[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
 pub struct CpusDelta {
@@ -432,6 +442,11 @@ pub enum Expression {
     value: Box<Expression>,
   },
 
+  IsBatteryAvailable {
+    #[serde(rename = "is-battery-available")]
+    value: Box<Expression>,
+  },
+
   #[serde(with = "expression::frequency_available")]
   FrequencyAvailable,
 
@@ -492,6 +507,16 @@ pub enum Expression {
 
   #[serde(with = "expression::battery_health")]
   BatteryHealth,
+
+  BatteryCyclesFor {
+    #[serde(rename = "battery-cycles-for")]
+    name: String,
+  },
+
+  BatteryHealthFor {
+    #[serde(rename = "battery-health-for")]
+    name: String,
+  },
 
   #[serde(with = "expression::discharging")]
   Discharging,
@@ -782,6 +807,11 @@ impl Expression {
 
         Boolean(crate::fs::exists(format!("/sys/module/{value}")))
       },
+      IsBatteryAvailable { value } => {
+        let value = eval!(value).try_into_string()?;
+
+        Boolean(find_battery(&state.power_supplies, &value).is_some())
+      },
       FrequencyAvailable => Boolean(state.frequency_available),
       TurboAvailable => Boolean(state.turbo_available),
 
@@ -870,6 +900,16 @@ impl Expression {
 
       BatteryCycles => Number(try_ok!(state.battery_cycles)),
       BatteryHealth => Number(try_ok!(state.battery_health)),
+
+      BatteryCyclesFor { name } => {
+        let battery = find_battery(&state.power_supplies, name);
+        Number(try_ok!(battery.and_then(|ps| ps.cycles).map(|c| c as f64)))
+      },
+
+      BatteryHealthFor { name } => {
+        let battery = find_battery(&state.power_supplies, name);
+        Number(try_ok!(battery.and_then(|ps| ps.health)))
+      },
 
       Discharging => Boolean(state.discharging),
 
