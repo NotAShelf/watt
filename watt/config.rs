@@ -746,7 +746,13 @@ impl Expression {
       FrequencyAvailable => Boolean(state.frequency_available),
       TurboAvailable => Boolean(state.turbo_available),
 
-      CpuUsage => Number(state.cpu_usage),
+      CpuUsage => {
+        bail!(
+          "`%cpu-usage` is deprecated and has been removed. Use \
+           `cpu-usage-since = \"<duration>\"` instead. For example, \
+           `cpu-usage-since = \"1sec\"` for CPU usage over the last second."
+        )
+      },
       CpuUsageSince { duration } => {
         let duration = humantime::parse_duration(duration)
           .with_context(|| format!("failed to parse duration '{duration}'"))?;
