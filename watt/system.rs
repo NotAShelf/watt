@@ -798,6 +798,18 @@ pub fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
         .context("failed to read CPU hardware minimum frequency")?
         .map(|u64| u64 as f64),
 
+      cpu_scaling_maximum: system
+        .cpus
+        .iter()
+        .map(|cpu| cpu.frequency_mhz_maximum)
+        .max()
+        .flatten()
+        .map(|u64| u64 as f64),
+
+      load_average_1m:  system.load_average_1min,
+      load_average_5m:  system.load_average_5min,
+      load_average_15m: system.load_average_15min,
+
       power_supply_charge:         system
         .power_supply_log
         .back()

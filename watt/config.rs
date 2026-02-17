@@ -390,6 +390,12 @@ mod expression {
   named!(cpu_frequency_maximum => "$cpu-frequency-maximum");
   named!(cpu_frequency_minimum => "$cpu-frequency-minimum");
 
+  named!(cpu_scaling_maximum => "$cpu-scaling-maximum");
+
+  named!(load_average_1m => "$load-average-1m");
+  named!(load_average_5m => "$load-average-5m");
+  named!(load_average_15m => "$load-average-15m");
+
   named!(power_supply_charge => "%power-supply-charge");
   named!(power_supply_discharge_rate => "%power-supply-discharge-rate");
 
@@ -452,6 +458,18 @@ pub enum Expression {
 
   #[serde(with = "expression::cpu_frequency_minimum")]
   CpuFrequencyMinimum,
+
+  #[serde(with = "expression::cpu_scaling_maximum")]
+  CpuScalingMaximum,
+
+  #[serde(with = "expression::load_average_1m")]
+  LoadAverage1m,
+
+  #[serde(with = "expression::load_average_5m")]
+  LoadAverage5m,
+
+  #[serde(with = "expression::load_average_15m")]
+  LoadAverage15m,
 
   #[serde(with = "expression::power_supply_charge")]
   PowerSupplyCharge,
@@ -620,6 +638,12 @@ pub struct EvalState<'peripherals, 'context> {
   pub cpu_frequency_maximum:      Option<f64>,
   pub cpu_frequency_minimum:      Option<f64>,
 
+  pub cpu_scaling_maximum: Option<f64>,
+
+  pub load_average_1m:  f64,
+  pub load_average_5m:  f64,
+  pub load_average_15m: f64,
+
   pub power_supply_charge:         Option<f64>,
   pub power_supply_discharge_rate: Option<f64>,
 
@@ -782,6 +806,12 @@ impl Expression {
       CpuIdleSeconds => Number(state.cpu_idle_seconds),
       CpuFrequencyMaximum => Number(try_ok!(state.cpu_frequency_maximum)),
       CpuFrequencyMinimum => Number(try_ok!(state.cpu_frequency_minimum)),
+
+      CpuScalingMaximum => Number(try_ok!(state.cpu_scaling_maximum)),
+
+      LoadAverage1m => Number(state.load_average_1m),
+      LoadAverage5m => Number(state.load_average_5m),
+      LoadAverage15m => Number(state.load_average_15m),
 
       PowerSupplyCharge => Number(try_ok!(state.power_supply_charge)),
       PowerSupplyDischargeRate => {
@@ -1081,6 +1111,10 @@ mod tests {
         cpu_idle_seconds: 10.0,
         cpu_frequency_maximum: Some(base_freq as f64),
         cpu_frequency_minimum: Some(1000.0),
+        cpu_scaling_maximum: Some(base_freq as f64),
+        load_average_1m: 0.5,
+        load_average_5m: 0.6,
+        load_average_15m: 0.7,
         power_supply_charge: Some(0.8),
         power_supply_discharge_rate: Some(10.0),
         discharging: false,
@@ -1168,6 +1202,10 @@ mod tests {
       cpu_idle_seconds:            10.0,
       cpu_frequency_maximum:       Some(3333.0),
       cpu_frequency_minimum:       Some(1000.0),
+      cpu_scaling_maximum:         Some(3500.0),
+      load_average_1m:             0.5,
+      load_average_5m:             0.6,
+      load_average_15m:            0.7,
       power_supply_charge:         Some(0.8),
       power_supply_discharge_rate: Some(10.0),
       discharging:                 false,
@@ -1243,6 +1281,10 @@ mod tests {
       cpu_idle_seconds:            0.0,
       cpu_frequency_maximum:       Some(3333.0),
       cpu_frequency_minimum:       Some(1000.0),
+      cpu_scaling_maximum:         Some(3500.0),
+      load_average_1m:             0.0,
+      load_average_5m:             0.0,
+      load_average_15m:            0.0,
       power_supply_charge:         None,
       power_supply_discharge_rate: None,
       discharging:                 false,
