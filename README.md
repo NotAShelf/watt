@@ -172,7 +172,7 @@ but Watt attempts to support multiple vendor implementations including:
 # High performance for sustained workloads with thermal protection
 [[rule]]
 if.all = [
-  { is-more-than = 0.8, value = "%cpu-usage" },
+  { is-more-than = 0.8, value = { cpu-usage-since = "2sec" } },
   { is-less-than = 30.0, value = "$cpu-idle-seconds" },
   { is-less-than = 75.0, value = "$cpu-temperature" },
 ]
@@ -262,7 +262,7 @@ Watt includes a powerful expression language for defining conditions:
 
 #### System Variables
 
-- `"%cpu-usage"` - Current CPU usage percentage (0.0-1.0)
+- `{ cpu-usage-since = "<duration>" }` - CPU usage percentage over a duration (e.g., `"1sec"`, `"5sec"`)
 - `"$cpu-usage-volatility"` - CPU usage volatility measurement
 - `"$cpu-temperature"` - CPU temperature in Celsius
 - `"$cpu-temperature-volatility"` - CPU temperature volatility
@@ -305,7 +305,7 @@ You can use operators with TOML attribute sets:
 
 ```toml
 [[rule]]
-if = { is-more-than = "%cpu-usage", value = 0.8 }
+if = { is-more-than = { cpu-usage-since = "1sec" }, value = 0.8 }
 ```
 
 However, `all` and `any` do not take a `value` argument, but instead take a list
@@ -359,7 +359,7 @@ power.platform-profile = { if.is-platform-profile-available = "low-power", then 
 # High performance mode for sustained high load
 [[rule]]
 if.all = [
-  { is-more-than = 0.8, value = "%cpu-usage" },
+  { is-more-than = 0.8, value = { cpu-usage-since = "2sec" } },
   { is-less-than = 30.0, value = "$cpu-idle-seconds" },
   { is-less-than = 75.0, value = "$cpu-temperature" },
 ]
@@ -374,7 +374,7 @@ cpu.turbo = { if = "?turbo-available", then = true }
 [[rule]]
 if.all = [
   { not = "?discharging" },
-  { is-more-than = 0.1, value = "%cpu-usage" },
+  { is-more-than = 0.1, value = { cpu-usage-since = "1sec" } },
   { is-less-than = 80.0, value = "$cpu-temperature" },
 ]
 priority = 70
@@ -387,8 +387,8 @@ cpu.turbo = { if = "?turbo-available", then = true }
 # Moderate performance for medium load
 [[rule]]
 if.all = [
-  { is-more-than = 0.4, value = "%cpu-usage" },
-  { is-less-than = 0.8, value = "%cpu-usage" },
+  { is-more-than = 0.4, value = { cpu-usage-since = "5sec" } },
+  { is-less-than = 0.8, value = { cpu-usage-since = "5sec" } },
 ]
 priority = 60
 
@@ -399,7 +399,7 @@ cpu.governor = { if.is-governor-available = "schedutil", then = "schedutil" }
 # Power saving during low activity
 [[rule]]
 if.all = [
-  { is-less-than = 0.2, value = "%cpu-usage" },
+  { is-less-than = 0.2, value = { cpu-usage-since = "10sec" } },
   { is-more-than = 60.0, value = "$cpu-idle-seconds" },
 ]
 priority = 50
