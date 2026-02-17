@@ -60,8 +60,8 @@ pub struct PowerSupply {
   pub charge_state:   Option<String>,
   pub charge_percent: Option<f64>,
 
-  pub cycle_count: Option<u64>,
-  pub health:      Option<f64>,
+  pub cycles: Option<u64>,
+  pub health: Option<f64>,
 
   pub charge_threshold_start: f64,
   pub charge_threshold_end:   f64,
@@ -158,7 +158,7 @@ impl PowerSupply {
         charge_state: None,
         charge_percent: None,
 
-        cycle_count: None,
+        cycles: None,
         health: None,
 
         charge_threshold_start: 0.0,
@@ -257,7 +257,7 @@ impl PowerSupply {
         .with_context(|| format!("failed to read {self} charge percent"))?
         .map(|percent| percent as f64 / 100.0);
 
-      self.cycle_count = fs::read_n::<u64>(self.path.join("cycle_count"))
+      self.cycles = fs::read_n::<u64>(self.path.join("cycles"))
         .with_context(|| format!("failed to read {self} cycle count"))?;
 
       // Battery health as a percentage (0-100)

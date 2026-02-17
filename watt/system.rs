@@ -241,19 +241,19 @@ impl System {
 
       if !batteries.is_empty() {
         // Calculate average cycle count across all batteries
-        let (cycle_sum, cycle_count) =
+        let (cycle_sum, cycles) =
           batteries
             .iter()
             .fold((0u64, 0u32), |(sum, count), power_supply| {
-              if let Some(cycles) = power_supply.cycle_count {
+              if let Some(cycles) = power_supply.cycles {
                 (sum + cycles, count + 1)
               } else {
                 (sum, count)
               }
             });
 
-        self.battery_cycles = if cycle_count > 0 {
-          Some(cycle_sum as f64 / cycle_count as f64)
+        self.battery_cycles = if cycles > 0 {
+          Some(cycle_sum as f64 / cycles as f64)
         } else {
           None
         };
