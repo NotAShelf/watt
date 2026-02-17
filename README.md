@@ -262,13 +262,19 @@ Watt includes a powerful expression language for defining conditions:
 
 #### System Variables
 
-- `{ cpu-usage-since = "<duration>" }` - CPU usage percentage over a duration (e.g., `"1sec"`, `"5sec"`)
+- `{ cpu-usage-since = "<duration>" }` - CPU usage percentage over a duration
+  (e.g., `"1sec"`, `"5sec"`)
 - `"$cpu-usage-volatility"` - CPU usage volatility measurement
 - `"$cpu-temperature"` - CPU temperature in Celsius
 - `"$cpu-temperature-volatility"` - CPU temperature volatility
 - `"$cpu-idle-seconds"` - Seconds since last significant CPU activity
 - `"$cpu-frequency-maximum"` - CPU hardware maximum frequency in MHz
 - `"$cpu-frequency-minimum"` - CPU hardware minimum frequency in MHz
+- `"$cpu-scaling-maximum"` - Current CPU scaling maximum frequency in MHz (from
+  `scaling_max_freq`)
+- `"$load-average-1m"` - System load average over the last 1 minute
+- `"$load-average-5m"` - System load average over the last 5 minutes
+- `"$load-average-15m"` - System load average over the last 15 minutes
 - `"%power-supply-charge"` - Battery charge percentage (0.0-1.0)
 - `"%power-supply-discharge-rate"` - Current discharge rate
 - `"?discharging"` - Boolean indicating if system is on battery power
