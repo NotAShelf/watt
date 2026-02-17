@@ -4,8 +4,8 @@
 # Each rule can specify conditions and actions for CPU and power management.
 
 [[rule]]
-name     = "emergency-thermal-protection"
 if       = { is-more-than = 85.0, value = "$cpu-temperature" }
+name     = "emergency-thermal-protection"
 priority = 100
 
 cpu.energy-perf-bias              = { if.is-energy-perf-bias-available = "power", then = "power" }
@@ -15,8 +15,8 @@ cpu.governor                      = { if.is-governor-available = "powersave", th
 cpu.turbo                         = { if = "?turbo-available", then = false }
 
 [[rule]]
-name     = "critical-battery-preservation"
 if.all   = [ "?discharging", { is-less-than = 0.3, value = "%power-supply-charge" } ]
+name     = "critical-battery-preservation"
 priority = 90
 
 cpu.energy-perf-bias              = { if.is-energy-perf-bias-available = "power", then = "power" }
@@ -26,39 +26,51 @@ cpu.turbo                         = { if = "?turbo-available", then = false }
 power.platform-profile            = { if.is-platform-profile-available = "low-power", then = "low-power" }
 
 [[rule]]
-name = "high-load-performance-sustainance"
 if.all = [
-  { is-more-than = 0.8, value = "%cpu-usage" },
+  { is-more-than = 0.8, value = { cpu-usage-since = "2sec" } },
   { is-less-than = 30.0, value = "$cpu-idle-seconds" },
   { is-less-than = 75.0, value = "$cpu-temperature" },
 ]
+name = "high-load-performance-sustainance"
 priority = 80
 
-cpu.energy-perf-bias              = { if.all = [{ not.is-driver-loaded = "intel_pstate" }, { is-energy-perf-bias-available = "performance" }], then = "performance" }
-cpu.energy-performance-preference = { if.all = [{ not.is-driver-loaded = "intel_pstate" }, { is-energy-performance-preference-available = "performance" }], then = "performance" }
-cpu.governor                      = { if.is-governor-available = "performance", then = "performance" }
-cpu.turbo                         = { if = "?turbo-available", then = true }
+cpu.energy-perf-bias = { if.all = [
+  { not.is-driver-loaded = "intel_pstate" },
+  { is-energy-perf-bias-available = "performance" },
+], then = "performance" }
+cpu.energy-performance-preference = { if.all = [
+  { not.is-driver-loaded = "intel_pstate" },
+  { is-energy-performance-preference-available = "performance" },
+], then = "performance" }
+cpu.governor = { if.is-governor-available = "performance", then = "performance" }
+cpu.turbo = { if = "?turbo-available", then = true }
 
 [[rule]]
-name = "plugged-in-performance"
 if.all = [
   { not = "?discharging" },
-  { is-more-than = 0.1, value = "%cpu-usage" },
+  { is-more-than = 0.1, value = { cpu-usage-since = "1sec" } },
   { is-less-than = 80.0, value = "$cpu-temperature" },
 ]
+name = "plugged-in-performance"
 priority = 70
 
-cpu.energy-perf-bias              = { if.all = [{ not.is-driver-loaded = "intel_pstate" }, { is-energy-perf-bias-available = "balance-performance" }], then = "balance-performance" }
-cpu.energy-performance-preference = { if.all = [{ not.is-driver-loaded = "intel_pstate" }, { is-energy-performance-preference-available = "performance" }], then = "performance" }
-cpu.governor                      = { if.is-governor-available = "performance", then = "performance" }
-cpu.turbo                         = { if = "?turbo-available", then = true }
+cpu.energy-perf-bias = { if.all = [
+  { not.is-driver-loaded = "intel_pstate" },
+  { is-energy-perf-bias-available = "balance-performance" },
+], then = "balance-performance" }
+cpu.energy-performance-preference = { if.all = [
+  { not.is-driver-loaded = "intel_pstate" },
+  { is-energy-performance-preference-available = "performance" },
+], then = "performance" }
+cpu.governor = { if.is-governor-available = "performance", then = "performance" }
+cpu.turbo = { if = "?turbo-available", then = true }
 
 [[rule]]
-name = "moderate-load-balanced-performance"
 if.all = [
-  { is-more-than = 0.4, value = "%cpu-usage" },
-  { is-less-than = 0.8, value = "%cpu-usage" },
+  { is-more-than = 0.4, value = { cpu-usage-since = "5sec" } },
+  { is-less-than = 0.8, value = { cpu-usage-since = "5sec" } },
 ]
+name = "moderate-load-balanced-performance"
 priority = 60
 
 cpu.energy-perf-bias              = { if.is-energy-perf-bias-available = "balance-performance", then = "balance-performance" }
@@ -66,11 +78,11 @@ cpu.energy-performance-preference = { if.is-energy-performance-preference-availa
 cpu.governor                      = { if.is-governor-available = "schedutil", then = "schedutil" }
 
 [[rule]]
-name = "low-activity-power-saving"
 if.all = [
-  { is-less-than = 0.2, value = "%cpu-usage" },
+  { is-less-than = 0.2, value = { cpu-usage-since = "10sec" } },
   { is-more-than = 60.0, value = "$cpu-idle-seconds" },
 ]
+name = "low-activity-power-saving"
 priority = 50
 
 cpu.energy-perf-bias              = { if.is-energy-perf-bias-available = "power", then = "power" }
@@ -79,8 +91,8 @@ cpu.governor                      = { if.is-governor-available = "powersave", th
 cpu.turbo                         = { if = "?turbo-available", then = false }
 
 [[rule]]
-name     = "extended-idle-power-saving"
 if       = { is-more-than = 300.0, value = "$cpu-idle-seconds" }
+name     = "extended-idle-power-saving"
 priority = 40
 
 cpu.energy-perf-bias              = { if.is-energy-perf-bias-available = "power", then = "power" }
@@ -90,8 +102,8 @@ cpu.governor                      = { if.is-governor-available = "powersave", th
 cpu.turbo                         = { if = "?turbo-available", then = false }
 
 [[rule]]
-name     = "discharging-battery-conservation"
 if.all   = [ "?discharging", { is-less-than = 0.5, value = "%power-supply-charge" } ]
+name     = "discharging-battery-conservation"
 priority = 30
 
 cpu.energy-perf-bias              = { if.is-energy-perf-bias-available = "power", then = "power" }
@@ -102,8 +114,8 @@ cpu.turbo                         = { if = "?turbo-available", then = false }
 power.platform-profile            = { if.is-platform-profile-available = "low-power", then = "low-power" }
 
 [[rule]]
-name     = "battery-balanced"
 if       = "?discharging"
+name     = "battery-balanced"
 priority = 20
 
 cpu.energy-perf-bias              = { if.is-energy-perf-bias-available = "balance-performance", then = "balance-performance" }
@@ -114,8 +126,8 @@ cpu.governor                      = { if.is-governor-available = "powersave", th
 cpu.turbo                         = { if = "?turbo-available", then = false }
 
 [[rule]]
-name                              = "default-balanced"
 cpu.energy-perf-bias              = { if.is-energy-perf-bias-available = "balance-performance", then = "balance-performance" }
 cpu.energy-performance-preference = { if.is-energy-performance-preference-available = "balance_performance", then = "balance_performance" }
 cpu.governor                      = { if.is-governor-available = "schedutil", then = "schedutil" }
+name                              = "default-balanced"
 priority                          = 0

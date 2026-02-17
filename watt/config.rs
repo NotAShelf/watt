@@ -35,6 +35,16 @@ fn is_default<T: Default + PartialEq>(value: &T) -> bool {
   *value == T::default()
 }
 
+fn find_battery<'a>(
+  power_supplies: &'a HashSet<Arc<power_supply::PowerSupply>>,
+  name: &str,
+) -> Option<&'a power_supply::PowerSupply> {
+  power_supplies
+    .iter()
+    .find(|ps| ps.name == name && ps.type_ == "Battery")
+    .map(|arc| arc.as_ref())
+}
+
 #[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
 pub struct CpusDelta {
@@ -390,8 +400,19 @@ mod expression {
   named!(cpu_frequency_maximum => "$cpu-frequency-maximum");
   named!(cpu_frequency_minimum => "$cpu-frequency-minimum");
 
+  named!(cpu_scaling_maximum => "$cpu-scaling-maximum");
+
+  named!(cpu_core_count => "%cpu-core-count");
+
+  named!(lid_closed => "?lid-closed");
+
+  named!(hour_of_day => "$hour-of-day");
+
   named!(power_supply_charge => "%power-supply-charge");
   named!(power_supply_discharge_rate => "%power-supply-discharge-rate");
+
+  named!(battery_cycles => "$battery-cycles");
+  named!(battery_health => "%battery-health");
 
   named!(discharging => "?discharging");
 }
@@ -418,6 +439,11 @@ pub enum Expression {
   },
   IsDriverLoaded {
     #[serde(rename = "is-driver-loaded")]
+    value: Box<Expression>,
+  },
+
+  IsBatteryAvailable {
+    #[serde(rename = "is-battery-available")]
     value: Box<Expression>,
   },
 
@@ -453,11 +479,44 @@ pub enum Expression {
   #[serde(with = "expression::cpu_frequency_minimum")]
   CpuFrequencyMinimum,
 
+  #[serde(with = "expression::cpu_scaling_maximum")]
+  CpuScalingMaximum,
+
+  #[serde(with = "expression::cpu_core_count")]
+  CpuCoreCount,
+
+  LoadAverageSince {
+    #[serde(rename = "load-average-since")]
+    duration: String,
+  },
+
+  #[serde(with = "expression::lid_closed")]
+  LidClosed,
+
+  #[serde(with = "expression::hour_of_day")]
+  HourOfDay,
+
   #[serde(with = "expression::power_supply_charge")]
   PowerSupplyCharge,
 
   #[serde(with = "expression::power_supply_discharge_rate")]
   PowerSupplyDischargeRate,
+
+  #[serde(with = "expression::battery_cycles")]
+  BatteryCycles,
+
+  #[serde(with = "expression::battery_health")]
+  BatteryHealth,
+
+  BatteryCyclesFor {
+    #[serde(rename = "battery-cycles-for")]
+    name: String,
+  },
+
+  BatteryHealthFor {
+    #[serde(rename = "battery-health-for")]
+    name: String,
+  },
 
   #[serde(with = "expression::discharging")]
   Discharging,
@@ -620,8 +679,13 @@ pub struct EvalState<'peripherals, 'context> {
   pub cpu_frequency_maximum:      Option<f64>,
   pub cpu_frequency_minimum:      Option<f64>,
 
+  pub lid_closed: bool,
+
   pub power_supply_charge:         Option<f64>,
   pub power_supply_discharge_rate: Option<f64>,
+
+  pub battery_cycles: Option<f64>,
+  pub battery_health: Option<f64>,
 
   pub discharging: bool,
 
@@ -743,10 +807,21 @@ impl Expression {
 
         Boolean(crate::fs::exists(format!("/sys/module/{value}")))
       },
+      IsBatteryAvailable { value } => {
+        let value = eval!(value).try_into_string()?;
+
+        Boolean(find_battery(&state.power_supplies, &value).is_some())
+      },
       FrequencyAvailable => Boolean(state.frequency_available),
       TurboAvailable => Boolean(state.turbo_available),
 
-      CpuUsage => Number(state.cpu_usage),
+      CpuUsage => {
+        bail!(
+          "`%cpu-usage` is deprecated and has been removed. Use \
+           `cpu-usage-since = \"<duration>\"` instead. For example, \
+           `cpu-usage-since = \"1sec\"` for CPU usage over the last second."
+        )
+      },
       CpuUsageSince { duration } => {
         let duration = humantime::parse_duration(duration)
           .with_context(|| format!("failed to parse duration '{duration}'"))?;
@@ -777,9 +852,63 @@ impl Expression {
       CpuFrequencyMaximum => Number(try_ok!(state.cpu_frequency_maximum)),
       CpuFrequencyMinimum => Number(try_ok!(state.cpu_frequency_minimum)),
 
+      CpuScalingMaximum => {
+        let max = state
+          .cpus
+          .iter()
+          .filter_map(|cpu| cpu.frequency_mhz_maximum)
+          .max()
+          .map(|v| v as f64);
+        Number(try_ok!(max))
+      },
+
+      CpuCoreCount => Number(state.cpus.len() as f64),
+
+      LoadAverageSince { duration } => {
+        let duration = humantime::parse_duration(duration)
+          .with_context(|| format!("failed to parse duration '{duration}'"))?;
+        let recent_logs: Vec<&system::CpuLog> = state
+          .cpu_log
+          .iter()
+          .rev()
+          .take_while(|log| log.at.elapsed() < duration)
+          .collect();
+
+        if recent_logs.len() < 2 {
+          return Ok(None);
+        }
+
+        Number(
+          recent_logs.iter().map(|log| log.load_average).sum::<f64>()
+            / recent_logs.len() as f64,
+        )
+      },
+
+      LidClosed => Boolean(state.lid_closed),
+
+      HourOfDay => {
+        let ts = jiff::Timestamp::now()
+          .in_tz("local")
+          .context("failed to get local timezone for `$hour-of-day`")?;
+        Number(ts.hour() as f64)
+      },
+
       PowerSupplyCharge => Number(try_ok!(state.power_supply_charge)),
       PowerSupplyDischargeRate => {
         Number(try_ok!(state.power_supply_discharge_rate))
+      },
+
+      BatteryCycles => Number(try_ok!(state.battery_cycles)),
+      BatteryHealth => Number(try_ok!(state.battery_health)),
+
+      BatteryCyclesFor { name } => {
+        let battery = find_battery(&state.power_supplies, name);
+        Number(try_ok!(battery.and_then(|ps| ps.cycles).map(|c| c as f64)))
+      },
+
+      BatteryHealthFor { name } => {
+        let battery = find_battery(&state.power_supplies, name);
+        Number(try_ok!(battery.and_then(|ps| ps.health)))
       },
 
       Discharging => Boolean(state.discharging),
@@ -1075,8 +1204,11 @@ mod tests {
         cpu_idle_seconds: 10.0,
         cpu_frequency_maximum: Some(base_freq as f64),
         cpu_frequency_minimum: Some(1000.0),
+        lid_closed: false,
         power_supply_charge: Some(0.8),
         power_supply_discharge_rate: Some(10.0),
+        battery_cycles: Some(100.0),
+        battery_health: Some(0.95),
         discharging: false,
         context: EvalContext::Cpu(&cpu),
         cpus: &cpus,
@@ -1162,8 +1294,11 @@ mod tests {
       cpu_idle_seconds:            10.0,
       cpu_frequency_maximum:       Some(3333.0),
       cpu_frequency_minimum:       Some(1000.0),
+      lid_closed:                  false,
       power_supply_charge:         Some(0.8),
       power_supply_discharge_rate: Some(10.0),
+      battery_cycles:              Some(100.0),
+      battery_health:              Some(0.95),
       discharging:                 false,
       context:                     EvalContext::Cpu(&cpu),
       cpus:                        &cpus,
@@ -1237,8 +1372,11 @@ mod tests {
       cpu_idle_seconds:            0.0,
       cpu_frequency_maximum:       Some(3333.0),
       cpu_frequency_minimum:       Some(1000.0),
+      lid_closed:                  false,
       power_supply_charge:         None,
       power_supply_discharge_rate: None,
+      battery_cycles:              None,
+      battery_health:              None,
       discharging:                 false,
       context:                     EvalContext::Cpu(&cpu),
       cpus:                        &cpus,
