@@ -662,10 +662,6 @@ pub struct EvalState<'peripherals, 'context> {
   pub cpu_frequency_maximum:      Option<f64>,
   pub cpu_frequency_minimum:      Option<f64>,
 
-  pub cpu_scaling_maximum: Option<f64>,
-
-  pub cpu_core_count: u32,
-
   pub load_average_1m:  f64,
   pub load_average_5m:  f64,
   pub load_average_15m: f64,
@@ -838,9 +834,17 @@ impl Expression {
       CpuFrequencyMaximum => Number(try_ok!(state.cpu_frequency_maximum)),
       CpuFrequencyMinimum => Number(try_ok!(state.cpu_frequency_minimum)),
 
-      CpuScalingMaximum => Number(try_ok!(state.cpu_scaling_maximum)),
+      CpuScalingMaximum => {
+        let max = state
+          .cpus
+          .iter()
+          .filter_map(|cpu| cpu.frequency_mhz_maximum)
+          .max()
+          .map(|v| v as f64);
+        Number(try_ok!(max))
+      },
 
-      CpuCoreCount => Number(state.cpu_core_count as f64),
+      CpuCoreCount => Number(state.cpus.len() as f64),
 
       LoadAverage1m => Number(state.load_average_1m),
       LoadAverage5m => Number(state.load_average_5m),
@@ -1156,8 +1160,6 @@ mod tests {
         cpu_idle_seconds: 10.0,
         cpu_frequency_maximum: Some(base_freq as f64),
         cpu_frequency_minimum: Some(1000.0),
-        cpu_scaling_maximum: Some(base_freq as f64),
-        cpu_core_count: 1,
         load_average_1m: 0.5,
         load_average_5m: 0.6,
         load_average_15m: 0.7,
@@ -1251,8 +1253,6 @@ mod tests {
       cpu_idle_seconds:            10.0,
       cpu_frequency_maximum:       Some(3333.0),
       cpu_frequency_minimum:       Some(1000.0),
-      cpu_scaling_maximum:         Some(3500.0),
-      cpu_core_count:              1,
       load_average_1m:             0.5,
       load_average_5m:             0.6,
       load_average_15m:            0.7,
@@ -1334,8 +1334,6 @@ mod tests {
       cpu_idle_seconds:            0.0,
       cpu_frequency_maximum:       Some(3333.0),
       cpu_frequency_minimum:       Some(1000.0),
-      cpu_scaling_maximum:         Some(3500.0),
-      cpu_core_count:              1,
       load_average_1m:             0.0,
       load_average_5m:             0.0,
       load_average_15m:            0.0,
