@@ -275,6 +275,7 @@ Watt includes a powerful expression language for defining conditions:
 - `"$load-average-1m"` - System load average over the last 1 minute
 - `"$load-average-5m"` - System load average over the last 5 minutes
 - `"$load-average-15m"` - System load average over the last 15 minutes
+- `"$hour-of-day"` - Current hour (0-23) based on system local time
 - `"%power-supply-charge"` - Battery charge percentage (0.0-1.0)
 - `"%power-supply-discharge-rate"` - Current discharge rate
 - `"?discharging"` - Boolean indicating if system is on battery power
