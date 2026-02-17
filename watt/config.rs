@@ -396,6 +396,8 @@ mod expression {
   named!(load_average_5m => "$load-average-5m");
   named!(load_average_15m => "$load-average-15m");
 
+  named!(hour_of_day => "$hour-of-day");
+
   named!(power_supply_charge => "%power-supply-charge");
   named!(power_supply_discharge_rate => "%power-supply-discharge-rate");
 
@@ -470,6 +472,9 @@ pub enum Expression {
 
   #[serde(with = "expression::load_average_15m")]
   LoadAverage15m,
+
+  #[serde(with = "expression::hour_of_day")]
+  HourOfDay,
 
   #[serde(with = "expression::power_supply_charge")]
   PowerSupplyCharge,
@@ -812,6 +817,13 @@ impl Expression {
       LoadAverage1m => Number(state.load_average_1m),
       LoadAverage5m => Number(state.load_average_5m),
       LoadAverage15m => Number(state.load_average_15m),
+
+      HourOfDay => {
+        let ts = jiff::Timestamp::now()
+          .in_tz("local")
+          .context("failed to get local timezone for `$hour-of-day`")?;
+        Number(ts.hour() as f64)
+      },
 
       PowerSupplyCharge => Number(try_ok!(state.power_supply_charge)),
       PowerSupplyDischargeRate => {
