@@ -272,12 +272,20 @@ Watt includes a powerful expression language for defining conditions:
 - `"$cpu-frequency-minimum"` - CPU hardware minimum frequency in MHz
 - `"$cpu-scaling-maximum"` - Current CPU scaling maximum frequency in MHz (from
   `scaling_max_freq`)
-- `"$load-average-1m"` - System load average over the last 1 minute
-- `"$load-average-5m"` - System load average over the last 5 minutes
-- `"$load-average-15m"` - System load average over the last 15 minutes
+- `"%cpu-core-count"` - Number of CPU cores
+- `{ load-average-since = "<duration>" }` - System load average over a duration
+  (e.g., `"5sec"`, `"1min"`)
 - `"$hour-of-day"` - Current hour (0-23) based on system local time
+- `"?lid-closed"` - Boolean indicating if laptop lid is closed
 - `"%power-supply-charge"` - Battery charge percentage (0.0-1.0)
 - `"%power-supply-discharge-rate"` - Current discharge rate
+- `"%battery-cycles"` - Battery cycle count (aggregated average across all
+  batteries)
+- `"%battery-health"` - Battery health percentage (0.0-1.0, aggregated average
+  across all batteries)
+- `{ battery-cycles-for = "<name>" }` - Battery cycle count for a specific
+  battery (e.g., `"BAT0"`)
+- `{ battery-health-for = "<name>" }` - Battery health for a specific battery
 - `"?discharging"` - Boolean indicating if system is on battery power
 - `"?frequency-available"` - Boolean indicating if CPU frequency control is
   available
@@ -295,6 +303,7 @@ if.is-energy-performance-preference-available = "balance_performance"
 if.is-energy-perf-bias-available = "5"
 if.is-platform-profile-available = "low-power"
 if.is-driver-loaded = "intel_pstate"
+if.is-battery-available = "BAT0"
 ```
 
 Each will be `true` only if the named value is available on your system. If the
