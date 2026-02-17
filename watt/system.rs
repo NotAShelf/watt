@@ -62,6 +62,8 @@ struct PowerSupplyLog {
 struct System {
   is_ac: bool,
 
+  lid_closed: bool,
+
   load_average_1min:  f64,
   load_average_5min:  f64,
   load_average_15min: f64,
@@ -76,6 +78,11 @@ struct System {
   power_supplies:   HashSet<Arc<power_supply::PowerSupply>>,
   /// Power supply status log.
   power_supply_log: VecDeque<PowerSupplyLog>,
+
+  /// Battery cycle count (aggregated average across all batteries).
+  battery_cycles: Option<f64>,
+  /// Battery health (aggregated average across all batteries).
+  battery_health: Option<f64>,
 }
 
 impl System {
@@ -160,6 +167,15 @@ impl System {
 
     {
       let start = Instant::now();
+      self.scan_lid_state()?;
+      log::info!(
+        "scanned lid state in {millis}ms",
+        millis = start.elapsed().as_millis(),
+      );
+    }
+
+    {
+      let start = Instant::now();
       self.scan_temperatures()?;
       log::info!(
         "scanned temperatures in {millis}ms",
@@ -213,6 +229,59 @@ impl System {
       };
       log::debug!("appending power supply log item: {power_supply_log:?}");
       self.power_supply_log.push_back(power_supply_log);
+    }
+
+    // Aggregate battery cycle count and health
+    if !self.power_supplies.is_empty() {
+      let batteries: Vec<_> = self
+        .power_supplies
+        .iter()
+        .filter(|ps| ps.type_ == "Battery" && !ps.is_from_peripheral)
+        .collect();
+
+      if !batteries.is_empty() {
+        // Calculate average cycle count across all batteries
+        let (cycle_sum, cycle_count) =
+          batteries
+            .iter()
+            .fold((0u64, 0u32), |(sum, count), power_supply| {
+              if let Some(cycles) = power_supply.cycle_count {
+                (sum + cycles, count + 1)
+              } else {
+                (sum, count)
+              }
+            });
+
+        self.battery_cycles = if cycle_count > 0 {
+          Some(cycle_sum as f64 / cycle_count as f64)
+        } else {
+          None
+        };
+
+        // Calculate average health across all batteries
+        let (health_sum, health_count) =
+          batteries
+            .iter()
+            .fold((0.0, 0u32), |(sum, count), power_supply| {
+              if let Some(health) = power_supply.health {
+                (sum + health, count + 1)
+              } else {
+                (sum, count)
+              }
+            });
+
+        self.battery_health = if health_count > 0 {
+          Some(health_sum / health_count as f64)
+        } else {
+          None
+        };
+      } else {
+        self.battery_cycles = None;
+        self.battery_health = None;
+      }
+    } else {
+      self.battery_cycles = None;
+      self.battery_health = None;
     }
 
     Ok(())
@@ -461,6 +530,105 @@ impl System {
     Ok(())
   }
 
+  // Scan and identify the current lid state.
+  // XXX: Most "uniform" APIs for identifying this data rely on some abstraction
+  // library that *might or might not be installed*. The verbose fallback is,
+  // unfortunately, necessary as there is no guarantee that we can use those
+  // APIs.
+  fn scan_lid_state(&mut self) -> anyhow::Result<()> {
+    log::trace!("scanning lid state");
+
+    // Try ACPI button interface first
+    let acpi_lid_paths = [
+      "/proc/acpi/button/lid/LID/state", // most likely to exist
+      "/proc/acpi/button/lid/LID0/state",
+      "/proc/acpi/button/lid/LID1/state",
+    ];
+
+    for path in acpi_lid_paths {
+      if let Some(content) =
+        fs::read(path).context("failed to read lid state from ACPI")?
+      {
+        // Content is typically "state:      open" or "state:      closed"
+        self.lid_closed = content.contains("closed");
+        log::debug!("lid state from {path}: {content}");
+        return Ok(());
+      }
+    }
+
+    // Try sysfs input device interface as fallback
+    const INPUT_PATH: &str = "/sys/class/input";
+
+    if let Some(input_entries) =
+      fs::read_dir(INPUT_PATH).context("failed to read input device entries")?
+    {
+      for entry in input_entries {
+        let entry = match entry {
+          Ok(entry) => entry,
+          Err(error) => {
+            log::debug!("failed to read input device entry: {error}");
+            continue;
+          },
+        };
+
+        let entry_path = entry.path();
+        let device_name_path = entry_path.join("device/name");
+
+        let Some(name) = fs::read(&device_name_path).with_context(|| {
+          format!(
+            "failed to read input device name from '{path}'",
+            path = device_name_path.display(),
+          )
+        })?
+        else {
+          continue;
+        };
+
+        // Look for lid switch input device
+        if name.trim() == "Lid Switch" {
+          // Read the lid switch state from the SW_LID capability
+          let state_path = entry_path.join("device/capabilities/sw");
+
+          let Some(sw_caps) = fs::read(&state_path).with_context(|| {
+            format!(
+              "failed to read switch capabilities from '{path}'",
+              path = state_path.display(),
+            )
+          })?
+          else {
+            log::debug!(
+              "found lid switch at {path} but no switch capabilities file",
+              path = entry_path.display()
+            );
+            continue;
+          };
+
+          // SW_LID is bit 0 in the capabilities bitmask
+          // The state file shows the current state of switches as a hex bitmask
+          // If bit 0 is set, the lid is closed
+          if let Ok(caps) = u64::from_str_radix(sw_caps.trim(), 16) {
+            self.lid_closed = (caps & 0x1) != 0;
+            log::debug!(
+              "lid state from input device {path}: {state}",
+              path = entry_path.display(),
+              state = if self.lid_closed { "closed" } else { "open" }
+            );
+            return Ok(());
+          }
+        }
+      }
+    }
+
+    // If we reach here, this is likely a desktop or the lid state is not
+    // available Default to lid open (false)
+    log::debug!(
+      "no lid switch found, assuming desktop or lid state unavailable"
+    );
+    self.lid_closed = false;
+
+    Ok(())
+  }
+
   fn is_desktop(&mut self) -> anyhow::Result<bool> {
     log::debug!("checking chassis type to determine if system is a desktop");
     if let Some(chassis_type) = fs::read("/sys/class/dmi/id/chassis_type")
@@ -512,7 +680,7 @@ impl System {
 
     if !power_saving_exists {
       log::debug!("power saving paths do not exist, short circuting true");
-      return Ok(true); // Likely a desktop.
+      return Ok(true); // likely a desktop.
     }
 
     // Default to assuming desktop if we can't determine.
@@ -806,15 +974,22 @@ pub fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
         .flatten()
         .map(|u64| u64 as f64),
 
+      cpu_core_count: system.cpus.len() as u32,
+
       load_average_1m:  system.load_average_1min,
       load_average_5m:  system.load_average_5min,
       load_average_15m: system.load_average_15min,
+
+      lid_closed: system.lid_closed,
 
       power_supply_charge:         system
         .power_supply_log
         .back()
         .map(|log| log.charge),
       power_supply_discharge_rate: system.power_supply_discharge_rate(),
+
+      battery_cycles: system.battery_cycles,
+      battery_health: system.battery_health,
 
       discharging: system.is_discharging(),
 
