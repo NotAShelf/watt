@@ -470,8 +470,8 @@ pub enum Expression {
   #[serde(with = "expression::cpu_core_count")]
   CpuCoreCount,
 
-  #[serde(rename = "load-average-since")]
   LoadAverageSince {
+    #[serde(rename = "load-average-since")]
     duration: String,
   },
 
