@@ -35,16 +35,6 @@ fn is_default<T: Default + PartialEq>(value: &T) -> bool {
   *value == T::default()
 }
 
-fn find_battery<'a>(
-  power_supplies: &'a HashSet<Arc<power_supply::PowerSupply>>,
-  name: &str,
-) -> Option<&'a power_supply::PowerSupply> {
-  power_supplies
-    .iter()
-    .find(|ps| ps.name == name && ps.type_ == "Battery")
-    .map(|arc| arc.as_ref())
-}
-
 #[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
 pub struct CpusDelta {
@@ -736,6 +726,16 @@ impl Expression {
       };
     }
 
+    fn find_battery<'a>(
+      power_supplies: &'a HashSet<Arc<power_supply::PowerSupply>>,
+      name: &str,
+    ) -> Option<&'a power_supply::PowerSupply> {
+      power_supplies
+        .iter()
+        .find(|ps| ps.name == name && ps.type_ == "Battery")
+        .map(|arc| arc.as_ref())
+    }
+
     Ok(Some(match self {
       IsGovernorAvailable { value } => {
         let value = eval!(value);
@@ -810,7 +810,7 @@ impl Expression {
       IsBatteryAvailable { value } => {
         let value = eval!(value).try_into_string()?;
 
-        Boolean(find_battery(&state.power_supplies, &value).is_some())
+        Boolean(find_battery(state.power_supplies, &value).is_some())
       },
       FrequencyAvailable => Boolean(state.frequency_available),
       TurboAvailable => Boolean(state.turbo_available),
@@ -902,12 +902,12 @@ impl Expression {
       BatteryHealth => Number(try_ok!(state.battery_health)),
 
       BatteryCyclesFor { name } => {
-        let battery = find_battery(&state.power_supplies, name);
+        let battery = find_battery(state.power_supplies, name);
         Number(try_ok!(battery.and_then(|ps| ps.cycles).map(|c| c as f64)))
       },
 
       BatteryHealthFor { name } => {
-        let battery = find_battery(&state.power_supplies, name);
+        let battery = find_battery(state.power_supplies, name);
         Number(try_ok!(battery.and_then(|ps| ps.health)))
       },
 
