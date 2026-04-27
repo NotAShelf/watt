@@ -559,12 +559,9 @@ impl System {
       fs::read_dir(INPUT_PATH).context("failed to read input device entries")?
     {
       for entry in input_entries {
-        let entry = match entry {
-          Ok(entry) => entry,
-          Err(error) => {
-            log::debug!("failed to read input device entry: {error}");
-            continue;
-          },
+        let Ok(entry) = entry else {
+          log::debug!("failed to read input device entry");
+          continue;
         };
 
         let entry_path = entry.path();
@@ -581,36 +578,38 @@ impl System {
         };
 
         // Look for lid switch input device
-        if name.trim() == "Lid Switch" {
-          // Read the lid switch state from the SW_LID capability
-          let state_path = entry_path.join("device/capabilities/sw");
+        let "Lid Switch" = name.trim() else {
+          continue;
+        };
 
-          let Some(sw_caps) = fs::read(&state_path).with_context(|| {
-            format!(
-              "failed to read switch capabilities from '{path}'",
-              path = state_path.display(),
-            )
-          })?
-          else {
-            log::debug!(
-              "found lid switch at {path} but no switch capabilities file",
-              path = entry_path.display()
-            );
-            continue;
-          };
+        // Read the lid switch state from the SW_LID capability
+        let state_path = entry_path.join("device/capabilities/sw");
 
-          // SW_LID is bit 0 in the capabilities bitmask
-          // The state file shows the current state of switches as a hex bitmask
-          // If bit 0 is set, the lid is closed
-          if let Ok(caps) = u64::from_str_radix(sw_caps.trim(), 16) {
-            self.lid_closed = (caps & 0x1) != 0;
-            log::debug!(
-              "lid state from input device {path}: {state}",
-              path = entry_path.display(),
-              state = if self.lid_closed { "closed" } else { "open" }
-            );
-            return Ok(());
-          }
+        let Some(sw_caps) = fs::read(&state_path).with_context(|| {
+          format!(
+            "failed to read switch capabilities from '{path}'",
+            path = state_path.display(),
+          )
+        })?
+        else {
+          log::debug!(
+            "found lid switch at {path} but no switch capabilities file",
+            path = entry_path.display()
+          );
+          continue;
+        };
+
+        // SW_LID is bit 0 in the capabilities bitmask
+        // The state file shows the current state of switches as a hex bitmask
+        // If bit 0 is set, the lid is closed
+        if let Ok(caps) = u64::from_str_radix(sw_caps.trim(), 16) {
+          self.lid_closed = (caps & 0x1) != 0;
+          log::debug!(
+            "lid state from input device {path}: {state}",
+            path = entry_path.display(),
+            state = if self.lid_closed { "closed" } else { "open" }
+          );
+          return Ok(());
         }
       }
     }
