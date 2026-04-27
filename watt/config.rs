@@ -451,7 +451,7 @@ pub enum Expression {
 
   CpuUsageSince {
     #[serde(rename = "cpu-usage-since")]
-    duration: String,
+    duration: Box<Expression>,
   },
 
   #[serde(with = "expression::cpu_temperature")]
@@ -477,7 +477,7 @@ pub enum Expression {
 
   LoadAverageSince {
     #[serde(rename = "load-average-since")]
-    duration: String,
+    duration: Box<Expression>,
   },
 
   #[serde(with = "expression::lid_closed")]
@@ -823,7 +823,8 @@ impl Expression {
         )
       },
       CpuUsageSince { duration } => {
-        let duration = humantime::parse_duration(duration)
+        let duration = eval!(duration).try_into_string()?;
+        let duration = humantime::parse_duration(&duration)
           .with_context(|| format!("failed to parse duration '{duration}'"))?;
         let recent_logs: Vec<&system::CpuLog> = state
           .cpu_log
@@ -865,7 +866,8 @@ impl Expression {
       CpuCoreCount => Number(state.cpus.len() as f64),
 
       LoadAverageSince { duration } => {
-        let duration = humantime::parse_duration(duration)
+        let duration = eval!(duration).try_into_string()?;
+        let duration = humantime::parse_duration(&duration)
           .with_context(|| format!("failed to parse duration '{duration}'"))?;
         let recent_logs: Vec<&system::CpuLog> = state
           .cpu_log
