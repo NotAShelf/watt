@@ -60,6 +60,9 @@ pub struct PowerSupply {
   pub charge_state:   Option<String>,
   pub charge_percent: Option<f64>,
 
+  pub cycles: Option<u64>,
+  pub health: Option<f64>,
+
   pub charge_threshold_start: f64,
   pub charge_threshold_end:   f64,
 
@@ -154,6 +157,9 @@ impl PowerSupply {
 
         charge_state: None,
         charge_percent: None,
+
+        cycles: None,
+        health: None,
 
         charge_threshold_start: 0.0,
         charge_threshold_end: 1.0,
@@ -250,6 +256,35 @@ impl PowerSupply {
       self.charge_percent = fs::read_n::<u64>(self.path.join("capacity"))
         .with_context(|| format!("failed to read {self} charge percent"))?
         .map(|percent| percent as f64 / 100.0);
+
+      self.cycles = fs::read_n::<u64>(self.path.join("cycle_count"))
+        .with_context(|| format!("failed to read {self} cycle count"))?;
+
+      // Battery health as a percentage (0-100)
+      // Some systems report this as capacity_level or health
+      self.health = if let Some(health) =
+        fs::read_n::<u64>(self.path.join("health"))
+          .with_context(|| format!("failed to read {self} health"))?
+      {
+        Some(health as f64 / 100.0)
+      } else {
+        // Try to calculate health from energy_full vs energy_full_design
+        let energy_full = fs::read_n::<u64>(self.path.join("energy_full"))
+          .with_context(|| format!("failed to read {self} energy_full"))?;
+
+        let energy_full_design =
+          fs::read_n::<u64>(self.path.join("energy_full_design"))
+            .with_context(|| {
+              format!("failed to read {self} energy_full_design")
+            })?;
+
+        match (energy_full, energy_full_design) {
+          (Some(full), Some(design)) if design > 0 => {
+            Some(full as f64 / design as f64)
+          },
+          _ => None,
+        }
+      };
 
       self.charge_threshold_start =
         fs::read_n::<u64>(self.path.join("charge_control_start_threshold"))
