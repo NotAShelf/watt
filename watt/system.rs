@@ -237,11 +237,7 @@ impl System {
     }
 
     // Aggregate battery cycle count and health
-    let batteries: Vec<_> = self
-      .power_supplies
-      .iter()
-      .filter(|ps| ps.type_ == "Battery" && !ps.is_from_peripheral)
-      .collect();
+    let batteries = config::find_batteries(&self.power_supplies);
 
     if self.power_supplies.is_empty() || batteries.is_empty() {
       self.battery_cycles = None;

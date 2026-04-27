@@ -35,6 +35,33 @@ fn is_default<T: Default + PartialEq>(value: &T) -> bool {
   *value == T::default()
 }
 
+/// Find a power supply entry by name, excluding peripheral batteries.
+fn find_battery<'a>(
+  power_supplies: &'a HashSet<Arc<power_supply::PowerSupply>>,
+  name: &str,
+) -> Option<&'a power_supply::PowerSupply> {
+  power_supplies
+    .iter()
+    .find(|ps| {
+      ps.name == name && ps.type_ == "Battery" && !ps.is_from_peripheral
+    })
+    .map(|arc| arc.as_ref())
+}
+
+/// Find all non-peripheral battery power supplies.
+pub fn find_batteries(
+  power_supplies: &HashSet<Arc<power_supply::PowerSupply>>,
+) -> Vec<&power_supply::PowerSupply> {
+  // XXX: this repetition could be avoided if we extract the filter into
+  // something like is_battery() also at the module level but I don't think
+  // it's actually worth creating a function for.
+  power_supplies
+    .iter()
+    .filter(|ps| ps.type_ == "Battery" && !ps.is_from_peripheral)
+    .map(|arc| arc.as_ref())
+    .collect()
+}
+
 #[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
 pub struct CpusDelta {
@@ -724,16 +751,6 @@ impl Expression {
       ($expression:expr) => {
         try_ok!($expression.eval(state)?)
       };
-    }
-
-    fn find_battery<'a>(
-      power_supplies: &'a HashSet<Arc<power_supply::PowerSupply>>,
-      name: &str,
-    ) -> Option<&'a power_supply::PowerSupply> {
-      power_supplies
-        .iter()
-        .find(|ps| ps.name == name && ps.type_ == "Battery")
-        .map(|arc| arc.as_ref())
     }
 
     Ok(Some(match self {
