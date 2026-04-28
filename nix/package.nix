@@ -19,8 +19,10 @@ rustPlatform.buildRustPackage (finalAttrs: {
     ];
   };
 
+  cargoBuildFlags = ["-p watt" "-p xtask"];
   cargoLock.lockFile = "${finalAttrs.src}/Cargo.lock";
   enableParallelBuilding = true;
+  useNextest = true;
 
   # xtask doesn't support passing --target
   # but nix hooks expect the folder structure from when it's set
