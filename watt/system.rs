@@ -39,8 +39,8 @@ pub struct CpuLog {
   /// CPU usage between 0-1, a percentage.
   pub usage: f64,
 
-  /// CPU temperature in celsius.
-  pub temperature: f64,
+  /// CPU temperature in celsius, if available.
+  pub temperature: Option<f64>,
 
   /// Load average.
   pub load_average: f64,
@@ -50,7 +50,7 @@ pub struct CpuLog {
 struct CpuVolatility {
   usage: f64,
 
-  temperature: f64,
+  temperature: Option<f64>,
 }
 
 #[derive(Debug)]
@@ -201,8 +201,10 @@ impl System {
       usage: self.cpus.iter().map(|cpu| cpu.current_usage()).sum::<f64>()
         / self.cpus.len() as f64,
 
-      temperature: self.cpu_temperatures.values().sum::<f64>()
-        / self.cpu_temperatures.len() as f64,
+      temperature: (!self.cpu_temperatures.is_empty()).then(|| {
+        self.cpu_temperatures.values().sum::<f64>()
+          / self.cpu_temperatures.len() as f64
+      }),
 
       load_average: self.load_average_1min,
     };
@@ -460,16 +462,14 @@ impl System {
          {number}"
       );
 
-      let Ok(number) = number.parse::<u32>() else {
+      let key = number
+        .parse::<u32>()
+        .ok()
+        .or_else(|| number.is_empty().then_some(0));
+      let Some(key) = key else {
         log::debug!("stripped content not a valid number, skipping");
         continue;
       };
-      log::debug!(
-        "stripped content is a valid number, taking it as the core number"
-      );
-      log::debug!(
-        "it is fine if this number doesn't seem accurate due to CPU binning, see a more detailed explanation at: https://rgbcu.be/blog/why-cores"
-      );
 
       let Some(temperature_mc) =
         fs::read_n::<i64>(&input_path).with_context(|| {
@@ -486,7 +486,7 @@ impl System {
         celsius = temperature_mc as f64 / 1000.0,
       );
 
-      temperatures.insert(number, temperature_mc as f64 / 1000.0);
+      temperatures.insert(key, temperature_mc as f64 / 1000.0);
     }
 
     Ok(())
@@ -705,20 +705,26 @@ impl System {
 
     let mut usage_change_sum = 0.0;
     let mut temperature_change_sum = 0.0;
+    let mut temperature_change_count = 0;
 
     for index in 0..change_count {
       let usage_change =
         self.cpu_log[index + 1].usage - self.cpu_log[index].usage;
       usage_change_sum += usage_change.abs();
 
-      let temperature_change =
-        self.cpu_log[index + 1].temperature - self.cpu_log[index].temperature;
-      temperature_change_sum += temperature_change.abs();
+      if let (Some(t1), Some(t2)) = (
+        self.cpu_log[index].temperature,
+        self.cpu_log[index + 1].temperature,
+      ) {
+        temperature_change_sum += (t2 - t1).abs();
+        temperature_change_count += 1;
+      }
     }
 
     Some(CpuVolatility {
       usage:       usage_change_sum / change_count as f64,
-      temperature: temperature_change_sum / change_count as f64,
+      temperature: (temperature_change_count > 0)
+        .then(|| temperature_change_sum / temperature_change_count as f64),
     })
   }
 
@@ -896,7 +902,8 @@ pub fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
       }
 
       if let Some(volatility) = system.cpu_volatility()
-        && (volatility.usage > 0.1 || volatility.temperature > 0.02)
+        && (volatility.usage > 0.1
+          || volatility.temperature.is_some_and(|t| t > 0.02))
       {
         delay = (delay / 2).max(Duration::from_secs(1));
       }
@@ -949,10 +956,10 @@ pub fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
       cpu_temperature:            system
         .cpu_log
         .back()
-        .map(|log| log.temperature),
+        .and_then(|log| log.temperature),
       cpu_temperature_volatility: system
         .cpu_volatility()
-        .map(|vol| vol.temperature),
+        .and_then(|vol| vol.temperature),
       cpu_idle_seconds:           last_user_activity.elapsed().as_secs_f64(),
       cpu_frequency_maximum:      cpu::Cpu::hardware_frequency_mhz_maximum()
         .context("failed to read CPU hardware maximum frequency")?
