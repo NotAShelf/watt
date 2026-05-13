@@ -17,7 +17,7 @@ jobs:
     steps:
       - name: Create Release
         id: create_release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           draft: false
           prerelease: false
@@ -74,7 +74,7 @@ jobs:
           cp target/${{ matrix.target }}/release/watt ${{ matrix.name }}
 
       - name: Upload Release Asset
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: ${{ matrix.name }}
 
@@ -96,7 +96,7 @@ jobs:
           sha256sum watt-* > SHA256SUMS
 
       - name: Upload Checksums
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           files: SHA256SUMS
