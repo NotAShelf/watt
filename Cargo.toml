@@ -29,3 +29,8 @@ num_cpus              = "1.17.0"
 serde                 = { features = [ "derive" ], version = "1.0.228" }
 toml                  = "1.1.2"
 yansi                 = { features = [ "detect-env", "detect-tty" ], version = "1.0.1" }
+
+[profile.release]
+strip =         true
+lto =           true
+codegen-units = 1
