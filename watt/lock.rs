@@ -18,9 +18,14 @@ use std::{
   },
 };
 
-#[cfg(unix)] use nix::fcntl::{
-  Flock,
-  FlockArg,
+#[cfg(unix)]
+use nix::{
+  fcntl::{
+    Flock,
+    FlockArg,
+  },
+  sys::signal::kill,
+  unistd::Pid,
 };
 
 #[cfg(not(unix))]
@@ -54,7 +59,10 @@ impl fmt::Display for LockFileError {
 impl Error for LockFileError {}
 
 fn pid_is_alive(pid: u32) -> bool {
-  fs::metadata(format!("/proc/{pid}")).is_ok()
+  !matches!(
+    kill(Pid::from_raw(pid as i32), None),
+    Err(nix::errno::Errno::ESRCH)
+  )
 }
 
 fn read_lock_pid(path: &Path) -> Option<u32> {
@@ -178,6 +186,17 @@ impl LockFile {
     write!(lock, "{}", std::process::id()).map_err(|error| {
       log::error!(
         "failed to write PID to lock file at {path}: {error}",
+        path = lock_path.display(),
+      );
+      LockFileError {
+        path:    lock_path.to_owned(),
+        message: Some(error.to_string()),
+      }
+    })?;
+
+    lock.flush().map_err(|error| {
+      log::error!(
+        "failed to flush lock file at {path}: {error}",
         path = lock_path.display(),
       );
       LockFileError {
