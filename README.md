@@ -121,7 +121,8 @@ cpu.energy-performance-preference = "power"
 cpu.turbo = false
 ```
 
-You can apply settings to specific CPU cores using the `cpu.for` option:
+You can apply settings to specific CPU cores by listing their IDs with
+`cpu.for`:
 
 ```toml
 [[rule]]
@@ -131,16 +132,17 @@ cpu.governor = "performance"
 
 ### Power Management
 
-Power settings are also specified in the configuration file:
+Power settings are also specified in the configuration file. Use `power.for` to
+target specific power supply names:
 
 ```toml
 [[rule]]
 if = "?discharging"
 priority = 10
 
-# Set battery charging thresholds (as percentages, 0.0-1.0)
-power.charge-threshold-start = 0.4
-power.charge-threshold-end = 0.8
+# Set battery charging thresholds (as percentages, 0-100)
+power.charge-threshold-start = 40
+power.charge-threshold-end = 80
 
 # Set ACPI platform profile
 power.platform-profile = "low-power"
@@ -150,8 +152,7 @@ power.for = ["BAT0"]
 ```
 
 Battery charging thresholds help extend battery longevity by preventing constant
-charging to 100%. Different laptop vendors implement this feature differently,
-but Watt attempts to support multiple vendor implementations including:
+charging to 100%. Watt supports multiple threshold implementations including:
 
 - Lenovo ThinkPad/IdeaPad
 - ASUS laptops
@@ -234,13 +235,20 @@ ones with lower priority.
 
 ### Configuration Locations
 
-Configuration locations (in order of precedence):
+Configuration sources, in order of precedence:
 
 - Custom path via `--config` flag.
 - Custom path via `WATT_CONFIG` environment variable (if no flag is specified).
 - Built-in default configuration (if no custom path is specified).
 
-If no configuration file is found, Watt uses a built-in default configuration.
+<!--markdownlint-disable MD059 -->
+
+[watt crate]: ./watt/config.toml
+
+If no custom config path is provided, Watt uses a built-in default
+configuration. You can find the default configuration in the [watt crate].
+
+<!--markdownlint-enable MD059 -->
 
 ### Rule-Based Configuration
 
@@ -537,8 +545,8 @@ Available power management options:
   power.platform-profile = { if.is-platform-profile-available = "low-power", then = "low-power" }
   ```
 
-- `charge-threshold-start` - Battery charge level to start charging (0.0-1.0)
-- `charge-threshold-end` - Battery charge level to stop charging (0.0-1.0)
+- `charge-threshold-start` - Battery charge level to start charging (0-100)
+- `charge-threshold-end` - Battery charge level to stop charging (0-100)
 - `for` - Apply settings to specific power supplies (list of supply names):
 
   ```toml
@@ -583,14 +591,14 @@ requests, or code contributions, please feel free to contribute.
 
 ### Setup
 
-You will need Cargo and Rust installed on your system. Rust 1.85 or later is
-required.
-
-A `.envrc` is provided, and it's usage is encouraged for Nix users.
-Alternatively, you may use Nix for a reproducible developer environment
+You will need Cargo and Rust installed on your system. Rust 1.88 or later is
+required. For [direnv](https://direnv.net) users, a `.envrc` is provided, and
+it's usage is encouraged. Especially if you are a Nix user. Alternatively, you
+may use Nix directly for a reproducible developer environment
 
 ```sh
-nix develop
+# Enter a dev shell with necessary dependencies.
+$ nix develop
 ```
 
 Non-Nix users may get the appropriate Cargo and Rust versions from their package
@@ -600,7 +608,7 @@ manager, or using something like Rustup.
 
 Please make sure to run _at least_ `cargo fmt` (and `taplo format` if you have
 modified any TOML) inside the repository to make sure all of your code is
-properly formatted. For Nix code, please use Alejandra.
+properly formatted. For Nix code, use Alejandra.
 
 Clippy lints are not _required_ as of now, but a good rule of thumb to run them
 before committing to catch possible code smell early.
