@@ -6,6 +6,7 @@ use std::{
     File,
     OpenOptions,
   },
+  io::Write as _,
   ops,
   os::unix::fs::{
     DirBuilderExt,
@@ -51,6 +52,40 @@ impl fmt::Display for LockFileError {
 }
 
 impl Error for LockFileError {}
+
+fn pid_is_alive(pid: u32) -> bool {
+  fs::metadata(format!("/proc/{pid}")).is_ok()
+}
+
+fn read_lock_pid(path: &Path) -> Option<u32> {
+  fs::read_to_string(path)
+    .ok()
+    .and_then(|s| s.trim().parse().ok())
+}
+
+fn lock_contention_message(lock_path: &Path) -> String {
+  let holder = read_lock_pid(lock_path);
+  let stale = holder.is_some_and(|pid| !pid_is_alive(pid));
+
+  if stale {
+    log::error!(
+      "stale lock file at {path} (previous holder is dead)",
+      path = lock_path.display(),
+    );
+    "stale lock file, previous holder no longer running".to_string()
+  } else {
+    log::error!(
+      "another watt instance is already running (lock held on \
+       {path}{pid_info})",
+      path = lock_path.display(),
+      pid_info = holder.map_or(String::new(), |p| format!(", pid {p}")),
+    );
+    holder.map_or_else(
+      || "another instance is running".to_string(),
+      |p| format!("another instance is running (pid {p})"),
+    )
+  }
+}
 
 impl ops::Deref for LockFile {
   type Target = File;
@@ -113,14 +148,10 @@ impl LockFile {
         }
       })?;
 
-    let lock = Flock::lock(file, FlockArg::LockExclusiveNonblock).map_err(
+    let mut lock = Flock::lock(file, FlockArg::LockExclusiveNonblock).map_err(
       |(_, error)| {
         let message = if error == nix::errno::Errno::EWOULDBLOCK {
-          log::error!(
-            "another watt instance is already running (lock held on {path})",
-            path = lock_path.display(),
-          );
-          Some("another instance is running".to_string())
+          Some(lock_contention_message(lock_path))
         } else {
           log::error!("failed to acquire lock: {error}");
           Some(error.to_string())
@@ -132,6 +163,28 @@ impl LockFile {
         }
       },
     )?;
+
+    lock.set_len(0).map_err(|error| {
+      log::error!(
+        "failed to truncate lock file at {path}: {error}",
+        path = lock_path.display(),
+      );
+      LockFileError {
+        path:    lock_path.to_owned(),
+        message: Some(error.to_string()),
+      }
+    })?;
+
+    write!(lock, "{}", std::process::id()).map_err(|error| {
+      log::error!(
+        "failed to write PID to lock file at {path}: {error}",
+        path = lock_path.display(),
+      );
+      LockFileError {
+        path:    lock_path.to_owned(),
+        message: Some(error.to_string()),
+      }
+    })?;
 
     Ok(LockFile {
       lock,
