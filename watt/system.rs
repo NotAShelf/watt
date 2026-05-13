@@ -850,13 +850,16 @@ pub fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
 
   let mut system = System::default();
   let mut last_polling_delay = None::<Duration>;
-  // TODO: Set this somewhere.
-  let last_user_activity = Instant::now();
+  let mut last_user_activity = Instant::now();
 
   while !cancelled.load(Ordering::SeqCst) {
     log::debug!("starting main polling loop iteration");
 
     system.scan()?;
+
+    if !system.is_cpu_idle() {
+      last_user_activity = Instant::now();
+    }
 
     let delay = {
       let mut delay = Duration::from_secs(5);
