@@ -1,3 +1,4 @@
+#[cfg(feature = "metrics")] use std::net::IpAddr;
 use std::{
   collections::{
     HashMap,
@@ -1120,8 +1121,40 @@ impl Default for Rule {
 #[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct DaemonConfig {
+  #[cfg(feature = "metrics")]
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub metrics: Option<MetricsConfig>,
+
+  #[cfg(not(feature = "metrics"))]
+  #[serde(
+    default,
+    skip_serializing,
+    deserialize_with = "deserialize_metrics_disabled"
+  )]
+  metrics: (),
+
   #[serde(rename = "rule")]
   pub rules: Vec<Rule>,
+}
+
+#[cfg(feature = "metrics")]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct MetricsConfig {
+  pub listen_addr: IpAddr,
+  pub port:        u16,
+}
+
+#[cfg(not(feature = "metrics"))]
+fn deserialize_metrics_disabled<'de, D>(
+  _deserializer: D,
+) -> Result<(), D::Error>
+where
+  D: serde::Deserializer<'de>,
+{
+  Err(serde::de::Error::custom(
+    "metrics config requires building watt with --features metrics",
+  ))
 }
 
 impl DaemonConfig {
