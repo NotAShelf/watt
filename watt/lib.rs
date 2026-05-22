@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::Context as _;
 use clap::Parser as _;
+use tokio::runtime::Builder as RuntimeBuilder;
 
 pub mod cpu;
 pub mod power_supply;
@@ -12,6 +13,9 @@ pub mod fs;
 pub mod config;
 
 pub mod lock;
+
+pub mod dbus;
+pub mod profile;
 
 #[derive(clap::Parser, Debug)]
 #[command(version, about)]
@@ -43,5 +47,10 @@ pub fn main() -> anyhow::Result<()> {
   let lock_path = PathBuf::from("/run/watt/lock");
   let _lock = lock::LockFile::acquire(&lock_path)?;
 
-  system::run_daemon(config)
+  let runtime = RuntimeBuilder::new_multi_thread()
+    .enable_all()
+    .build()
+    .context("failed to build tokio runtime")?;
+
+  runtime.block_on(system::run_daemon(config))
 }
