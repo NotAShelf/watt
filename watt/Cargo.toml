@@ -17,7 +17,6 @@ path = "main.rs"
 anyhow.workspace              = true
 clap.workspace                = true
 clap-verbosity-flag.workspace = true
-ctrlc.workspace               = true
 env_logger.workspace          = true
 humantime.workspace           = true
 jiff.workspace                = true
@@ -27,6 +26,8 @@ num_cpus.workspace            = true
 serde.workspace               = true
 toml.workspace                = true
 yansi.workspace               = true
+zbus.workspace                = true
+tokio.workspace               = true
 
 [dev-dependencies]
 proptest = "1.9.0"
