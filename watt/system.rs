@@ -977,6 +977,11 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
 
   let state = Arc::new(RwLock::new(DaemonState::new(config.rules.len())));
 
+  #[cfg(feature = "metrics")]
+  if let Some(metrics_config) = &config.metrics {
+    crate::metrics::start(metrics_config, Arc::clone(&state))?;
+  }
+
   tokio::spawn({
     let state = Arc::clone(&state);
     async move {

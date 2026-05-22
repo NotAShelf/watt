@@ -15,6 +15,7 @@ pub mod config;
 pub mod lock;
 
 pub mod dbus;
+#[cfg(feature = "metrics")] pub mod metrics;
 pub mod profile;
 
 #[derive(clap::Parser, Debug)]
