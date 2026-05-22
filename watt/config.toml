@@ -1,5 +1,11 @@
 # Watt Default Configuration
 
+# Metrics are available only when watt is built with `--features metrics`.
+# Uncomment this section to expose Prometheus metrics.
+# [metrics]
+# listen-addr = "[::]"
+# port        = 9790
+
 # Rules are evaluated by priority (higher number => higher priority).
 # Each rule can specify conditions and actions for CPU and power management.
 
