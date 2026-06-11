@@ -986,6 +986,7 @@ mod expression {
   named!(cpu_core_count => "%cpu-core-count");
 
   named!(lid_closed => "?lid-closed");
+  named!(virtual_machine => "?virtual-machine");
 
   named!(hour_of_day => "$hour-of-day");
 
@@ -1017,6 +1018,10 @@ pub enum Expression {
   },
   IsPlatformProfileAvailable {
     #[serde(rename = "is-platform-profile-available")]
+    value: Box<Expression>,
+  },
+  IsChassisType {
+    #[serde(rename = "is-chassis-type")]
     value: Box<Expression>,
   },
 
@@ -1092,6 +1097,9 @@ pub enum Expression {
 
   #[serde(with = "expression::lid_closed")]
   LidClosed,
+
+  #[serde(with = "expression::virtual_machine")]
+  VirtualMachine,
 
   #[serde(with = "expression::hour_of_day")]
   HourOfDay,
@@ -1282,7 +1290,9 @@ pub struct EvalState<'peripherals, 'context> {
   pub cpu_frequency_maximum:      Option<f64>,
   pub cpu_frequency_minimum:      Option<f64>,
 
-  pub lid_closed: bool,
+  pub lid_closed:      bool,
+  pub virtual_machine: bool,
+  pub chassis_type:    Option<&'peripherals str>,
 
   pub power_supply_charge:         Option<f64>,
   pub power_supply_discharge_rate: Option<f64>,
@@ -1451,6 +1461,11 @@ impl Expression {
 
         Boolean(available)
       },
+      IsChassisType { value } => {
+        let value = eval!(value).try_into_string()?;
+
+        Boolean(state.chassis_type == Some(value.as_str()))
+      },
       FirstAvailableGovernor { values } => {
         let Some(values) =
           eval_string_list(values, state, "first-available-governor")?
@@ -1590,6 +1605,7 @@ impl Expression {
       },
 
       LidClosed => Boolean(state.lid_closed),
+      VirtualMachine => Boolean(state.virtual_machine),
 
       HourOfDay => {
         let ts = jiff::Timestamp::now()
@@ -1977,6 +1993,8 @@ mod tests {
         cpu_frequency_maximum: Some(base_freq as f64),
         cpu_frequency_minimum: Some(1000.0),
         lid_closed: false,
+        virtual_machine: false,
+        chassis_type: None,
         power_supply_charge: Some(0.8),
         power_supply_discharge_rate: Some(10.0),
         battery_cycles: Some(100.0),
@@ -2080,6 +2098,8 @@ mod tests {
       cpu_frequency_maximum:       Some(3333.0),
       cpu_frequency_minimum:       Some(1000.0),
       lid_closed:                  false,
+      virtual_machine:             false,
+      chassis_type:                None,
       power_supply_charge:         Some(0.8),
       power_supply_discharge_rate: Some(10.0),
       battery_cycles:              Some(100.0),
@@ -2171,6 +2191,8 @@ mod tests {
       cpu_frequency_maximum:       Some(3333.0),
       cpu_frequency_minimum:       Some(1000.0),
       lid_closed:                  false,
+      virtual_machine:             false,
+      chassis_type:                None,
       power_supply_charge:         None,
       power_supply_discharge_rate: None,
       battery_cycles:              None,
@@ -2249,6 +2271,8 @@ mod tests {
       cpu_frequency_maximum:       Some(3333.0),
       cpu_frequency_minimum:       Some(1000.0),
       lid_closed:                  false,
+      virtual_machine:             false,
+      chassis_type:                None,
       power_supply_charge:         None,
       power_supply_discharge_rate: None,
       battery_cycles:              None,
