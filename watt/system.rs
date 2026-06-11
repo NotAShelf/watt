@@ -28,6 +28,7 @@ use crate::{
   fs,
   power_supply,
   profile,
+  uncore,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -74,6 +75,9 @@ struct System {
   /// CPU usage and temperature log.
   cpu_log:          VecDeque<CpuLog>,
   cpu_temperatures: HashMap<u32, f64>,
+
+  /// All Intel uncore frequency devices.
+  uncores: HashSet<Arc<uncore::Uncore>>,
 
   /// All power supplies.
   power_supplies:   HashSet<Arc<power_supply::PowerSupply>>,
@@ -124,6 +128,19 @@ impl System {
         .collect();
       log::info!(
         "scanned all power supplies in {millis}ms",
+        millis = start.elapsed().as_millis(),
+      );
+    }
+
+    {
+      let start = Instant::now();
+      self.uncores = uncore::Uncore::all()
+        .context("failed to scan uncore devices")?
+        .into_iter()
+        .map(Arc::from)
+        .collect();
+      log::info!(
+        "scanned all uncore devices in {millis}ms",
         millis = start.elapsed().as_millis(),
       );
     }
@@ -1064,6 +1081,7 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
         context: config::EvalContext::WidestPossible,
 
         cpus: &system.cpus,
+        uncores: &system.uncores,
         power_supplies: &system.power_supplies,
         cpu_log: &system.cpu_log,
       };
@@ -1074,6 +1092,13 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
         .map(|cpu| (Arc::clone(cpu), cpu::Delta::default()))
         .collect();
       let mut cpu_global_delta = cpu::GlobalDelta::default();
+
+      let mut uncore_deltas: HashMap<Arc<uncore::Uncore>, uncore::Delta> =
+        system
+          .uncores
+          .iter()
+          .map(|uncore| (Arc::clone(uncore), uncore::Delta::default()))
+          .collect();
 
       let mut power_deltas: HashMap<
         Arc<power_supply::PowerSupply>,
@@ -1112,11 +1137,9 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
               rule.cpu.eval(&eval_state)?;
 
             for (cpu, delta) in cpu_deltas.iter_mut() {
-              let delta_lo = cpu_deltas_lo
-                .get(cpu)
-                .expect("cpu deltas and cpus should match");
-
-              *delta = mem::take(delta).or(delta_lo);
+              if let Some(delta_lo) = cpu_deltas_lo.get(cpu) {
+                *delta = mem::take(delta).or(delta_lo);
+              }
             }
 
             cpu_global_delta =
@@ -1127,15 +1150,21 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
           };
 
           let power_some = {
+            let uncore_deltas_lo = rule.uncore.eval(&eval_state)?;
+
+            for (uncore, delta) in uncore_deltas.iter_mut() {
+              if let Some(delta_lo) = uncore_deltas_lo.get(uncore) {
+                *delta = mem::take(delta).or(delta_lo);
+              }
+            }
+
             let (power_deltas_lo, power_platform_profile_lo) =
               rule.power.eval(&eval_state)?;
 
             for (power, delta) in power_deltas.iter_mut() {
-              let delta_lo = power_deltas_lo
-                .get(power)
-                .expect("power deltas and power supplies should match");
-
-              *delta = mem::take(delta).or(delta_lo);
+              if let Some(delta_lo) = power_deltas_lo.get(power) {
+                *delta = mem::take(delta).or(delta_lo);
+              }
             }
 
             power_platform_profile =
@@ -1143,7 +1172,9 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
 
             let deltas_some =
               power_deltas.values().all(|delta| delta.is_some());
-            deltas_some && power_platform_profile.is_some()
+            let uncore_some =
+              uncore_deltas.values().all(|delta| delta.is_some());
+            deltas_some && power_platform_profile.is_some() && uncore_some
           };
 
           if cpu_some && power_some {
@@ -1166,6 +1197,17 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
       cpu_global_delta
         .apply(cpu_deltas.keys().map(|arc| &**arc), &mut dma_latency)
         .context("failed to apply global CPU delta")?;
+
+      log::info!(
+        "applying uncore deltas to {len} devices",
+        len = uncore_deltas.len(),
+      );
+
+      for (uncore, delta) in uncore_deltas {
+        delta
+          .apply(&uncore)
+          .with_context(|| format!("failed to apply delta to {uncore}"))?;
+      }
 
       log::info!(
         "applying power supply deltas to {len} devices",
