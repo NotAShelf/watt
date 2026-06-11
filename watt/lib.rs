@@ -8,6 +8,7 @@ pub mod cpu;
 pub mod power_supply;
 pub mod system;
 pub mod uncore;
+pub mod vm;
 
 pub mod fs;
 
