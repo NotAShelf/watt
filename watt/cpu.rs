@@ -2,7 +2,9 @@ use std::{
   cell::OnceCell,
   collections::HashMap,
   fmt,
+  fs::OpenOptions,
   hash,
+  io::Write,
   mem,
   string::ToString,
   sync::Arc,
@@ -679,6 +681,57 @@ impl Cpu {
     Ok(())
   }
 
+  pub fn set_pm_qos_resume_latency_us(
+    &self,
+    latency: &str,
+  ) -> anyhow::Result<()> {
+    let Self { number, .. } = *self;
+
+    fs::write(
+      format!(
+        "/sys/devices/system/cpu/cpu{number}/power/pm_qos_resume_latency_us"
+      ),
+      latency,
+    )
+    .with_context(|| {
+      format!(
+        "this probably means that {self} doesn't exist or doesn't support \
+         changing PM QoS resume latency"
+      )
+    })?;
+
+    log::info!(
+      "CPU {number} PM QoS resume latency set to {latency} us",
+      number = self.number,
+    );
+
+    Ok(())
+  }
+
+  pub fn set_pstate_min_performance_percent(percent: u8) -> anyhow::Result<()> {
+    fs::write(
+      "/sys/devices/system/cpu/intel_pstate/min_perf_pct",
+      &percent.to_string(),
+    )
+    .context("failed to set Intel P-State minimum performance percent")?;
+
+    log::info!("Intel P-State minimum performance set to {percent}%");
+
+    Ok(())
+  }
+
+  pub fn set_pstate_max_performance_percent(percent: u8) -> anyhow::Result<()> {
+    fs::write(
+      "/sys/devices/system/cpu/intel_pstate/max_perf_pct",
+      &percent.to_string(),
+    )
+    .context("failed to set Intel P-State maximum performance percent")?;
+
+    log::info!("Intel P-State maximum performance set to {percent}%");
+
+    Ok(())
+  }
+
   pub fn set_turbo<'a>(
     on: bool,
     mut cpus: impl Iterator<Item = &'a Self>,
@@ -782,6 +835,7 @@ pub struct Delta {
   pub energy_perf_bias:              Option<String>,
   pub frequency_mhz_minimum:         Option<u64>,
   pub frequency_mhz_maximum:         Option<u64>,
+  pub pm_qos_resume_latency_us:      Option<String>,
 }
 
 impl Delta {
@@ -791,6 +845,7 @@ impl Delta {
       && self.energy_perf_bias.is_some()
       && self.frequency_mhz_minimum.is_some()
       && self.frequency_mhz_maximum.is_some()
+      && self.pm_qos_resume_latency_us.is_some()
   }
 
   pub fn or(self, that: &Self) -> Self {
@@ -810,6 +865,9 @@ impl Delta {
       frequency_mhz_maximum:         self
         .frequency_mhz_maximum
         .or(that.frequency_mhz_maximum),
+      pm_qos_resume_latency_us:      self
+        .pm_qos_resume_latency_us
+        .or_else(|| that.pm_qos_resume_latency_us.clone()),
     }
   }
 
@@ -832,6 +890,100 @@ impl Delta {
 
     if let Some(mhz_maximum) = self.frequency_mhz_maximum {
       cpu.set_frequency_mhz_maximum(mhz_maximum)?;
+    }
+
+    if let Some(latency) = &self.pm_qos_resume_latency_us {
+      cpu.set_pm_qos_resume_latency_us(latency)?;
+    }
+
+    Ok(())
+  }
+}
+
+#[derive(Default, Debug, Clone, PartialEq)]
+#[must_use]
+pub struct GlobalDelta {
+  pub turbo:                          Option<bool>,
+  pub pstate_min_performance_percent: Option<u8>,
+  pub pstate_max_performance_percent: Option<u8>,
+  pub dma_latency_us:                 Option<i32>,
+}
+
+impl GlobalDelta {
+  pub fn is_some(&self) -> bool {
+    self.turbo.is_some()
+      && self.pstate_min_performance_percent.is_some()
+      && self.pstate_max_performance_percent.is_some()
+      && self.dma_latency_us.is_some()
+  }
+
+  pub fn or(self, that: &Self) -> Self {
+    Self {
+      turbo:                          self.turbo.or(that.turbo),
+      pstate_min_performance_percent: self
+        .pstate_min_performance_percent
+        .or(that.pstate_min_performance_percent),
+      pstate_max_performance_percent: self
+        .pstate_max_performance_percent
+        .or(that.pstate_max_performance_percent),
+      dma_latency_us:                 self
+        .dma_latency_us
+        .or(that.dma_latency_us),
+    }
+  }
+
+  pub fn apply<'a>(
+    &self,
+    cpus: impl Iterator<Item = &'a Cpu>,
+    dma_latency: &mut DmaLatency,
+  ) -> anyhow::Result<()> {
+    if let Some(percent) = self.pstate_min_performance_percent {
+      Cpu::set_pstate_min_performance_percent(percent)?;
+    }
+
+    if let Some(percent) = self.pstate_max_performance_percent {
+      Cpu::set_pstate_max_performance_percent(percent)?;
+    }
+
+    if let Some(turbo) = self.turbo {
+      Cpu::set_turbo(turbo, cpus)?;
+    }
+
+    dma_latency.apply(self.dma_latency_us)?;
+
+    Ok(())
+  }
+}
+
+#[derive(Default, Debug)]
+pub struct DmaLatency {
+  current: Option<i32>,
+  file:    Option<std::fs::File>,
+}
+
+impl DmaLatency {
+  pub fn apply(&mut self, latency_us: Option<i32>) -> anyhow::Result<()> {
+    if self.current == latency_us {
+      return Ok(());
+    }
+
+    if let Some(latency_us) = latency_us {
+      let mut file = OpenOptions::new()
+        .write(true)
+        .open("/dev/cpu_dma_latency")
+        .context("failed to open /dev/cpu_dma_latency")?;
+
+      file
+        .write_all(&latency_us.to_ne_bytes())
+        .context("failed to write CPU DMA latency request")?;
+
+      self.file = Some(file);
+      self.current = Some(latency_us);
+      log::info!("CPU DMA latency request set to {latency_us} us");
+    } else {
+      self.file = None;
+      self.current = None;
+      log::info!("CPU DMA latency request released");
     }
 
     Ok(())
