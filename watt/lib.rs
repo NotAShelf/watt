@@ -4,10 +4,14 @@ use anyhow::Context as _;
 use clap::Parser as _;
 use tokio::runtime::Builder as RuntimeBuilder;
 
+pub mod audio;
 pub mod cpu;
+pub mod disk;
+pub mod gpu;
 pub mod power_supply;
 pub mod system;
 pub mod uncore;
+pub mod usb;
 pub mod vm;
 
 pub mod fs;
