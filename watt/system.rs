@@ -29,6 +29,7 @@ use crate::{
   power_supply,
   profile,
   uncore,
+  vm,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1099,6 +1100,7 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
           .iter()
           .map(|uncore| (Arc::clone(uncore), uncore::Delta::default()))
           .collect();
+      let mut vm_delta = vm::Delta::default();
 
       let mut power_deltas: HashMap<
         Arc<power_supply::PowerSupply>,
@@ -1151,12 +1153,14 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
 
           let power_some = {
             let uncore_deltas_lo = rule.uncore.eval(&eval_state)?;
+            let vm_delta_lo = rule.vm.eval(&eval_state)?;
 
             for (uncore, delta) in uncore_deltas.iter_mut() {
               if let Some(delta_lo) = uncore_deltas_lo.get(uncore) {
                 *delta = mem::take(delta).or(delta_lo);
               }
             }
+            vm_delta = mem::take(&mut vm_delta).or(&vm_delta_lo);
 
             let (power_deltas_lo, power_platform_profile_lo) =
               rule.power.eval(&eval_state)?;
@@ -1174,7 +1178,10 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
               power_deltas.values().all(|delta| delta.is_some());
             let uncore_some =
               uncore_deltas.values().all(|delta| delta.is_some());
-            deltas_some && power_platform_profile.is_some() && uncore_some
+            deltas_some
+              && power_platform_profile.is_some()
+              && uncore_some
+              && vm_delta.is_some()
           };
 
           if cpu_some && power_some {
@@ -1208,6 +1215,8 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
           .apply(&uncore)
           .with_context(|| format!("failed to apply delta to {uncore}"))?;
       }
+
+      vm_delta.apply().context("failed to apply VM delta")?;
 
       log::info!(
         "applying power supply deltas to {len} devices",
