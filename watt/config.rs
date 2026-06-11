@@ -23,6 +23,7 @@ use crate::{
   cpu,
   power_supply,
   system,
+  uncore,
 };
 
 type CpuDeltas = HashMap<Arc<cpu::Cpu>, cpu::Delta>;
@@ -31,6 +32,7 @@ type PowerSupplyDeltas =
   HashMap<Arc<power_supply::PowerSupply>, power_supply::Delta>;
 type PowerSupplyEvalResult =
   anyhow::Result<(PowerSupplyDeltas, Option<String>)>;
+type UncoreDeltas = HashMap<Arc<uncore::Uncore>, uncore::Delta>;
 
 fn is_default<T: Default + PartialEq>(value: &T) -> bool {
   *value == T::default()
@@ -315,6 +317,88 @@ impl CpusDelta {
     };
 
     Ok((deltas, global))
+  }
+}
+
+#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
+#[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
+pub struct UncoresDelta {
+  /// The uncore devices to apply the changes to. When unspecified, will be
+  /// applied to all uncore devices.
+  ///
+  /// Type: `Vec<String>`.
+  #[serde(rename = "for", skip_serializing_if = "is_default")]
+  pub for_: Option<Expression>,
+
+  /// Set minimum uncore frequency in kHz.
+  ///
+  /// Type: `u64`.
+  #[serde(skip_serializing_if = "is_default")]
+  pub frequency_khz_minimum: Option<Expression>,
+
+  /// Set maximum uncore frequency in kHz.
+  ///
+  /// Type: `u64`.
+  #[serde(skip_serializing_if = "is_default")]
+  pub frequency_khz_maximum: Option<Expression>,
+}
+
+impl UncoresDelta {
+  pub fn eval(
+    &self,
+    state: &EvalState<'_, '_>,
+  ) -> anyhow::Result<UncoreDeltas> {
+    log::debug!("evaluating uncore deltas...");
+
+    let uncores = match &self.for_ {
+      Some(names) => {
+        let names = names
+          .eval(state)?
+          .context("`uncore.for` resolved to undefined")?;
+        let names = names
+          .try_into_list()
+          .context("`uncore.for` was not a list")?;
+
+        let mut uncores = Vec::with_capacity(names.len());
+
+        for name in names {
+          let name = name
+            .try_into_string()
+            .context("`uncore.for` item was not a string")?;
+
+          uncores.push(name);
+        }
+
+        state
+          .uncores
+          .iter()
+          .filter(|uncore| uncores.contains(&uncore.name))
+          .cloned()
+          .collect()
+      },
+      None => state.uncores.clone(),
+    };
+
+    let mut deltas = HashMap::with_capacity(uncores.len());
+
+    for uncore in uncores {
+      let delta = uncore::Delta {
+        frequency_khz_minimum: eval_u64(
+          &self.frequency_khz_minimum,
+          state,
+          "uncore.frequency-khz-minimum",
+        )?,
+        frequency_khz_maximum: eval_u64(
+          &self.frequency_khz_maximum,
+          state,
+          "uncore.frequency-khz-maximum",
+        )?,
+      };
+
+      deltas.insert(Arc::clone(&uncore), delta);
+    }
+
+    Ok(deltas)
   }
 }
 
@@ -889,6 +973,7 @@ pub struct EvalState<'peripherals, 'context> {
   pub context: EvalContext<'context>,
 
   pub cpus:           &'peripherals HashSet<Arc<cpu::Cpu>>,
+  pub uncores:        &'peripherals HashSet<Arc<uncore::Uncore>>,
   pub power_supplies: &'peripherals HashSet<Arc<power_supply::PowerSupply>>,
   pub cpu_log:        &'peripherals VecDeque<system::CpuLog>,
 }
@@ -1368,9 +1453,11 @@ pub struct Rule {
   pub condition: Expression,
 
   #[serde(default, skip_serializing_if = "is_default")]
-  pub cpu:   CpusDelta,
+  pub cpu:    CpusDelta,
   #[serde(default, skip_serializing_if = "is_default")]
-  pub power: PowersDelta,
+  pub uncore: UncoresDelta,
+  #[serde(default, skip_serializing_if = "is_default")]
+  pub power:  PowersDelta,
 }
 
 impl Default for Rule {
@@ -1380,6 +1467,7 @@ impl Default for Rule {
       priority:  u16::default(),
       condition: literal_true(),
       cpu:       CpusDelta::default(),
+      uncore:    UncoresDelta::default(),
       power:     PowersDelta::default(),
     }
   }
@@ -1529,6 +1617,7 @@ mod tests {
       cpus.insert(cpu.clone());
 
       let power_supplies = HashSet::new();
+      let uncores = HashSet::new();
       let cpu_log = VecDeque::new();
 
       // Create an eval state with the base frequency
@@ -1551,6 +1640,7 @@ mod tests {
         power_profile_preference: crate::profile::PowerProfile::Balanced,
         context: EvalContext::Cpu(&cpu),
         cpus: &cpus,
+        uncores: &uncores,
         power_supplies: &power_supplies,
         cpu_log: &cpu_log,
       };
@@ -1625,6 +1715,7 @@ mod tests {
     cpus.insert(cpu.clone());
 
     let power_supplies = HashSet::new();
+    let uncores = HashSet::new();
     let cpu_log = VecDeque::new();
 
     let state = EvalState {
@@ -1646,6 +1737,7 @@ mod tests {
       power_profile_preference:    crate::profile::PowerProfile::Balanced,
       context:                     EvalContext::Cpu(&cpu),
       cpus:                        &cpus,
+      uncores:                     &uncores,
       power_supplies:              &power_supplies,
       cpu_log:                     &cpu_log,
     };
@@ -1708,6 +1800,7 @@ mod tests {
     cpus.insert(cpu.clone());
 
     let power_supplies = HashSet::new();
+    let uncores = HashSet::new();
     let cpu_log = VecDeque::new();
 
     let state = EvalState {
@@ -1729,6 +1822,7 @@ mod tests {
       power_profile_preference:    crate::profile::PowerProfile::Balanced,
       context:                     EvalContext::Cpu(&cpu),
       cpus:                        &cpus,
+      uncores:                     &uncores,
       power_supplies:              &power_supplies,
       cpu_log:                     &cpu_log,
     };
@@ -1778,6 +1872,7 @@ mod tests {
     cpus.insert(cpu.clone());
 
     let power_supplies = HashSet::new();
+    let uncores = HashSet::new();
     let cpu_log = VecDeque::new();
 
     let state = EvalState {
@@ -1799,6 +1894,7 @@ mod tests {
       power_profile_preference:    crate::profile::PowerProfile::Balanced,
       context:                     EvalContext::Cpu(&cpu),
       cpus:                        &cpus,
+      uncores:                     &uncores,
       power_supplies:              &power_supplies,
       cpu_log:                     &cpu_log,
     };
