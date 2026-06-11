@@ -994,6 +994,7 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
   let mut last_polling_delay = None::<Duration>;
   let mut last_user_activity = Instant::now();
   let mut system = System::default();
+  let mut dma_latency = cpu::DmaLatency::default();
   let shutdown_signal = signal::ctrl_c();
   tokio::pin!(shutdown_signal);
   let mut sleep_for = Duration::ZERO;
@@ -1072,7 +1073,7 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
         .iter()
         .map(|cpu| (Arc::clone(cpu), cpu::Delta::default()))
         .collect();
-      let mut cpu_turbo: Option<bool> = None;
+      let mut cpu_global_delta = cpu::GlobalDelta::default();
 
       let mut power_deltas: HashMap<
         Arc<power_supply::PowerSupply>,
@@ -1107,7 +1108,8 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
           last_applied_rules.push(rule.name.clone());
 
           let cpu_some = {
-            let (cpu_deltas_lo, cpu_turbo_lo) = rule.cpu.eval(&eval_state)?;
+            let (cpu_deltas_lo, cpu_global_delta_lo) =
+              rule.cpu.eval(&eval_state)?;
 
             for (cpu, delta) in cpu_deltas.iter_mut() {
               let delta_lo = cpu_deltas_lo
@@ -1117,10 +1119,11 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
               *delta = mem::take(delta).or(delta_lo);
             }
 
-            cpu_turbo = cpu_turbo.or(cpu_turbo_lo);
+            cpu_global_delta =
+              mem::take(&mut cpu_global_delta).or(&cpu_global_delta_lo);
 
             let deltas_some = cpu_deltas.values().all(|delta| delta.is_some());
-            deltas_some && cpu_turbo.is_some()
+            deltas_some && cpu_global_delta.is_some()
           };
 
           let power_some = {
@@ -1160,10 +1163,9 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
 
       log::info!("applying CPU deltas to {len} CPUs", len = cpu_deltas.len());
 
-      if let Some(turbo) = cpu_turbo {
-        cpu::Cpu::set_turbo(turbo, cpu_deltas.keys().map(|arc| &**arc))
-          .context("failed to set CPU turbo")?;
-      }
+      cpu_global_delta
+        .apply(cpu_deltas.keys().map(|arc| &**arc), &mut dma_latency)
+        .context("failed to apply global CPU delta")?;
 
       log::info!(
         "applying power supply deltas to {len} devices",

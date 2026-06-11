@@ -26,7 +26,7 @@ use crate::{
 };
 
 type CpuDeltas = HashMap<Arc<cpu::Cpu>, cpu::Delta>;
-type CpuEvalResult = anyhow::Result<(CpuDeltas, Option<bool>)>;
+type CpuEvalResult = anyhow::Result<(CpuDeltas, cpu::GlobalDelta)>;
 type PowerSupplyDeltas =
   HashMap<Arc<power_supply::PowerSupply>, power_supply::Delta>;
 type PowerSupplyEvalResult =
@@ -106,6 +106,30 @@ pub struct CpusDelta {
   /// Type: `bool`.
   #[serde(skip_serializing_if = "is_default")]
   pub turbo: Option<Expression>,
+
+  /// Set Intel P-State minimum performance as a percentage.
+  ///
+  /// Type: `u8`.
+  #[serde(skip_serializing_if = "is_default")]
+  pub pstate_min_performance_percent: Option<Expression>,
+
+  /// Set Intel P-State maximum performance as a percentage.
+  ///
+  /// Type: `u8`.
+  #[serde(skip_serializing_if = "is_default")]
+  pub pstate_max_performance_percent: Option<Expression>,
+
+  /// Set the system-wide PM QoS DMA latency request in microseconds.
+  ///
+  /// Type: `i32`.
+  #[serde(skip_serializing_if = "is_default")]
+  pub dma_latency_us: Option<Expression>,
+
+  /// Set per-CPU PM QoS resume latency in microseconds, or `n/a`.
+  ///
+  /// Type: `u32 | String`.
+  #[serde(skip_serializing_if = "is_default")]
+  pub pm_qos_resume_latency_us: Option<Expression>,
 }
 
 impl CpusDelta {
@@ -230,10 +254,35 @@ impl CpusDelta {
         delta.frequency_mhz_maximum = Some(rounded_value);
       }
 
+      if let Some(pm_qos_resume_latency_us) = &self.pm_qos_resume_latency_us
+        && let Some(pm_qos_resume_latency_us) =
+          pm_qos_resume_latency_us.eval(&state)?
+      {
+        delta.pm_qos_resume_latency_us = Some(match pm_qos_resume_latency_us {
+          Expression::String(value) if value == "n/a" => value,
+          Expression::String(value) => {
+            bail!(
+              "invalid `cpu.pm-qos-resume-latency-us`: {value}; expected a \
+               non-negative integer or \"n/a\""
+            );
+          },
+          value => {
+            let value = value.try_into_number().context(
+              "`cpu.pm-qos-resume-latency-us` was not a number or string",
+            )?;
+
+            if value.fract() != 0.0 || value < 0.0 || value > u64::MAX as f64 {
+              bail!("invalid `cpu.pm-qos-resume-latency-us`: {value}");
+            }
+
+            (value as u64).to_string()
+          },
+        });
+      }
+
       deltas.insert(Arc::clone(&cpu), delta);
     }
 
-    // This is so bad lmao
     let turbo = if let Some(turbo) = &self.turbo
       && let Some(turbo) = turbo.eval(state)?
     {
@@ -246,8 +295,114 @@ impl CpusDelta {
       None
     };
 
-    Ok((deltas, turbo))
+    let global = cpu::GlobalDelta {
+      turbo,
+      pstate_min_performance_percent: eval_percent(
+        &self.pstate_min_performance_percent,
+        state,
+        "cpu.pstate-min-performance-percent",
+      )?,
+      pstate_max_performance_percent: eval_percent(
+        &self.pstate_max_performance_percent,
+        state,
+        "cpu.pstate-max-performance-percent",
+      )?,
+      dma_latency_us: eval_i32(
+        &self.dma_latency_us,
+        state,
+        "cpu.dma-latency-us",
+      )?,
+    };
+
+    Ok((deltas, global))
   }
+}
+
+fn eval_u32(
+  expression: &Option<Expression>,
+  state: &EvalState<'_, '_>,
+  name: &str,
+) -> anyhow::Result<Option<u32>> {
+  let Some(value) = eval_u64(expression, state, name)? else {
+    return Ok(None);
+  };
+
+  if value > u32::MAX as u64 {
+    bail!("invalid `{name}`: {value}");
+  }
+
+  Ok(Some(value as u32))
+}
+
+fn eval_i32(
+  expression: &Option<Expression>,
+  state: &EvalState<'_, '_>,
+  name: &str,
+) -> anyhow::Result<Option<i32>> {
+  let Some(value) = eval_u64(expression, state, name)? else {
+    return Ok(None);
+  };
+
+  if value > i32::MAX as u64 {
+    bail!("invalid `{name}`: {value}; maximum is {}", i32::MAX);
+  }
+
+  Ok(Some(value as i32))
+}
+
+fn eval_u8(
+  expression: &Option<Expression>,
+  state: &EvalState<'_, '_>,
+  name: &str,
+) -> anyhow::Result<Option<u8>> {
+  let Some(value) = eval_u64(expression, state, name)? else {
+    return Ok(None);
+  };
+
+  if value > u8::MAX as u64 {
+    bail!("invalid `{name}`: {value}");
+  }
+
+  Ok(Some(value as u8))
+}
+
+fn eval_u64(
+  expression: &Option<Expression>,
+  state: &EvalState<'_, '_>,
+  name: &str,
+) -> anyhow::Result<Option<u64>> {
+  let Some(expression) = expression else {
+    return Ok(None);
+  };
+  let Some(value) = expression.eval(state)? else {
+    return Ok(None);
+  };
+
+  let value = value
+    .try_into_number()
+    .with_context(|| format!("`{name}` was not a number"))?;
+
+  if value.fract() != 0.0 || value < 0.0 || value > u64::MAX as f64 {
+    bail!("invalid `{name}`: {value}");
+  }
+
+  Ok(Some(value as u64))
+}
+
+fn eval_percent(
+  expression: &Option<Expression>,
+  state: &EvalState<'_, '_>,
+  name: &str,
+) -> anyhow::Result<Option<u8>> {
+  let Some(value) = eval_u32(expression, state, name)? else {
+    return Ok(None);
+  };
+
+  if value > 100 {
+    bail!("`{name}` must be between 0 and 100, got {value}");
+  }
+
+  Ok(Some(value as u8))
 }
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
@@ -1426,6 +1581,10 @@ mod tests {
           frequency_mhz_minimum: None,
           frequency_mhz_maximum: Some(Expression::Number(value)),
           turbo: None,
+          pstate_min_performance_percent: None,
+          pstate_max_performance_percent: None,
+          dma_latency_us: None,
+          pm_qos_resume_latency_us: None,
         };
 
         // Try to evaluate it - this should not panic after the fix
@@ -1493,16 +1652,20 @@ mod tests {
 
     // 3333 * 0.65 = 2166.45
     let cpu_delta = CpusDelta {
-      for_:                          None,
-      governor:                      None,
-      energy_performance_preference: None,
-      energy_perf_bias:              None,
-      frequency_mhz_minimum:         None,
-      frequency_mhz_maximum:         Some(Expression::Multiply {
+      for_:                           None,
+      governor:                       None,
+      energy_performance_preference:  None,
+      energy_perf_bias:               None,
+      frequency_mhz_minimum:          None,
+      frequency_mhz_maximum:          Some(Expression::Multiply {
         a: Box::new(Expression::CpuFrequencyMaximum),
         b: Box::new(Expression::Number(0.65)),
       }),
-      turbo:                         None,
+      turbo:                          None,
+      pstate_min_performance_percent: None,
+      pstate_max_performance_percent: None,
+      dma_latency_us:                 None,
+      pm_qos_resume_latency_us:       None,
     };
 
     // Previously this would bail! with "invalid number for ...". With the
