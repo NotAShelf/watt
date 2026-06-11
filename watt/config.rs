@@ -456,6 +456,24 @@ pub enum Expression {
     #[serde(rename = "is-platform-profile-available")]
     value: Box<Expression>,
   },
+
+  FirstAvailableGovernor {
+    #[serde(rename = "first-available-governor")]
+    values: Vec<Expression>,
+  },
+  FirstAvailableEnergyPerformancePreference {
+    #[serde(rename = "first-available-energy-performance-preference")]
+    values: Vec<Expression>,
+  },
+  FirstAvailableEnergyPerfBias {
+    #[serde(rename = "first-available-energy-perf-bias")]
+    values: Vec<Expression>,
+  },
+  FirstAvailablePlatformProfile {
+    #[serde(rename = "first-available-platform-profile")]
+    values: Vec<Expression>,
+  },
+
   IsDriverLoaded {
     #[serde(rename = "is-driver-loaded")]
     value: Box<Expression>,
@@ -760,6 +778,46 @@ impl Expression {
       };
     }
 
+    fn eval_string_list(
+      values: &[Expression],
+      state: &EvalState<'_, '_>,
+      name: &str,
+    ) -> anyhow::Result<Option<Vec<std::string::String>>> {
+      let mut strings = Vec::with_capacity(values.len());
+
+      for value in values {
+        let Some(value) = value.eval(state)? else {
+          return Ok(None);
+        };
+
+        strings.push(
+          value
+            .try_into_string()
+            .with_context(|| format!("`{name}` item was not a string"))?,
+        );
+      }
+
+      Ok(Some(strings))
+    }
+
+    fn first_available_cpu_value(
+      state: &EvalState<'_, '_>,
+      values: &[std::string::String],
+      available: impl Fn(&cpu::Cpu) -> &[std::string::String],
+    ) -> Option<std::string::String> {
+      values.iter().find_map(|value| {
+        let is_available = match state.context {
+          EvalContext::Cpu(cpu) => available(cpu).contains(value),
+          EvalContext::PowerSupply(_) => false,
+          EvalContext::WidestPossible => {
+            state.cpus.iter().any(|cpu| available(cpu).contains(value))
+          },
+        };
+
+        is_available.then(|| value.clone())
+      })
+    }
+
     Ok(Some(match self {
       IsGovernorAvailable { value } => {
         let value = eval!(value);
@@ -825,6 +883,60 @@ impl Expression {
             .contains(&value);
 
         Boolean(available)
+      },
+      FirstAvailableGovernor { values } => {
+        let Some(values) =
+          eval_string_list(values, state, "first-available-governor")?
+        else {
+          return Ok(None);
+        };
+
+        String(try_ok!(first_available_cpu_value(state, &values, |cpu| {
+          &cpu.available_governors
+        },)))
+      },
+      FirstAvailableEnergyPerformancePreference { values } => {
+        let Some(values) = eval_string_list(
+          values,
+          state,
+          "first-available-energy-performance-preference",
+        )?
+        else {
+          return Ok(None);
+        };
+
+        String(try_ok!(first_available_cpu_value(state, &values, |cpu| {
+          &cpu.available_epps
+        },)))
+      },
+      FirstAvailableEnergyPerfBias { values } => {
+        let Some(values) =
+          eval_string_list(values, state, "first-available-energy-perf-bias")?
+        else {
+          return Ok(None);
+        };
+
+        String(try_ok!(first_available_cpu_value(state, &values, |cpu| {
+          &cpu.available_epbs
+        },)))
+      },
+      FirstAvailablePlatformProfile { values } => {
+        let Some(values) =
+          eval_string_list(values, state, "first-available-platform-profile")?
+        else {
+          return Ok(None);
+        };
+
+        let available =
+          power_supply::PowerSupply::get_available_platform_profiles()
+            .context(
+              "failed to get available platform profiles for \
+               `first-available-platform-profile`",
+            )?;
+
+        String(try_ok!(
+          values.into_iter().find(|value| available.contains(value))
+        ))
       },
       IsDriverLoaded { value } => {
         let value = eval!(value).try_into_string()?;
@@ -1475,5 +1587,69 @@ mod tests {
       result.is_ok() && result.as_ref().unwrap().is_none(),
       "CpuTemperatureVolatility should return None with insufficient data"
     );
+  }
+
+  #[test]
+  fn first_available_governor_selects_first_supported_value() {
+    let cpu = Arc::new(cpu::Cpu {
+      number:                0,
+      has_cpufreq:           true,
+      available_governors:   vec![
+        "powersave".to_owned(),
+        "schedutil".to_owned(),
+      ],
+      governor:              None,
+      frequency_mhz:         Some(3333),
+      frequency_mhz_minimum: Some(1000),
+      frequency_mhz_maximum: Some(3333),
+      available_epps:        vec![],
+      epp:                   None,
+      available_epbs:        vec![],
+      epb:                   None,
+      stat:                  cpu::CpuStat::default(),
+      previous_stat:         None,
+      info:                  None,
+    });
+
+    let mut cpus = HashSet::new();
+    cpus.insert(cpu.clone());
+
+    let power_supplies = HashSet::new();
+    let cpu_log = VecDeque::new();
+
+    let state = EvalState {
+      frequency_available:         true,
+      turbo_available:             false,
+      cpu_usage:                   0.0,
+      cpu_usage_volatility:        None,
+      cpu_temperature:             None,
+      cpu_temperature_volatility:  None,
+      cpu_idle_seconds:            0.0,
+      cpu_frequency_maximum:       Some(3333.0),
+      cpu_frequency_minimum:       Some(1000.0),
+      lid_closed:                  false,
+      power_supply_charge:         None,
+      power_supply_discharge_rate: None,
+      battery_cycles:              None,
+      battery_health:              None,
+      discharging:                 false,
+      power_profile_preference:    crate::profile::PowerProfile::Balanced,
+      context:                     EvalContext::Cpu(&cpu),
+      cpus:                        &cpus,
+      power_supplies:              &power_supplies,
+      cpu_log:                     &cpu_log,
+    };
+
+    let result = Expression::FirstAvailableGovernor {
+      values: vec![
+        Expression::String("performance".to_owned()),
+        Expression::String("schedutil".to_owned()),
+        Expression::String("powersave".to_owned()),
+      ],
+    }
+    .eval(&state)
+    .unwrap();
+
+    assert_eq!(result, Some(Expression::String("schedutil".to_owned())));
   }
 }
