@@ -1118,20 +1118,14 @@ impl Default for Rule {
   }
 }
 
-#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
+#[derive(Serialize, Default, Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "metrics", derive(Deserialize))]
 #[serde(default, rename_all = "kebab-case")]
+#[cfg_attr(not(feature = "metrics"), non_exhaustive)]
 pub struct DaemonConfig {
   #[cfg(feature = "metrics")]
   #[serde(skip_serializing_if = "Option::is_none")]
   pub metrics: Option<MetricsConfig>,
-
-  #[cfg(not(feature = "metrics"))]
-  #[serde(
-    default,
-    skip_serializing,
-    deserialize_with = "deserialize_metrics_disabled"
-  )]
-  metrics: (),
 
   #[serde(rename = "rule")]
   pub rules: Vec<Rule>,
@@ -1146,15 +1140,30 @@ pub struct MetricsConfig {
 }
 
 #[cfg(not(feature = "metrics"))]
-fn deserialize_metrics_disabled<'de, D>(
-  _deserializer: D,
-) -> Result<(), D::Error>
-where
-  D: serde::Deserializer<'de>,
-{
-  Err(serde::de::Error::custom(
-    "metrics config requires building watt with --features metrics",
-  ))
+impl<'de> Deserialize<'de> for DaemonConfig {
+  fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+  where
+    D: serde::Deserializer<'de>,
+  {
+    #[derive(Deserialize, Default)]
+    #[serde(default, rename_all = "kebab-case")]
+    struct RawDaemonConfig {
+      metrics: Option<serde::de::IgnoredAny>,
+
+      #[serde(rename = "rule")]
+      rules: Vec<Rule>,
+    }
+
+    let raw = RawDaemonConfig::deserialize(deserializer)?;
+
+    if raw.metrics.is_some() {
+      return Err(serde::de::Error::custom(
+        "metrics config requires building watt with --features metrics",
+      ));
+    }
+
+    Ok(Self { rules: raw.rules })
+  }
 }
 
 impl DaemonConfig {
