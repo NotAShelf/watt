@@ -69,7 +69,9 @@ struct PowerSupplyLog {
 struct System {
   is_ac: bool,
 
-  lid_closed: bool,
+  lid_closed:      bool,
+  virtual_machine: bool,
+  chassis_type:    Option<String>,
 
   load_average_1min:  f64,
   load_average_5min:  f64,
@@ -241,6 +243,18 @@ impl System {
       self.scan_lid_state()?;
       log::info!(
         "scanned lid state in {millis}ms",
+        millis = start.elapsed().as_millis(),
+      );
+    }
+
+    {
+      let start = Instant::now();
+      self.chassis_type =
+        read_chassis_type().context("failed to read chassis type")?;
+      self.virtual_machine = detect_virtual_machine()
+        .context("failed to detect virtualization status")?;
+      log::info!(
+        "scanned platform identity in {millis}ms",
         millis = start.elapsed().as_millis(),
       );
     }
@@ -957,6 +971,63 @@ fn detect_performance_degradation(_system: &System) -> Option<String> {
   None
 }
 
+fn read_chassis_type() -> anyhow::Result<Option<String>> {
+  let Some(chassis_type) = fs::read("/sys/class/dmi/id/chassis_type")? else {
+    return Ok(None);
+  };
+
+  Ok(match chassis_type.trim() {
+    "3" | "4" | "5" | "6" | "7" | "15" | "16" | "17" => {
+      Some("desktop".to_owned())
+    },
+    "8" => Some("portable".to_owned()),
+    "9" | "10" | "14" | "31" => Some("laptop".to_owned()),
+    "11" => Some("handheld".to_owned()),
+    "13" => Some("all-in-one".to_owned()),
+    _ => None,
+  })
+}
+
+fn detect_virtual_machine() -> anyhow::Result<bool> {
+  const DMI_PATHS: &[&str] = &[
+    "/sys/class/dmi/id/product_name",
+    "/sys/class/dmi/id/sys_vendor",
+    "/sys/class/dmi/id/board_vendor",
+    "/sys/class/dmi/id/bios_vendor",
+  ];
+  const VIRTUAL_MARKERS: &[&str] = &[
+    "bhyve",
+    "bochs",
+    "hyper-v",
+    "kvm",
+    "parallels",
+    "qemu",
+    "virtualbox",
+    "vmware",
+    "xen",
+  ];
+
+  for path in DMI_PATHS {
+    let Some(value) = fs::read(path)? else {
+      continue;
+    };
+    let value = value.to_lowercase();
+    if VIRTUAL_MARKERS.iter().any(|marker| value.contains(marker)) {
+      return Ok(true);
+    }
+  }
+
+  if let Some(cpuinfo) = fs::read("/proc/cpuinfo")? {
+    return Ok(
+      cpuinfo
+        .lines()
+        .any(|line| line.starts_with("flags") && line.contains(" hypervisor")),
+    );
+  }
+
+  Ok(false)
+}
+
 #[derive(Debug)]
 pub struct DaemonState {
   system:               System,
@@ -1118,6 +1189,8 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
           .map(|u64| u64 as f64),
 
         lid_closed: system.lid_closed,
+        virtual_machine: system.virtual_machine,
+        chassis_type: system.chassis_type.as_deref(),
 
         power_supply_charge: system
           .power_supply_log
