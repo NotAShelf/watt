@@ -24,6 +24,7 @@ use crate::{
   power_supply,
   system,
   uncore,
+  vm,
 };
 
 type CpuDeltas = HashMap<Arc<cpu::Cpu>, cpu::Delta>;
@@ -402,6 +403,63 @@ impl UncoresDelta {
   }
 }
 
+#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
+#[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
+pub struct VmDelta {
+  #[serde(skip_serializing_if = "is_default")]
+  pub dirty_bytes:                 Option<Expression>,
+  #[serde(skip_serializing_if = "is_default")]
+  pub dirty_ratio:                 Option<Expression>,
+  #[serde(skip_serializing_if = "is_default")]
+  pub dirty_background_bytes:      Option<Expression>,
+  #[serde(skip_serializing_if = "is_default")]
+  pub dirty_background_ratio:      Option<Expression>,
+  #[serde(skip_serializing_if = "is_default")]
+  pub transparent_hugepages:       Option<Expression>,
+  #[serde(skip_serializing_if = "is_default")]
+  pub transparent_hugepage_defrag: Option<Expression>,
+}
+
+impl VmDelta {
+  pub fn eval(&self, state: &EvalState<'_, '_>) -> anyhow::Result<vm::Delta> {
+    let delta = vm::Delta {
+      dirty_bytes:                 eval_u64(
+        &self.dirty_bytes,
+        state,
+        "vm.dirty-bytes",
+      )?,
+      dirty_ratio:                 eval_percent(
+        &self.dirty_ratio,
+        state,
+        "vm.dirty-ratio",
+      )?,
+      dirty_background_bytes:      eval_u64(
+        &self.dirty_background_bytes,
+        state,
+        "vm.dirty-background-bytes",
+      )?,
+      dirty_background_ratio:      eval_percent(
+        &self.dirty_background_ratio,
+        state,
+        "vm.dirty-background-ratio",
+      )?,
+      transparent_hugepages:       eval_string(
+        &self.transparent_hugepages,
+        state,
+        "vm.transparent-hugepages",
+      )?,
+      transparent_hugepage_defrag: eval_string(
+        &self.transparent_hugepage_defrag,
+        state,
+        "vm.transparent-hugepage-defrag",
+      )?,
+    };
+
+    delta.validate()?;
+    Ok(delta)
+  }
+}
+
 fn eval_u32(
   expression: &Option<Expression>,
   state: &EvalState<'_, '_>,
@@ -471,6 +529,24 @@ fn eval_u64(
   }
 
   Ok(Some(value as u64))
+}
+
+fn eval_string(
+  expression: &Option<Expression>,
+  state: &EvalState<'_, '_>,
+  name: &str,
+) -> anyhow::Result<Option<String>> {
+  let Some(expression) = expression else {
+    return Ok(None);
+  };
+  let Some(value) = expression.eval(state)? else {
+    return Ok(None);
+  };
+
+  value
+    .try_into_string()
+    .with_context(|| format!("`{name}` was not a string"))
+    .map(Some)
 }
 
 fn eval_percent(
@@ -1457,6 +1533,8 @@ pub struct Rule {
   #[serde(default, skip_serializing_if = "is_default")]
   pub uncore: UncoresDelta,
   #[serde(default, skip_serializing_if = "is_default")]
+  pub vm:     VmDelta,
+  #[serde(default, skip_serializing_if = "is_default")]
   pub power:  PowersDelta,
 }
 
@@ -1468,6 +1546,7 @@ impl Default for Rule {
       condition: literal_true(),
       cpu:       CpusDelta::default(),
       uncore:    UncoresDelta::default(),
+      vm:        VmDelta::default(),
       power:     PowersDelta::default(),
     }
   }
