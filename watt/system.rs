@@ -23,12 +23,16 @@ use tokio::{
 };
 
 use crate::{
+  audio,
   config,
   cpu,
+  disk,
   fs,
+  gpu,
   power_supply,
   profile,
   uncore,
+  usb,
   vm,
 };
 
@@ -79,6 +83,15 @@ struct System {
 
   /// All Intel uncore frequency devices.
   uncores: HashSet<Arc<uncore::Uncore>>,
+
+  /// All block devices Watt can tune.
+  disks: HashSet<Arc<disk::Disk>>,
+
+  /// All USB devices Watt can tune.
+  usb_devices: HashSet<Arc<usb::UsbDevice>>,
+
+  /// All GPU devices Watt can tune.
+  gpus: HashSet<Arc<gpu::Gpu>>,
 
   /// All power supplies.
   power_supplies:   HashSet<Arc<power_supply::PowerSupply>>,
@@ -142,6 +155,45 @@ impl System {
         .collect();
       log::info!(
         "scanned all uncore devices in {millis}ms",
+        millis = start.elapsed().as_millis(),
+      );
+    }
+
+    {
+      let start = Instant::now();
+      self.disks = disk::Disk::all()
+        .context("failed to scan disks")?
+        .into_iter()
+        .map(Arc::from)
+        .collect();
+      log::info!(
+        "scanned all disks in {millis}ms",
+        millis = start.elapsed().as_millis(),
+      );
+    }
+
+    {
+      let start = Instant::now();
+      self.usb_devices = usb::UsbDevice::all()
+        .context("failed to scan USB devices")?
+        .into_iter()
+        .map(Arc::from)
+        .collect();
+      log::info!(
+        "scanned all USB devices in {millis}ms",
+        millis = start.elapsed().as_millis(),
+      );
+    }
+
+    {
+      let start = Instant::now();
+      self.gpus = gpu::Gpu::all()
+        .context("failed to scan GPUs")?
+        .into_iter()
+        .map(Arc::from)
+        .collect();
+      log::info!(
+        "scanned all GPUs in {millis}ms",
         millis = start.elapsed().as_millis(),
       );
     }
@@ -1083,6 +1135,9 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
 
         cpus: &system.cpus,
         uncores: &system.uncores,
+        disks: &system.disks,
+        usb_devices: &system.usb_devices,
+        gpus: &system.gpus,
         power_supplies: &system.power_supplies,
         cpu_log: &system.cpu_log,
       };
@@ -1101,6 +1156,23 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
           .map(|uncore| (Arc::clone(uncore), uncore::Delta::default()))
           .collect();
       let mut vm_delta = vm::Delta::default();
+      let mut disk_deltas: HashMap<Arc<disk::Disk>, disk::Delta> = system
+        .disks
+        .iter()
+        .map(|disk| (Arc::clone(disk), disk::Delta::default()))
+        .collect();
+      let mut disk_global_delta = disk::GlobalDelta::default();
+      let mut usb_deltas: HashMap<Arc<usb::UsbDevice>, usb::Delta> = system
+        .usb_devices
+        .iter()
+        .map(|device| (Arc::clone(device), usb::Delta::default()))
+        .collect();
+      let mut audio_delta = audio::Delta::default();
+      let mut gpu_deltas: HashMap<Arc<gpu::Gpu>, gpu::Delta> = system
+        .gpus
+        .iter()
+        .map(|gpu| (Arc::clone(gpu), gpu::Delta::default()))
+        .collect();
 
       let mut power_deltas: HashMap<
         Arc<power_supply::PowerSupply>,
@@ -1154,6 +1226,11 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
           let power_some = {
             let uncore_deltas_lo = rule.uncore.eval(&eval_state)?;
             let vm_delta_lo = rule.vm.eval(&eval_state)?;
+            let (disk_deltas_lo, disk_global_delta_lo) =
+              rule.disk.eval(&eval_state)?;
+            let usb_deltas_lo = rule.usb.eval(&eval_state)?;
+            let audio_delta_lo = rule.audio.eval(&eval_state)?;
+            let gpu_deltas_lo = rule.gpu.eval(&eval_state)?;
 
             for (uncore, delta) in uncore_deltas.iter_mut() {
               if let Some(delta_lo) = uncore_deltas_lo.get(uncore) {
@@ -1161,6 +1238,28 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
               }
             }
             vm_delta = mem::take(&mut vm_delta).or(&vm_delta_lo);
+
+            for (disk, delta) in disk_deltas.iter_mut() {
+              if let Some(delta_lo) = disk_deltas_lo.get(disk) {
+                *delta = mem::take(delta).or(delta_lo);
+              }
+            }
+            disk_global_delta =
+              mem::take(&mut disk_global_delta).or(&disk_global_delta_lo);
+
+            for (device, delta) in usb_deltas.iter_mut() {
+              if let Some(delta_lo) = usb_deltas_lo.get(device) {
+                *delta = mem::take(delta).or(delta_lo);
+              }
+            }
+
+            audio_delta = mem::take(&mut audio_delta).or(&audio_delta_lo);
+
+            for (gpu, delta) in gpu_deltas.iter_mut() {
+              if let Some(delta_lo) = gpu_deltas_lo.get(gpu) {
+                *delta = mem::take(delta).or(delta_lo);
+              }
+            }
 
             let (power_deltas_lo, power_platform_profile_lo) =
               rule.power.eval(&eval_state)?;
@@ -1178,10 +1277,18 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
               power_deltas.values().all(|delta| delta.is_some());
             let uncore_some =
               uncore_deltas.values().all(|delta| delta.is_some());
+            let disk_some = disk_deltas.values().all(|delta| delta.is_some())
+              && disk_global_delta.is_some();
+            let usb_some = usb_deltas.values().all(|delta| delta.is_some());
+            let gpu_some = gpu_deltas.values().all(|delta| delta.is_some());
             deltas_some
               && power_platform_profile.is_some()
               && uncore_some
               && vm_delta.is_some()
+              && disk_some
+              && usb_some
+              && audio_delta.is_some()
+              && gpu_some
           };
 
           if cpu_some && power_some {
@@ -1217,6 +1324,41 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
       }
 
       vm_delta.apply().context("failed to apply VM delta")?;
+
+      log::info!(
+        "applying disk deltas to {len} devices",
+        len = disk_deltas.len(),
+      );
+      for (disk, delta) in disk_deltas {
+        delta
+          .apply(&disk)
+          .with_context(|| format!("failed to apply delta to {disk}"))?;
+      }
+      disk_global_delta
+        .apply()
+        .context("failed to apply global disk delta")?;
+
+      log::info!(
+        "applying USB deltas to {len} devices",
+        len = usb_deltas.len(),
+      );
+      for (device, delta) in usb_deltas {
+        delta
+          .apply(&device)
+          .with_context(|| format!("failed to apply delta to {device}"))?;
+      }
+
+      audio_delta.apply().context("failed to apply audio delta")?;
+
+      log::info!(
+        "applying GPU deltas to {len} devices",
+        len = gpu_deltas.len(),
+      );
+      for (gpu, delta) in gpu_deltas {
+        delta
+          .apply(&gpu)
+          .with_context(|| format!("failed to apply delta to {gpu}"))?;
+      }
 
       log::info!(
         "applying power supply deltas to {len} devices",

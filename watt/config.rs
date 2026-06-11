@@ -20,10 +20,14 @@ use serde::{
 };
 
 use crate::{
+  audio,
   cpu,
+  disk,
+  gpu,
   power_supply,
   system,
   uncore,
+  usb,
   vm,
 };
 
@@ -34,6 +38,9 @@ type PowerSupplyDeltas =
 type PowerSupplyEvalResult =
   anyhow::Result<(PowerSupplyDeltas, Option<String>)>;
 type UncoreDeltas = HashMap<Arc<uncore::Uncore>, uncore::Delta>;
+type DiskDeltas = HashMap<Arc<disk::Disk>, disk::Delta>;
+type UsbDeltas = HashMap<Arc<usb::UsbDevice>, usb::Delta>;
+type GpuDeltas = HashMap<Arc<gpu::Gpu>, gpu::Delta>;
 
 fn is_default<T: Default + PartialEq>(value: &T) -> bool {
   *value == T::default()
@@ -460,6 +467,230 @@ impl VmDelta {
   }
 }
 
+#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
+#[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
+pub struct DisksDelta {
+  #[serde(rename = "for", skip_serializing_if = "is_default")]
+  pub for_:          Option<Expression>,
+  #[serde(skip_serializing_if = "is_default")]
+  pub scheduler:     Option<Expression>,
+  #[serde(skip_serializing_if = "is_default")]
+  pub readahead_kib: Option<Expression>,
+  #[serde(skip_serializing_if = "is_default")]
+  pub apm:           Option<Expression>,
+  #[serde(skip_serializing_if = "is_default")]
+  pub spindown:      Option<Expression>,
+  #[serde(skip_serializing_if = "is_default")]
+  pub alpm:          Option<Expression>,
+}
+
+impl DisksDelta {
+  pub fn eval(
+    &self,
+    state: &EvalState<'_, '_>,
+  ) -> anyhow::Result<(DiskDeltas, disk::GlobalDelta)> {
+    let disks = match &self.for_ {
+      Some(names) => {
+        let names = names
+          .eval(state)?
+          .context("`disk.for` resolved to undefined")?;
+        let names =
+          names.try_into_list().context("`disk.for` was not a list")?;
+
+        let names = names
+          .into_iter()
+          .map(|name| name.try_into_string())
+          .collect::<anyhow::Result<Vec<_>>>()?;
+
+        state
+          .disks
+          .iter()
+          .filter(|disk| names.contains(&disk.name))
+          .cloned()
+          .collect()
+      },
+      None => state.disks.clone(),
+    };
+
+    let apm = eval_u8(&self.apm, state, "disk.apm")?;
+    let spindown = eval_u8(&self.spindown, state, "disk.spindown")?;
+    let mut deltas = HashMap::with_capacity(disks.len());
+
+    for disk in disks {
+      deltas.insert(Arc::clone(&disk), disk::Delta {
+        scheduler: eval_string(&self.scheduler, state, "disk.scheduler")?,
+        readahead_kib: eval_u64(
+          &self.readahead_kib,
+          state,
+          "disk.readahead-kib",
+        )?,
+        apm,
+        spindown,
+      });
+    }
+
+    Ok((deltas, disk::GlobalDelta {
+      alpm: eval_string(&self.alpm, state, "disk.alpm")?,
+    }))
+  }
+}
+
+#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
+#[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
+pub struct UsbsDelta {
+  #[serde(rename = "for", skip_serializing_if = "is_default")]
+  pub for_:                      Option<Expression>,
+  #[serde(skip_serializing_if = "is_default")]
+  pub autosuspend:               Option<Expression>,
+  #[serde(skip_serializing_if = "is_default")]
+  pub autosuspend_delay_seconds: Option<Expression>,
+}
+
+impl UsbsDelta {
+  pub fn eval(&self, state: &EvalState<'_, '_>) -> anyhow::Result<UsbDeltas> {
+    let devices = match &self.for_ {
+      Some(names) => {
+        let names = names
+          .eval(state)?
+          .context("`usb.for` resolved to undefined")?
+          .try_into_list()
+          .context("`usb.for` was not a list")?;
+        let names = names
+          .into_iter()
+          .map(|name| name.try_into_string())
+          .collect::<anyhow::Result<Vec<_>>>()?;
+
+        state
+          .usb_devices
+          .iter()
+          .filter(|device| names.contains(&device.name))
+          .cloned()
+          .collect()
+      },
+      None => state.usb_devices.clone(),
+    };
+
+    let delay_ms = eval_u64(
+      &self.autosuspend_delay_seconds,
+      state,
+      "usb.autosuspend-delay-seconds",
+    )?
+    .map(|seconds| {
+      seconds.checked_mul(1000).with_context(|| {
+        "`usb.autosuspend-delay-seconds` is too large to convert to \
+         milliseconds"
+      })
+    })
+    .transpose()?;
+    let mut deltas = HashMap::with_capacity(devices.len());
+
+    for device in devices {
+      deltas.insert(Arc::clone(&device), usb::Delta {
+        autosuspend:          eval_bool(
+          &self.autosuspend,
+          state,
+          "usb.autosuspend",
+        )?,
+        autosuspend_delay_ms: delay_ms,
+      });
+    }
+
+    Ok(deltas)
+  }
+}
+
+#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
+#[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
+pub struct AudioDelta {
+  #[serde(skip_serializing_if = "is_default")]
+  pub timeout_seconds:  Option<Expression>,
+  #[serde(skip_serializing_if = "is_default")]
+  pub reset_controller: Option<Expression>,
+}
+
+impl AudioDelta {
+  pub fn eval(
+    &self,
+    state: &EvalState<'_, '_>,
+  ) -> anyhow::Result<audio::Delta> {
+    Ok(audio::Delta {
+      timeout_seconds:  eval_u64(
+        &self.timeout_seconds,
+        state,
+        "audio.timeout-seconds",
+      )?,
+      reset_controller: eval_bool(
+        &self.reset_controller,
+        state,
+        "audio.reset-controller",
+      )?,
+    })
+  }
+}
+
+#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
+#[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
+pub struct GpusDelta {
+  #[serde(rename = "for", skip_serializing_if = "is_default")]
+  pub for_:                Option<Expression>,
+  #[serde(skip_serializing_if = "is_default")]
+  pub panel_power_savings: Option<Expression>,
+  #[serde(skip_serializing_if = "is_default")]
+  pub radeon_powersave:    Option<Expression>,
+}
+
+impl GpusDelta {
+  pub fn eval(&self, state: &EvalState<'_, '_>) -> anyhow::Result<GpuDeltas> {
+    let gpus = match &self.for_ {
+      Some(names) => {
+        let names = names
+          .eval(state)?
+          .context("`gpu.for` resolved to undefined")?
+          .try_into_list()
+          .context("`gpu.for` was not a list")?;
+        let names = names
+          .into_iter()
+          .map(|name| name.try_into_string())
+          .collect::<anyhow::Result<Vec<_>>>()?;
+
+        state
+          .gpus
+          .iter()
+          .filter(|gpu| names.contains(&gpu.name))
+          .cloned()
+          .collect()
+      },
+      None => state.gpus.clone(),
+    };
+
+    let panel_power_savings = eval_percent(
+      &self.panel_power_savings,
+      state,
+      "gpu.panel-power-savings",
+    )?;
+    if let Some(value) = panel_power_savings
+      && value > 4
+    {
+      bail!("`gpu.panel-power-savings` must be between 0 and 4, got {value}");
+    }
+
+    let mut deltas = HashMap::with_capacity(gpus.len());
+
+    for gpu in gpus {
+      deltas.insert(Arc::clone(&gpu), gpu::Delta {
+        panel_power_savings,
+        radeon_powersave: eval_string(
+          &self.radeon_powersave,
+          state,
+          "gpu.radeon-powersave",
+        )?,
+      });
+    }
+
+    Ok(deltas)
+  }
+}
+
 fn eval_u32(
   expression: &Option<Expression>,
   state: &EvalState<'_, '_>,
@@ -507,7 +738,6 @@ fn eval_u8(
 
   Ok(Some(value as u8))
 }
-
 fn eval_u64(
   expression: &Option<Expression>,
   state: &EvalState<'_, '_>,
@@ -546,6 +776,24 @@ fn eval_string(
   value
     .try_into_string()
     .with_context(|| format!("`{name}` was not a string"))
+    .map(Some)
+}
+
+fn eval_bool(
+  expression: &Option<Expression>,
+  state: &EvalState<'_, '_>,
+  name: &str,
+) -> anyhow::Result<Option<bool>> {
+  let Some(expression) = expression else {
+    return Ok(None);
+  };
+  let Some(value) = expression.eval(state)? else {
+    return Ok(None);
+  };
+
+  value
+    .try_into_boolean()
+    .with_context(|| format!("`{name}` was not a boolean"))
     .map(Some)
 }
 
@@ -1050,6 +1298,9 @@ pub struct EvalState<'peripherals, 'context> {
 
   pub cpus:           &'peripherals HashSet<Arc<cpu::Cpu>>,
   pub uncores:        &'peripherals HashSet<Arc<uncore::Uncore>>,
+  pub disks:          &'peripherals HashSet<Arc<disk::Disk>>,
+  pub usb_devices:    &'peripherals HashSet<Arc<usb::UsbDevice>>,
+  pub gpus:           &'peripherals HashSet<Arc<gpu::Gpu>>,
   pub power_supplies: &'peripherals HashSet<Arc<power_supply::PowerSupply>>,
   pub cpu_log:        &'peripherals VecDeque<system::CpuLog>,
 }
@@ -1535,6 +1786,14 @@ pub struct Rule {
   #[serde(default, skip_serializing_if = "is_default")]
   pub vm:     VmDelta,
   #[serde(default, skip_serializing_if = "is_default")]
+  pub disk:   DisksDelta,
+  #[serde(default, skip_serializing_if = "is_default")]
+  pub usb:    UsbsDelta,
+  #[serde(default, skip_serializing_if = "is_default")]
+  pub audio:  AudioDelta,
+  #[serde(default, skip_serializing_if = "is_default")]
+  pub gpu:    GpusDelta,
+  #[serde(default, skip_serializing_if = "is_default")]
   pub power:  PowersDelta,
 }
 
@@ -1547,6 +1806,10 @@ impl Default for Rule {
       cpu:       CpusDelta::default(),
       uncore:    UncoresDelta::default(),
       vm:        VmDelta::default(),
+      disk:      DisksDelta::default(),
+      usb:       UsbsDelta::default(),
+      audio:     AudioDelta::default(),
+      gpu:       GpusDelta::default(),
       power:     PowersDelta::default(),
     }
   }
@@ -1697,6 +1960,9 @@ mod tests {
 
       let power_supplies = HashSet::new();
       let uncores = HashSet::new();
+      let disks = HashSet::new();
+      let usb_devices = HashSet::new();
+      let gpus = HashSet::new();
       let cpu_log = VecDeque::new();
 
       // Create an eval state with the base frequency
@@ -1720,6 +1986,9 @@ mod tests {
         context: EvalContext::Cpu(&cpu),
         cpus: &cpus,
         uncores: &uncores,
+        disks: &disks,
+        usb_devices: &usb_devices,
+        gpus: &gpus,
         power_supplies: &power_supplies,
         cpu_log: &cpu_log,
       };
@@ -1795,6 +2064,9 @@ mod tests {
 
     let power_supplies = HashSet::new();
     let uncores = HashSet::new();
+    let disks = HashSet::new();
+    let usb_devices = HashSet::new();
+    let gpus = HashSet::new();
     let cpu_log = VecDeque::new();
 
     let state = EvalState {
@@ -1817,6 +2089,9 @@ mod tests {
       context:                     EvalContext::Cpu(&cpu),
       cpus:                        &cpus,
       uncores:                     &uncores,
+      disks:                       &disks,
+      usb_devices:                 &usb_devices,
+      gpus:                        &gpus,
       power_supplies:              &power_supplies,
       cpu_log:                     &cpu_log,
     };
@@ -1880,6 +2155,9 @@ mod tests {
 
     let power_supplies = HashSet::new();
     let uncores = HashSet::new();
+    let disks = HashSet::new();
+    let usb_devices = HashSet::new();
+    let gpus = HashSet::new();
     let cpu_log = VecDeque::new();
 
     let state = EvalState {
@@ -1902,6 +2180,9 @@ mod tests {
       context:                     EvalContext::Cpu(&cpu),
       cpus:                        &cpus,
       uncores:                     &uncores,
+      disks:                       &disks,
+      usb_devices:                 &usb_devices,
+      gpus:                        &gpus,
       power_supplies:              &power_supplies,
       cpu_log:                     &cpu_log,
     };
@@ -1952,6 +2233,9 @@ mod tests {
 
     let power_supplies = HashSet::new();
     let uncores = HashSet::new();
+    let disks = HashSet::new();
+    let usb_devices = HashSet::new();
+    let gpus = HashSet::new();
     let cpu_log = VecDeque::new();
 
     let state = EvalState {
@@ -1974,6 +2258,9 @@ mod tests {
       context:                     EvalContext::Cpu(&cpu),
       cpus:                        &cpus,
       uncores:                     &uncores,
+      disks:                       &disks,
+      usb_devices:                 &usb_devices,
+      gpus:                        &gpus,
       power_supplies:              &power_supplies,
       cpu_log:                     &cpu_log,
     };
