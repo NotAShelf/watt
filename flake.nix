@@ -7,11 +7,7 @@
     ...
   } @ inputs: let
     forAllSystems = nixpkgs.lib.genAttrs ["x86_64-linux" "aarch64-linux"];
-    pkgsForEach = forAllSystems (system:
-      import nixpkgs {
-        localSystem.system = system;
-        overlays = [self.overlays.default];
-      });
+    pkgsForEach = forAllSystems (system: nixpkgs.legacyPackages.${system});
   in {
     overlays = {
       watt = final: _: {
@@ -22,7 +18,7 @@
 
     packages =
       nixpkgs.lib.mapAttrs (system: pkgs: {
-        inherit (pkgs) watt;
+        watt = pkgs.callPackage ./nix/package.nix {};
         default = self.packages.${system}.watt;
       })
       pkgsForEach;
