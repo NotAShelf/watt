@@ -57,7 +57,7 @@ daemons.
 
 ## Features
 
-Watt is a tiny binary with a small footprint, but it packs a bunch. Namely:
+Watt is a tiny binary with a small footprint, but it packs a punch. Namely:
 
 - **Daemon Mode**: Run in background with adaptive polling to minimize overhead.
 - **Real-time CPU Management**: Monitor and control CPU governors, frequencies,
