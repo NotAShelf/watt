@@ -261,9 +261,9 @@ impl PowerSupply {
         .with_context(|| format!("failed to read {self} cycle count"))?;
 
       // Battery health as a percentage (0-100)
-      // Some systems report this as capacity_level or health
+      // Some systems report this as state_of_health
       self.health = if let Some(health) =
-        fs::read_n::<u64>(self.path.join("health"))
+        fs::read_n::<u64>(self.path.join("state_of_health"))
           .with_context(|| format!("failed to read {self} health"))?
       {
         Some(health as f64 / 100.0)
@@ -497,5 +497,105 @@ impl Delta {
     }
 
     Ok(())
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use std::{
+    env,
+    fs,
+    path::PathBuf,
+    process,
+    sync::atomic::{
+      AtomicU64,
+      Ordering,
+    },
+  };
+
+  use super::PowerSupply;
+
+  static NEXT_TEMP_DIR: AtomicU64 = AtomicU64::new(0);
+
+  struct BatteryFixture {
+    path: PathBuf,
+  }
+
+  impl BatteryFixture {
+    fn new() -> Self {
+      let root = env::temp_dir();
+
+      loop {
+        let counter = NEXT_TEMP_DIR.fetch_add(1, Ordering::Relaxed);
+        let path =
+          root.join(format!("watt-power-supply-{}-{counter}", process::id(),));
+
+        match fs::create_dir(&path) {
+          Ok(()) => {
+            let fixture = Self { path };
+            fixture.write("type", "Battery");
+            return fixture;
+          },
+          Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {},
+          Err(error) => panic!("create battery fixture directory: {error}"),
+        }
+      }
+    }
+
+    fn write(&self, name: &str, value: &str) {
+      fs::write(self.path.join(name), value)
+        .expect("write battery fixture value");
+    }
+
+    fn power_supply(&self) -> PowerSupply {
+      PowerSupply {
+        name:                   "BAT0".to_owned(),
+        path:                   self.path.clone(),
+        type_:                  String::new(),
+        is_from_peripheral:     false,
+        charge_state:           None,
+        charge_percent:         None,
+        cycles:                 None,
+        health:                 None,
+        charge_threshold_start: 0.0,
+        charge_threshold_end:   1.0,
+        drain_rate_watts:       None,
+        threshold_config:       None,
+      }
+    }
+  }
+
+  impl Drop for BatteryFixture {
+    fn drop(&mut self) {
+      let _ = fs::remove_dir_all(&self.path);
+    }
+  }
+
+  #[test]
+  fn scan_health_good_falls_back_to_energy_ratio_when_state_of_health_is_missing()
+   {
+    let fixture = BatteryFixture::new();
+    fixture.write("health", "Good");
+    fixture.write("energy_full", "75000000");
+    fixture.write("energy_full_design", "100000000");
+
+    let mut power_supply = fixture.power_supply();
+    power_supply.scan().expect("scan battery fixture");
+
+    assert_eq!(power_supply.health, Some(0.75));
+  }
+
+  #[test]
+  fn scan_state_of_health_percentage_overrides_energy_ratio_with_health_good() {
+    let fixture = BatteryFixture::new();
+    fixture.write("health", "Good");
+    fixture.write("state_of_health", "82");
+    fixture.write("energy_full", "40000000");
+    fixture.write("energy_full_design", "100000000");
+
+    let mut power_supply = fixture.power_supply();
+    power_supply.scan().expect("scan battery fixture");
+
+    assert_eq!(power_supply.health, Some(0.82));
   }
 }
