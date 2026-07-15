@@ -7,17 +7,22 @@
 rustPlatform.buildRustPackage (finalAttrs: {
   pname = "watt";
   version = (lib.importTOML ../Cargo.toml).workspace.package.version;
+  __structuredAttrs = true;
 
-  src = lib.fileset.toSource {
-    root = ../.;
-    fileset = lib.fileset.unions [
-      ../.cargo
-      ../watt
-      ../xtask
-      ../Cargo.lock
-      ../Cargo.toml
-    ];
-  };
+  src = let
+    fs = lib.fileset;
+    s = ../.;
+  in
+    fs.toSource {
+      root = s;
+      fileset = fs.unions [
+        ../.cargo
+        ../watt
+        ../xtask
+        ../Cargo.lock
+        ../Cargo.toml
+      ];
+    };
 
   cargoBuildFlags = ["-p watt" "-p xtask"];
   cargoLock.lockFile = "${finalAttrs.src}/Cargo.lock";
@@ -33,13 +38,19 @@ rustPlatform.buildRustPackage (finalAttrs: {
   versionCheckProgramArg = "--version";
   doInstallCheck = true;
 
-  postInstall = ''
-    # Install required files with the 'dist' task
-    $out/bin/xtask dist --completions-dir $out/share/completions
+  postInstall =
+    lib.optionalString (stdenv.buildPlatform.canExecute stdenv.hostPlatform) ''
+      # Install required files with the 'dist' task
+      $out/bin/xtask dist --completions-dir $out/share/completions
+    ''
+    ++ ''
+      # Avoid populating PATH with an 'xtask' cmd
+      rm $out/bin/xtask
 
-    # Avoid populating PATH with an 'xtask' cmd
-    rm $out/bin/xtask
-  '';
+      # Install Watt's dbus
+      install -Dm644 dbus/net.hadess.PowerProfiles.conf \
+        $out/share/dbus-1/system.d/net.hadess.PowerProfiles.conf
+    '';
 
   meta = {
     description = "Automatic CPU speed & power optimizer for Linux";
