@@ -44,11 +44,11 @@ cpu.energy-perf-bias = { if.all = [
   { not.is-driver-loaded = "intel_pstate" },
   { is-energy-perf-bias-available = "performance" },
 ], then = "performance" }
-cpu.energy-performance-preference = { if.all = [
-  { not.is-driver-loaded = "intel_pstate" },
+cpu.energy-performance-preference = { if.is-energy-performance-preference-available = "performance", then = "performance" }
+cpu.governor = { else = { if.is-governor-available = "performance", then = "performance" }, if.all = [
+  { is-driver-loaded = "intel_pstate" },
   { is-energy-performance-preference-available = "performance" },
-], then = "performance" }
-cpu.governor = { if.is-governor-available = "performance", then = "performance" }
+], then = "powersave" }
 cpu.turbo = { if = "?turbo-available", then = true }
 
 [[rule]]
@@ -64,11 +64,11 @@ cpu.energy-perf-bias = { if.all = [
   { not.is-driver-loaded = "intel_pstate" },
   { is-energy-perf-bias-available = "balance-performance" },
 ], then = "balance-performance" }
-cpu.energy-performance-preference = { if.all = [
-  { not.is-driver-loaded = "intel_pstate" },
+cpu.energy-performance-preference = { if.is-energy-performance-preference-available = "performance", then = "performance" }
+cpu.governor = { else = { if.is-governor-available = "performance", then = "performance" }, if.all = [
+  { is-driver-loaded = "intel_pstate" },
   { is-energy-performance-preference-available = "performance" },
-], then = "performance" }
-cpu.governor = { if.is-governor-available = "performance", then = "performance" }
+], then = "powersave" }
 cpu.turbo = { if = "?turbo-available", then = true }
 
 [[rule]]
