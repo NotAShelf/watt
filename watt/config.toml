@@ -81,7 +81,7 @@ priority = 60
 
 cpu.energy-perf-bias              = { if.is-energy-perf-bias-available = "balance-performance", then = "balance-performance" }
 cpu.energy-performance-preference = { if.is-energy-performance-preference-available = "balance_performance", then = "balance_performance" }
-cpu.governor                      = { if.is-governor-available = "schedutil", then = "schedutil" }
+cpu.governor                      = { first-available-governor = [ "schedutil", "powersave" ] }
 
 [[rule]]
 if.all = [
@@ -134,6 +134,6 @@ cpu.turbo                         = { if = "?turbo-available", then = false }
 [[rule]]
 cpu.energy-perf-bias              = { if.is-energy-perf-bias-available = "balance-performance", then = "balance-performance" }
 cpu.energy-performance-preference = { if.is-energy-performance-preference-available = "balance_performance", then = "balance_performance" }
-cpu.governor                      = { if.is-governor-available = "schedutil", then = "schedutil" }
+cpu.governor                      = { first-available-governor = [ "schedutil", "powersave" ] }
 name                              = "default-balanced"
 priority                          = 0
