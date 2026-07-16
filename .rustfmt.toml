@@ -1,4 +1,3 @@
-# float_literal_trailing_zero  = "Always" # TODO: Warning for some reason?
 condense_wildcard_suffixes   = true
 doc_comment_code_block_width = 80
 edition                      = "2024"             # Keep in sync with Cargo.toml.
