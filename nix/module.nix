@@ -1,18 +1,20 @@
-inputs: {
+{
   config,
   pkgs,
   lib,
   ...
 }: let
+  inherit (lib) types;
   inherit (lib.modules) mkIf;
   inherit (lib.options) mkOption mkEnableOption mkPackageOption;
-  inherit (lib.types) submodule;
   inherit (lib.meta) getExe;
 
   cfg = config.services.watt;
 
   format = pkgs.formats.toml {};
   cfgFile = format.generate "watt-config.toml" cfg.settings;
+
+  wattPackage = pkgs.callPackage ./package.nix {};
 
   conflictingServices = [
     "power-profiles-daemon"
@@ -22,17 +24,49 @@ inputs: {
     "thermald"
     "tuned"
   ];
+
+  configString = lib.mkMerge [
+    (mkIf cfg.configFile != null cfg.configFile)
+    (mkIf (cfg.configFile == null) cfg.settings)
+  ];
+
+  wrapper = pkgs.stdenvNoCC.mkDerivation {
+    name = "watt-wrapped";
+    buildInputs = [pkgs.makeWrapper];
+    paths = [cfg.package];
+    meta.mainProgram = "watt";
+    preferLocalBuild = true;
+    allowSubstitutes = false;
+    enableParallelBuilding = true;
+
+    buildPhase = ''
+      mkdir -p $out
+      wrapProgram $out/bin/watt --set WATT_CONFIG ${configString}
+    '';
+  };
 in {
   options.services.watt = {
     enable = mkEnableOption "Watt, automatic CPU speed & power optimizer for Linux";
-    package = mkPackageOption inputs.self.packages.${pkgs.stdenv.hostPlatform.system} "watt" {
+    package = mkPackageOption wattPackage "watt" {
       pkgsText = "self.packages.\${pkgs.stdenv.hostPlatform.system}";
     };
 
     settings = mkOption {
-      type = submodule {freeformType = format.type;};
+      type = types.submodule {freeformType = format.type;};
       default = {};
-      description = "Configuration for Watt.";
+      description = ''
+        Configuration for Watt.
+        Disjoint with `configFile` option.
+      '';
+    };
+
+    configFile = mkOption {
+      type = types.nullOr (types.either types.package types.str);
+      default = null;
+      description = ''
+        Configuration for Watt.
+        Disjoint with `configFile` option.
+      '';
     };
   };
 
@@ -40,16 +74,12 @@ in {
     environment.systemPackages = [cfg.package];
     services.dbus.packages = [cfg.package];
 
-    # This is necessary for the Watt CLI. The environment variable
-    # passed to the systemd service will take priority in read order.
-    environment.etc."watt.toml".source = cfgFile;
-
     systemd.services.watt = {
       wantedBy = ["multi-user.target"];
       conflicts = map (service: "${service}.service") conflictingServices;
       serviceConfig = {
         WorkingDirectory = "";
-        ExecStart = getExe cfg.package;
+        ExecStart = getExe wrapper;
         Restart = "on-failure";
 
         RuntimeDirectory = "watt";
