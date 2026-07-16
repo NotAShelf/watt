@@ -17,12 +17,15 @@ anyhow.workspace              = true
 clap.workspace                = true
 clap-verbosity-flag.workspace = true
 env_logger.workspace          = true
+futures-util.workspace        = true
 humantime.workspace           = true
 jiff.workspace                = true
 log.workspace                 = true
 nix.workspace                 = true
 num_cpus.workspace            = true
 serde.workspace               = true
+serde_json.workspace          = true
+schemars.workspace            = true
 tiny_http                     = { optional = true, workspace = true }
 tokio.workspace               = true
 toml.workspace                = true
