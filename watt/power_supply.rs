@@ -88,13 +88,18 @@ impl hash::Hash for PowerSupply {
 impl PowerSupply {
   pub fn is_ac(&self) -> bool {
     !self.is_from_peripheral
-      && matches!(
+      && (matches!(
         &*self.type_,
-        "Mains" | "USB_PD_DRP" | "USB_PD" | "USB_DCP" | "USB_CDP" | "USB_ACA"
-      )
-      || self.type_.starts_with("AC")
-      || self.type_.contains("ACAD")
-      || self.type_.contains("ADP")
+        "Mains"
+          | "Wireless"
+          | "USB_PD_DRP"
+          | "USB_PD"
+          | "USB_DCP"
+          | "USB_CDP"
+          | "USB_ACA"
+      ) || self.type_.starts_with("AC")
+        || self.type_.contains("ACAD")
+        || self.type_.contains("ADP"))
   }
 }
 
@@ -286,25 +291,40 @@ impl PowerSupply {
         }
       };
 
-      self.charge_threshold_start =
-        fs::read_n::<u64>(self.path.join("charge_control_start_threshold"))
+      self.threshold_config = POWER_SUPPLY_THRESHOLD_CONFIGS
+        .iter()
+        .find(|config| {
+          self.path.join(config.path_start).exists()
+            && self.path.join(config.path_end).exists()
+        })
+        .copied();
+
+      self.charge_threshold_start = if let Some(config) = self.threshold_config
+      {
+        fs::read_n::<u64>(self.path.join(config.path_start))
           .with_context(|| {
             format!("failed to read {self} charge threshold start")
           })?
-          .map_or(0.0, |percent| percent as f64 / 100.0);
+          .map_or(0.0, |percent| percent as f64 / 100.0)
+      } else {
+        0.0
+      };
 
-      self.charge_threshold_end =
-        fs::read_n::<u64>(self.path.join("charge_control_end_threshold"))
+      self.charge_threshold_end = if let Some(config) = self.threshold_config {
+        fs::read_n::<u64>(self.path.join(config.path_end))
           .with_context(|| {
             format!("failed to read {self} charge threshold end")
           })?
-          .map_or(100.0, |percent| percent as f64 / 100.0);
+          .map_or(1.0, |percent| percent as f64 / 100.0)
+      } else {
+        1.0
+      };
 
       self.drain_rate_watts =
         match fs::read_n::<i64>(self.path.join("power_now"))
           .with_context(|| format!("failed to read {self} power drain"))?
         {
-          Some(drain) => Some(drain as f64),
+          Some(drain) => Some(drain as f64 / 1e6),
 
           None => {
             let current_ua =
@@ -322,14 +342,6 @@ impl PowerSupply {
             })
           },
         };
-
-      self.threshold_config = POWER_SUPPLY_THRESHOLD_CONFIGS
-        .iter()
-        .find(|config| {
-          self.path.join(config.path_start).exists()
-            && self.path.join(config.path_end).exists()
-        })
-        .copied();
 
       log::debug!(
         "power supply '{name}' threshold config: {threshold_config:?}",
