@@ -73,7 +73,9 @@ pub fn find_batteries(
     .collect()
 }
 
-#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
+#[derive(
+  Serialize, Deserialize, schemars::JsonSchema, Default, Debug, Clone, PartialEq,
+)]
 #[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
 pub struct CpusDelta {
   /// The CPUs to apply the changes to. When unspecified, will be applied to
@@ -328,7 +330,9 @@ impl CpusDelta {
   }
 }
 
-#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
+#[derive(
+  Serialize, Deserialize, schemars::JsonSchema, Default, Debug, Clone, PartialEq,
+)]
 #[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
 pub struct UncoresDelta {
   /// The uncore devices to apply the changes to. When unspecified, will be
@@ -410,7 +414,9 @@ impl UncoresDelta {
   }
 }
 
-#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
+#[derive(
+  Serialize, Deserialize, schemars::JsonSchema, Default, Debug, Clone, PartialEq,
+)]
 #[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
 pub struct VmDelta {
   #[serde(skip_serializing_if = "is_default")]
@@ -467,7 +473,9 @@ impl VmDelta {
   }
 }
 
-#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
+#[derive(
+  Serialize, Deserialize, schemars::JsonSchema, Default, Debug, Clone, PartialEq,
+)]
 #[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
 pub struct DisksDelta {
   #[serde(rename = "for", skip_serializing_if = "is_default")]
@@ -535,7 +543,9 @@ impl DisksDelta {
   }
 }
 
-#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
+#[derive(
+  Serialize, Deserialize, schemars::JsonSchema, Default, Debug, Clone, PartialEq,
+)]
 #[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
 pub struct UsbsDelta {
   #[serde(rename = "for", skip_serializing_if = "is_default")]
@@ -599,7 +609,9 @@ impl UsbsDelta {
   }
 }
 
-#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
+#[derive(
+  Serialize, Deserialize, schemars::JsonSchema, Default, Debug, Clone, PartialEq,
+)]
 #[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
 pub struct AudioDelta {
   #[serde(skip_serializing_if = "is_default")]
@@ -628,7 +640,9 @@ impl AudioDelta {
   }
 }
 
-#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
+#[derive(
+  Serialize, Deserialize, schemars::JsonSchema, Default, Debug, Clone, PartialEq,
+)]
 #[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
 pub struct GpusDelta {
   #[serde(rename = "for", skip_serializing_if = "is_default")]
@@ -813,7 +827,9 @@ fn eval_percent(
   Ok(Some(value as u8))
 }
 
-#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
+#[derive(
+  Serialize, Deserialize, schemars::JsonSchema, Default, Debug, Clone, PartialEq,
+)]
 #[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
 pub struct PowersDelta {
   /// The power supplies to apply the changes to. When unspecified, will be
@@ -1000,7 +1016,9 @@ mod expression {
   named!(power_profile_preference => "$power-profile-preference");
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(
+  Serialize, Deserialize, schemars::JsonSchema, Debug, Clone, PartialEq,
+)]
 #[serde(untagged)]
 #[must_use]
 pub enum Expression {
@@ -1053,15 +1071,19 @@ pub enum Expression {
   },
 
   #[serde(with = "expression::frequency_available")]
+  #[schemars(with = "String")]
   FrequencyAvailable,
 
   #[serde(with = "expression::turbo_available")]
+  #[schemars(with = "String")]
   TurboAvailable,
 
   #[serde(with = "expression::cpu_usage")]
+  #[schemars(with = "String")]
   CpuUsage,
 
   #[serde(with = "expression::cpu_usage_volatility")]
+  #[schemars(with = "String")]
   CpuUsageVolatility,
 
   CpuUsageSince {
@@ -1070,24 +1092,31 @@ pub enum Expression {
   },
 
   #[serde(with = "expression::cpu_temperature")]
+  #[schemars(with = "String")]
   CpuTemperature,
 
   #[serde(with = "expression::cpu_temperature_volatility")]
+  #[schemars(with = "String")]
   CpuTemperatureVolatility,
 
   #[serde(with = "expression::cpu_idle_seconds")]
+  #[schemars(with = "String")]
   CpuIdleSeconds,
 
   #[serde(with = "expression::cpu_frequency_maximum")]
+  #[schemars(with = "String")]
   CpuFrequencyMaximum,
 
   #[serde(with = "expression::cpu_frequency_minimum")]
+  #[schemars(with = "String")]
   CpuFrequencyMinimum,
 
   #[serde(with = "expression::cpu_scaling_maximum")]
+  #[schemars(with = "String")]
   CpuScalingMaximum,
 
   #[serde(with = "expression::cpu_core_count")]
+  #[schemars(with = "String")]
   CpuCoreCount,
 
   LoadAverageSince {
@@ -1096,24 +1125,31 @@ pub enum Expression {
   },
 
   #[serde(with = "expression::lid_closed")]
+  #[schemars(with = "String")]
   LidClosed,
 
   #[serde(with = "expression::virtual_machine")]
+  #[schemars(with = "String")]
   VirtualMachine,
 
   #[serde(with = "expression::hour_of_day")]
+  #[schemars(with = "String")]
   HourOfDay,
 
   #[serde(with = "expression::power_supply_charge")]
+  #[schemars(with = "String")]
   PowerSupplyCharge,
 
   #[serde(with = "expression::power_supply_discharge_rate")]
+  #[schemars(with = "String")]
   PowerSupplyDischargeRate,
 
   #[serde(with = "expression::battery_cycles")]
+  #[schemars(with = "String")]
   BatteryCycles,
 
   #[serde(with = "expression::battery_health")]
+  #[schemars(with = "String")]
   BatteryHealth,
 
   BatteryCyclesFor {
@@ -1127,9 +1163,11 @@ pub enum Expression {
   },
 
   #[serde(with = "expression::discharging")]
+  #[schemars(with = "String")]
   Discharging,
 
   #[serde(with = "expression::power_profile_preference")]
+  #[schemars(with = "String")]
   PowerProfilePreference,
 
   Boolean(bool),
@@ -1473,9 +1511,17 @@ impl Expression {
           return Ok(None);
         };
 
-        String(try_ok!(first_available_cpu_value(state, &values, |cpu| {
+        let Some(governor) = first_available_cpu_value(state, &values, |cpu| {
           &cpu.available_governors
-        },)))
+        }) else {
+          log::debug!(
+            "none of the requested governors are available: {governors}",
+            governors = values.join(", "),
+          );
+          return Ok(None);
+        };
+
+        String(governor)
       },
       FirstAvailableEnergyPerformancePreference { values } => {
         let Some(values) = eval_string_list(
@@ -1782,7 +1828,9 @@ fn literal_is_true(expression: &Expression) -> bool {
   expression == &literal_true()
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(
+  Serialize, Deserialize, schemars::JsonSchema, Debug, Clone, PartialEq,
+)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Rule {
   pub name:     String,
@@ -1831,7 +1879,7 @@ impl Default for Rule {
   }
 }
 
-#[derive(Serialize, Default, Debug, Clone, PartialEq)]
+#[derive(Serialize, schemars::JsonSchema, Default, Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "metrics", derive(Deserialize))]
 #[serde(default, rename_all = "kebab-case")]
 #[cfg_attr(not(feature = "metrics"), non_exhaustive)]
@@ -1845,7 +1893,9 @@ pub struct DaemonConfig {
 }
 
 #[cfg(feature = "metrics")]
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(
+  Serialize, Deserialize, schemars::JsonSchema, Debug, Clone, PartialEq,
+)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct MetricsConfig {
   pub listen_addr: IpAddr,
@@ -2300,5 +2350,16 @@ mod tests {
     .unwrap();
 
     assert_eq!(result, Some(Expression::String("schedutil".to_owned())));
+
+    let result = Expression::FirstAvailableGovernor {
+      values: vec![
+        Expression::String("performance".to_owned()),
+        Expression::String("ondemand".to_owned()),
+      ],
+    }
+    .eval(&state)
+    .unwrap();
+
+    assert_eq!(result, None);
   }
 }
