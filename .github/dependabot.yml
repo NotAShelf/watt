@@ -1,23 +1,35 @@
 version: 2
 updates:
-  # Update used workflows
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+    groups:
+      rust:
+        patterns:
+          - "*"
+
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
-      interval: daily
-
-  # Update Cargo deps
-  - package-ecosystem: cargo
-    directory: "/"
+      interval: weekly
     cooldown:
       default-days: 7
-    schedule:
-      interval: "weekly"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
 
-  # Update Nixpkgs
   - package-ecosystem: nix
     directory: "/"
+    schedule:
+      interval: weekly
     cooldown:
       default-days: 7
-    schedule:
-      interval: daily
+    groups:
+      nix:
+        patterns:
+          - "*"
