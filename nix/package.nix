@@ -43,7 +43,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
       # Install required files with the 'dist' task
       $out/bin/xtask dist --completions-dir $out/share/completions
     ''
-    ++ ''
+    + ''
       # Avoid populating PATH with an 'xtask' cmd
       rm $out/bin/xtask
 
