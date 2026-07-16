@@ -18,14 +18,9 @@ use std::{
   },
 };
 
-#[cfg(unix)]
-use nix::{
-  fcntl::{
-    Flock,
-    FlockArg,
-  },
-  sys::signal::kill,
-  unistd::Pid,
+#[cfg(unix)] use nix::fcntl::{
+  Flock,
+  FlockArg,
 };
 
 #[cfg(not(unix))]
@@ -58,13 +53,6 @@ impl fmt::Display for LockFileError {
 
 impl Error for LockFileError {}
 
-fn pid_is_alive(pid: u32) -> bool {
-  !matches!(
-    kill(Pid::from_raw(pid as i32), None),
-    Err(nix::errno::Errno::ESRCH)
-  )
-}
-
 fn read_lock_pid(path: &Path) -> Option<u32> {
   fs::read_to_string(path)
     .ok()
@@ -72,27 +60,15 @@ fn read_lock_pid(path: &Path) -> Option<u32> {
 }
 
 fn lock_contention_message(lock_path: &Path) -> String {
-  let holder = read_lock_pid(lock_path);
-  let stale = holder.is_some_and(|pid| !pid_is_alive(pid));
-
-  if stale {
-    log::error!(
-      "stale lock file at {path} (previous holder is dead)",
-      path = lock_path.display(),
-    );
-    "stale lock file, previous holder no longer running".to_string()
-  } else {
-    log::error!(
-      "another watt instance is already running (lock held on \
-       {path}{pid_info})",
-      path = lock_path.display(),
-      pid_info = holder.map_or(String::new(), |p| format!(", pid {p}")),
-    );
-    holder.map_or_else(
-      || "another instance is running".to_string(),
-      |p| format!("another instance is running (pid {p})"),
-    )
-  }
+  let message = read_lock_pid(lock_path).map_or_else(
+    || "another instance is running".to_string(),
+    |pid| format!("another instance is running (pid {pid})"),
+  );
+  log::error!(
+    "{message} (lock held on {path})",
+    path = lock_path.display()
+  );
+  message
 }
 
 impl ops::Deref for LockFile {
