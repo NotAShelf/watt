@@ -24,7 +24,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
       ];
     };
 
-  cargoBuildFlags = ["-p watt" "-p xtask"];
+  cargoBuildFlags = ["-p=watt" "-p=xtask"];
   cargoLock.lockFile = "${finalAttrs.src}/Cargo.lock";
   enableParallelBuilding = true;
   useNextest = true;
