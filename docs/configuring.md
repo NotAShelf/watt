@@ -23,6 +23,23 @@ listen-addr = "[::]"
 port = 9790
 ```
 
+## Configuration Commands
+
+`watt config show` queries the running daemon and prints the configuration it
+loaded as normalized TOML. `watt config show --default` prints the normalized
+built-in default instead. Comments and the original formatting are not
+preserved.
+
+`watt config schema` prints a JSON Schema for the configuration accepted by the
+current build. Feature-gated fields, such as `metrics`, only appear when the
+corresponding feature is enabled.
+
+`watt config active` queries the running daemon over the system D-Bus and
+prints the rules selected during its latest successful polling cycle, in
+priority order. Add `--watch` to print the latest snapshot after a change;
+rapid changes may be coalesced. Watched snapshots are separated by a line
+containing `--`.
+
 ## Rule Structure
 
 <!--markdownlint-disable MD013-->
