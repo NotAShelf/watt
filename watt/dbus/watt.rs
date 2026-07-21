@@ -6,6 +6,7 @@ use std::{
 use tokio::sync::RwLock;
 use zbus::{
   interface,
+  object_server::SignalEmitter,
   zvariant::Value,
 };
 
@@ -69,4 +70,14 @@ impl WattInterface {
     let state = self.state.read().await;
     state.last_applied_rules()
   }
+
+  async fn get_config(&self) -> String {
+    let state = self.state.read().await;
+    state.config().to_owned()
+  }
+
+  #[zbus(signal)]
+  pub async fn applied_rules_changed(
+    emitter: &SignalEmitter<'_>,
+  ) -> zbus::Result<()>;
 }

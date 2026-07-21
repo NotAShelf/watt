@@ -19,7 +19,10 @@ use anyhow::{
 };
 use tokio::{
   signal,
-  sync::RwLock,
+  sync::{
+    RwLock,
+    watch,
+  },
 };
 
 use crate::{
@@ -1030,6 +1033,7 @@ fn detect_virtual_machine() -> anyhow::Result<bool> {
 
 #[derive(Debug)]
 pub struct DaemonState {
+  config:               String,
   system:               System,
   rule_count:           usize,
   profile:              profile::ProfileState,
@@ -1038,14 +1042,19 @@ pub struct DaemonState {
 }
 
 impl DaemonState {
-  fn new(rule_count: usize) -> Self {
+  fn new(config: String, rule_count: usize) -> Self {
     Self {
+      config,
       system: System::default(),
       rule_count,
       profile: profile::ProfileState::new(),
       last_applied_rules: Vec::new(),
       performance_degraded: None,
     }
+  }
+
+  pub fn config(&self) -> &str {
+    &self.config
   }
 
   fn update_system(
@@ -1116,7 +1125,13 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
 
   log::info!("starting daemon...");
 
-  let state = Arc::new(RwLock::new(DaemonState::new(config.rules.len())));
+  let serialized_config = toml::to_string_pretty(&config)
+    .context("failed to serialize daemon config")?;
+  let state = Arc::new(RwLock::new(DaemonState::new(
+    serialized_config,
+    config.rules.len(),
+  )));
+  let (applied_rules_tx, applied_rules_rx) = watch::channel(Vec::new());
 
   #[cfg(feature = "metrics")]
   if let Some(metrics_config) = &config.metrics {
@@ -1126,7 +1141,9 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
   tokio::spawn({
     let state = Arc::clone(&state);
     async move {
-      if let Err(error) = crate::dbus::server::start(state).await {
+      if let Err(error) =
+        crate::dbus::server::start(state, applied_rules_rx).await
+      {
         log::error!("D-Bus server exited with error: {error}");
       }
     }
@@ -1453,9 +1470,17 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
         compute_poll_delay(&system, last_polling_delay, last_user_activity);
       state.write().await.update_system(
         &system,
-        last_applied_rules,
+        last_applied_rules.clone(),
         performance_degraded,
       );
+      applied_rules_tx.send_if_modified(|rules| {
+        if *rules == last_applied_rules {
+          false
+        } else {
+          *rules = last_applied_rules;
+          true
+        }
+      });
       last_polling_delay = Some(delay);
       delay
     };
