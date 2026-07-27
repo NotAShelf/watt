@@ -1576,7 +1576,13 @@ impl Expression {
 
         Boolean(find_battery(state.power_supplies, &value).is_some())
       },
-      FrequencyAvailable => Boolean(state.frequency_available),
+      FrequencyAvailable => {
+        Boolean(match state.context {
+          EvalContext::Cpu(cpu) => cpu.frequency_mhz.is_some(),
+          EvalContext::PowerSupply(_) => false,
+          EvalContext::WidestPossible => state.frequency_available,
+        })
+      },
       TurboAvailable => Boolean(state.turbo_available),
 
       CpuUsage => {
@@ -2361,5 +2367,80 @@ mod tests {
     .unwrap();
 
     assert_eq!(result, None);
+  }
+
+  #[test]
+  fn frequency_availability_is_scoped_to_the_cpu_being_evaluated() {
+    let available_cpu = Arc::new(cpu::Cpu {
+      number: 0,
+      frequency_mhz: Some(1000),
+      ..cpu::Cpu::default()
+    });
+    let unavailable_cpu = Arc::new(cpu::Cpu {
+      number: 6,
+      frequency_mhz: None,
+      ..cpu::Cpu::default()
+    });
+    let cpus =
+      HashSet::from([Arc::clone(&available_cpu), Arc::clone(&unavailable_cpu)]);
+
+    let power_supplies = HashSet::new();
+    let uncores = HashSet::new();
+    let disks = HashSet::new();
+    let usb_devices = HashSet::new();
+    let gpus = HashSet::new();
+    let cpu_log = VecDeque::new();
+    let state = EvalState {
+      frequency_available:         true,
+      turbo_available:             false,
+      cpu_usage:                   0.0,
+      cpu_usage_volatility:        None,
+      cpu_temperature:             None,
+      cpu_temperature_volatility:  None,
+      cpu_idle_seconds:            0.0,
+      cpu_frequency_maximum:       None,
+      cpu_frequency_minimum:       None,
+      lid_closed:                  false,
+      virtual_machine:             false,
+      chassis_type:                None,
+      power_supply_charge:         None,
+      power_supply_discharge_rate: None,
+      battery_cycles:              None,
+      battery_health:              None,
+      discharging:                 false,
+      power_profile_preference:    crate::profile::PowerProfile::Balanced,
+      context:                     EvalContext::WidestPossible,
+      cpus:                        &cpus,
+      uncores:                     &uncores,
+      disks:                       &disks,
+      usb_devices:                 &usb_devices,
+      gpus:                        &gpus,
+      power_supplies:              &power_supplies,
+      cpu_log:                     &cpu_log,
+    };
+    let guarded_frequency = Expression::IfElse {
+      condition:   Box::new(Expression::FrequencyAvailable),
+      consequence: Box::new(Expression::Number(200.0)),
+      alternative: None,
+    };
+    let cpu_delta = CpusDelta {
+      frequency_mhz_minimum: Some(guarded_frequency),
+      ..CpusDelta::default()
+    };
+
+    let (deltas, _) = cpu_delta.eval(&state).expect("evaluate CPU deltas");
+
+    assert_eq!(
+      deltas
+        .get(&available_cpu)
+        .and_then(|delta| delta.frequency_mhz_minimum),
+      Some(200)
+    );
+    assert_eq!(
+      deltas
+        .get(&unavailable_cpu)
+        .and_then(|delta| delta.frequency_mhz_minimum),
+      None
+    );
   }
 }
