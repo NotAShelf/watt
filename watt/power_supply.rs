@@ -1,7 +1,12 @@
 use std::{
+  error,
   fmt,
   hash,
-  path::PathBuf,
+  path::{
+    Path,
+    PathBuf,
+  },
+  str,
 };
 
 use anyhow::{
@@ -123,16 +128,20 @@ const POWER_SUPPLY_PATH: &str = "/sys/class/power_supply";
 
 impl PowerSupply {
   pub fn all() -> anyhow::Result<Vec<PowerSupply>> {
+    Self::all_in(Path::new(POWER_SUPPLY_PATH))
+  }
+
+  fn all_in(root: &Path) -> anyhow::Result<Vec<PowerSupply>> {
     log::info!("detecting power supplies...");
 
     let mut power_supplies = Vec::new();
 
-    log::debug!("scanning power supplies in {POWER_SUPPLY_PATH}");
+    log::debug!("scanning power supplies in {}", root.display());
 
-    for entry in fs::read_dir(POWER_SUPPLY_PATH)
+    for entry in fs::read_dir(root)
       .context("failed to read power supply entries")?
       .with_context(|| {
-        format!("'{POWER_SUPPLY_PATH}' doesn't exist, are you on linux?")
+        format!("'{}' doesn't exist, are you on linux?", root.display())
       })?
     {
       let entry = match entry {
@@ -176,7 +185,10 @@ impl PowerSupply {
         threshold_config: None,
       };
 
-      power_supply.scan()?;
+      if let Err(error) = power_supply.scan() {
+        log::warn!("failed to scan {power_supply}: {error:#}");
+        continue;
+      }
 
       power_supplies.push(power_supply);
     }
@@ -184,6 +196,62 @@ impl PowerSupply {
     log::info!("detected {len} power supplies", len = power_supplies.len());
 
     Ok(power_supplies)
+  }
+
+  /// Reads optional numeric telemetry.
+  ///
+  /// Power-supply drivers may omit properties, and buggy firmware can expose
+  /// temporarily malformed values. Neither case should prevent Watt from
+  /// using the remaining properties of the device.
+  fn read_telemetry_n<N>(&self, property: &str) -> anyhow::Result<Option<N>>
+  where
+    N: str::FromStr,
+    N::Err: error::Error + Send + Sync + 'static,
+  {
+    let path = self.path.join(property);
+    let Some(value) = fs::read(&path)? else {
+      return Ok(None);
+    };
+
+    match value.parse() {
+      Ok(value) => Ok(Some(value)),
+      Err(error) => {
+        log::warn!(
+          "ignoring invalid numeric property '{property}' from {self}: {error}"
+        );
+        Ok(None)
+      },
+    }
+  }
+
+  fn capacity_ratio(
+    &self,
+    full_property: &str,
+    design_property: &str,
+  ) -> anyhow::Result<Option<f64>> {
+    let full = self.read_telemetry_n::<u64>(full_property)?;
+    let design = self.read_telemetry_n::<u64>(design_property)?;
+
+    Ok(
+      full
+        .zip(design)
+        .filter(|(_, design)| *design != 0)
+        .map(|(full, design)| full as f64 / design as f64),
+    )
+  }
+
+  fn scan_health(&self) -> anyhow::Result<Option<f64>> {
+    if let Some(health) = self.read_telemetry_n::<u64>("state_of_health")? {
+      return Ok(Some(health as f64 / 100.0));
+    }
+
+    if let Some(health) =
+      self.capacity_ratio("energy_full", "energy_full_design")?
+    {
+      return Ok(Some(health));
+    }
+
+    self.capacity_ratio("charge_full", "charge_full_design")
   }
 
   fn scan(&mut self) -> anyhow::Result<()> {
@@ -227,8 +295,9 @@ impl PowerSupply {
       }
 
       // Small capacity batteries are likely not laptop batteries.
-      if let Some(energy_full) =
-        fs::read_n::<u64>(self.path.join("energy_full")).with_context(|| {
+      if let Some(energy_full) = self
+        .read_telemetry_n::<u64>("energy_full")
+        .with_context(|| {
           format!("failed to read the max charge {self} can hold")
         })?
       {
@@ -258,38 +327,21 @@ impl PowerSupply {
       self.charge_state = fs::read(self.path.join("status"))
         .with_context(|| format!("failed to read {self} charge status"))?;
 
-      self.charge_percent = fs::read_n::<u64>(self.path.join("capacity"))
+      self.charge_percent = self
+        .read_telemetry_n::<u64>("capacity")
         .with_context(|| format!("failed to read {self} charge percent"))?
         .map(|percent| percent as f64 / 100.0);
 
-      self.cycles = fs::read_n::<u64>(self.path.join("cycle_count"))
+      self.cycles = self
+        .read_telemetry_n::<u64>("cycle_count")
         .with_context(|| format!("failed to read {self} cycle count"))?;
 
-      // Battery health as a percentage (0-100)
-      // Some systems report this as state_of_health
-      self.health = if let Some(health) =
-        fs::read_n::<u64>(self.path.join("state_of_health"))
-          .with_context(|| format!("failed to read {self} health"))?
-      {
-        Some(health as f64 / 100.0)
-      } else {
-        // Try to calculate health from energy_full vs energy_full_design
-        let energy_full = fs::read_n::<u64>(self.path.join("energy_full"))
-          .with_context(|| format!("failed to read {self} energy_full"))?;
-
-        let energy_full_design =
-          fs::read_n::<u64>(self.path.join("energy_full_design"))
-            .with_context(|| {
-              format!("failed to read {self} energy_full_design")
-            })?;
-
-        match (energy_full, energy_full_design) {
-          (Some(full), Some(design)) if design > 0 => {
-            Some(full as f64 / design as f64)
-          },
-          _ => None,
-        }
-      };
+      // `health` is a textual condition such as "Good", not a percentage.
+      // Prefer the kernel's numeric state-of-health property, then derive the
+      // value from a matching energy or charge capacity pair.
+      self.health = self
+        .scan_health()
+        .with_context(|| format!("failed to read {self} health"))?;
 
       self.threshold_config = POWER_SUPPLY_THRESHOLD_CONFIGS
         .iter()
@@ -320,28 +372,28 @@ impl PowerSupply {
         1.0
       };
 
-      self.drain_rate_watts =
-        match fs::read_n::<i64>(self.path.join("power_now"))
-          .with_context(|| format!("failed to read {self} power drain"))?
-        {
-          Some(drain) => Some(drain as f64 / 1e6),
+      self.drain_rate_watts = match self
+        .read_telemetry_n::<i64>("power_now")
+        .with_context(|| format!("failed to read {self} power drain"))?
+      {
+        Some(drain) => Some(drain as f64 / 1e6),
 
-          None => {
-            let current_ua =
-              fs::read_n::<i32>(self.path.join("current_now"))
-                .with_context(|| format!("failed to read {self} current"))?;
+        None => {
+          let current_ua = self
+            .read_telemetry_n::<i32>("current_now")
+            .with_context(|| format!("failed to read {self} current"))?;
 
-            let voltage_uv =
-              fs::read_n::<i32>(self.path.join("voltage_now"))
-                .with_context(|| format!("failed to read {self} voltage"))?;
+          let voltage_uv = self
+            .read_telemetry_n::<i32>("voltage_now")
+            .with_context(|| format!("failed to read {self} voltage"))?;
 
-            current_ua.zip(voltage_uv).map(|(current, voltage)| {
-              // Power (W) = Voltage (V) * Current (A)
-              // (v / 1e6 V) * (c / 1e6 A) = (v * c / 1e12) W
-              current as f64 * voltage as f64 / 1e12
-            })
-          },
-        };
+          current_ua.zip(voltage_uv).map(|(current, voltage)| {
+            // Power (W) = Voltage (V) * Current (A)
+            // (v / 1e6 V) * (c / 1e6 A) = (v * c / 1e12) W
+            current as f64 * voltage as f64 / 1e12
+          })
+        },
+      };
 
       log::debug!(
         "power supply '{name}' threshold config: {threshold_config:?}",
@@ -609,5 +661,57 @@ mod tests {
     power_supply.scan().expect("scan battery fixture");
 
     assert_eq!(power_supply.health, Some(0.82));
+  }
+
+  #[test]
+  fn scan_health_falls_back_to_charge_ratio() {
+    let fixture = BatteryFixture::new();
+    fixture.write("health", "Good");
+    fixture.write("charge_full", "4100000");
+    fixture.write("charge_full_design", "5000000");
+
+    let mut power_supply = fixture.power_supply();
+    power_supply.scan().expect("scan battery fixture");
+
+    assert_eq!(power_supply.health, Some(0.82));
+  }
+
+  #[test]
+  fn scan_health_ignores_malformed_optional_source_and_uses_next_pair() {
+    let fixture = BatteryFixture::new();
+    fixture.write("state_of_health", "Good");
+    fixture.write("energy_full", "invalid");
+    fixture.write("energy_full_design", "100000000");
+    fixture.write("charge_full", "4500000");
+    fixture.write("charge_full_design", "5000000");
+
+    let mut power_supply = fixture.power_supply();
+    power_supply.scan().expect("scan battery fixture");
+
+    assert_eq!(power_supply.health, Some(0.9));
+  }
+
+  #[test]
+  fn discovery_keeps_valid_supplies_when_another_supply_is_broken() {
+    let fixture = BatteryFixture::new();
+    fs::remove_file(fixture.path.join("type")).expect("remove fixture type");
+
+    let broken = fixture.path.join("broken");
+    fs::create_dir(&broken).expect("create broken supply");
+
+    let battery = fixture.path.join("BAT0");
+    fs::create_dir(&battery).expect("create battery supply");
+    fs::write(battery.join("type"), "Battery").expect("write battery type");
+    fs::write(battery.join("energy_full"), "80000000")
+      .expect("write full energy");
+    fs::write(battery.join("energy_full_design"), "100000000")
+      .expect("write design energy");
+
+    let power_supplies =
+      PowerSupply::all_in(&fixture.path).expect("discover power supplies");
+
+    assert_eq!(power_supplies.len(), 1);
+    assert_eq!(power_supplies[0].name, "BAT0");
+    assert_eq!(power_supplies[0].health, Some(0.8));
   }
 }
