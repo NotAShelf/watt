@@ -1621,7 +1621,14 @@ impl Expression {
       },
       CpuIdleSeconds => Number(state.cpu_idle_seconds),
       CpuFrequencyMaximum => Number(try_ok!(state.cpu_frequency_maximum)),
-      CpuFrequencyMinimum => Number(try_ok!(state.cpu_frequency_minimum)),
+      CpuFrequencyMinimum => {
+        Number(try_ok!(match state.context {
+          EvalContext::Cpu(cpu) =>
+            cpu.frequency_mhz_minimum.map(|mhz| mhz as f64),
+          EvalContext::PowerSupply(_) => None,
+          EvalContext::WidestPossible => state.cpu_frequency_minimum,
+        }))
+      },
 
       CpuScalingMaximum => {
         let max = state
@@ -2370,10 +2377,11 @@ mod tests {
   }
 
   #[test]
-  fn frequency_availability_is_scoped_to_the_cpu_being_evaluated() {
+  fn frequency_expressions_are_scoped_to_the_cpu_being_evaluated() {
     let available_cpu = Arc::new(cpu::Cpu {
       number: 0,
       frequency_mhz: Some(1000),
+      frequency_mhz_minimum: Some(702),
       ..cpu::Cpu::default()
     });
     let unavailable_cpu = Arc::new(cpu::Cpu {
@@ -2418,15 +2426,13 @@ mod tests {
       power_supplies:              &power_supplies,
       cpu_log:                     &cpu_log,
     };
-    let guarded_frequency = Expression::IfElse {
-      condition:   Box::new(Expression::FrequencyAvailable),
-      consequence: Box::new(Expression::Number(200.0)),
-      alternative: None,
-    };
-    let cpu_delta = CpusDelta {
-      frequency_mhz_minimum: Some(guarded_frequency),
-      ..CpusDelta::default()
-    };
+    let config = DaemonConfig::load_from(None).expect("load default config");
+    let cpu_delta = &config
+      .rules
+      .iter()
+      .find(|rule| rule.name == "battery-balanced")
+      .expect("default battery-balanced rule")
+      .cpu;
 
     let (deltas, _) = cpu_delta.eval(&state).expect("evaluate CPU deltas");
 
@@ -2434,7 +2440,7 @@ mod tests {
       deltas
         .get(&available_cpu)
         .and_then(|delta| delta.frequency_mhz_minimum),
-      Some(200)
+      Some(702)
     );
     assert_eq!(
       deltas

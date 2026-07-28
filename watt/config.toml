@@ -127,7 +127,7 @@ priority = 20
 cpu.energy-perf-bias              = { if.is-energy-perf-bias-available = "balance-performance", then = "balance-performance" }
 cpu.energy-performance-preference = { if.is-energy-performance-preference-available = "power", then = "power" }
 cpu.frequency-mhz-maximum         = { if = "?frequency-available", then = 1800 }
-cpu.frequency-mhz-minimum         = { if = "?frequency-available", then = 200 }
+cpu.frequency-mhz-minimum         = { if = "?frequency-available", then = "$cpu-frequency-minimum" }
 cpu.governor                      = { if.is-governor-available = "powersave", then = "powersave" }
 cpu.turbo                         = { if = "?turbo-available", then = false }
 
