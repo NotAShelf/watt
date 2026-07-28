@@ -19,6 +19,10 @@ use yansi::Paint as _;
 
 use crate::fs;
 
+pub mod frequency;
+
+use frequency::Frequency;
+
 #[derive(Default, Debug, Clone, PartialEq)]
 struct CpuScanCache {
   stat: OnceCell<HashMap<u32, CpuStat>>,
@@ -71,14 +75,15 @@ impl CpuStat {
 pub struct Cpu {
   pub number: u32,
 
-  pub has_cpufreq: bool,
+  pub has_cpufreq:       bool,
+  pub frequency_control: bool,
 
   pub available_governors: Vec<String>,
   pub governor:            Option<String>,
 
-  pub frequency_mhz:         Option<u64>,
-  pub frequency_mhz_minimum: Option<u64>,
-  pub frequency_mhz_maximum: Option<u64>,
+  pub frequency:         Option<Frequency>,
+  pub frequency_minimum: Option<Frequency>,
+  pub frequency_maximum: Option<Frequency>,
 
   pub available_epps: Vec<String>,
   pub epp:            Option<String>,
@@ -194,6 +199,18 @@ impl Cpu {
 
     self.has_cpufreq =
       fs::exists(format!("/sys/devices/system/cpu/cpu{number}/cpufreq"));
+    self.frequency_control = [
+      "scaling_min_freq",
+      "scaling_max_freq",
+      "cpuinfo_min_freq",
+      "cpuinfo_max_freq",
+    ]
+    .iter()
+    .all(|name| {
+      fs::exists(format!(
+        "/sys/devices/system/cpu/cpu{number}/cpufreq/{name}"
+      ))
+    });
 
     log::trace!(
       "CPU {number} has cpufreq: {has_cpufreq}",
@@ -243,31 +260,6 @@ impl Cpu {
           .collect()
       };
     }
-
-    Ok(())
-  }
-
-  fn scan_frequency(&mut self) -> anyhow::Result<()> {
-    log::trace!("scanning frequency for CPU {number}", number = self.number);
-
-    let Self { number, .. } = *self;
-
-    let frequency_khz = fs::read_n::<u64>(format!(
-      "/sys/devices/system/cpu/cpu{number}/cpufreq/cpuinfo_cur_freq"
-    ))
-    .with_context(|| format!("failed to parse {self} frequency"))?;
-    let frequency_khz_minimum = fs::read_n::<u64>(format!(
-      "/sys/devices/system/cpu/cpu{number}/cpufreq/cpuinfo_min_freq"
-    ))
-    .with_context(|| format!("failed to parse {self} frequency minimum"))?;
-    let frequency_khz_maximum = fs::read_n::<u64>(format!(
-      "/sys/devices/system/cpu/cpu{number}/cpufreq/cpuinfo_max_freq"
-    ))
-    .with_context(|| format!("failed to parse {self} frequency maximum"))?;
-
-    self.frequency_mhz = frequency_khz.map(|x| x / 1000);
-    self.frequency_mhz_minimum = frequency_khz_minimum.map(|x| x / 1000);
-    self.frequency_mhz_maximum = frequency_khz_maximum.map(|x| x / 1000);
 
     Ok(())
   }
@@ -458,22 +450,8 @@ impl Cpu {
   }
 
   pub fn set_governor(&mut self, governor: &str) -> anyhow::Result<()> {
-    let Self {
-      number,
-      available_governors: ref governors,
-      ..
-    } = *self;
-
-    if !governors
-      .iter()
-      .any(|avail_governor| avail_governor == governor)
-    {
-      bail!(
-        "governor '{governor}' is not available for {self}. available \
-         governors: {governors}",
-        governors = governors.join(", "),
-      );
-    }
+    self.validate_governor(governor)?;
+    let number = self.number;
 
     fs::write(
       format!("/sys/devices/system/cpu/cpu{number}/cpufreq/scaling_governor"),
@@ -496,20 +474,25 @@ impl Cpu {
     Ok(())
   }
 
-  pub fn set_epp(&mut self, epp: &str) -> anyhow::Result<()> {
-    let Self {
-      number,
-      available_epps: ref epps,
-      ..
-    } = *self;
-
-    if !epps.iter().any(|avail_epp| avail_epp == epp) {
+  fn validate_governor(&self, governor: &str) -> anyhow::Result<()> {
+    if !self
+      .available_governors
+      .iter()
+      .any(|value| value == governor)
+    {
       bail!(
-        "EPP value '{epp}' is not available for {self}. available EPP values: \
-         {epps}",
-        epps = epps.join(", "),
+        "governor '{governor}' is not available for {self}. available \
+         governors: {governors}",
+        governors = self.available_governors.join(", "),
       );
     }
+
+    Ok(())
+  }
+
+  pub fn set_epp(&mut self, epp: &str) -> anyhow::Result<()> {
+    self.validate_epp(epp)?;
+    let number = self.number;
 
     fs::write(
       format!(
@@ -532,20 +515,21 @@ impl Cpu {
     Ok(())
   }
 
-  pub fn set_epb(&mut self, epb: &str) -> anyhow::Result<()> {
-    let Self {
-      number,
-      available_epbs: ref epbs,
-      ..
-    } = *self;
-
-    if !epbs.iter().any(|avail_epb| avail_epb == epb) {
+  fn validate_epp(&self, epp: &str) -> anyhow::Result<()> {
+    if !self.available_epps.iter().any(|value| value == epp) {
       bail!(
-        "EPB value '{epb}' is not available for {self}. available EPB values: \
-         {valid}",
-        valid = epbs.join(", "),
+        "EPP value '{epp}' is not available for {self}. available EPP values: \
+         {epps}",
+        epps = self.available_epps.join(", "),
       );
     }
+
+    Ok(())
+  }
+
+  pub fn set_epb(&mut self, epb: &str) -> anyhow::Result<()> {
+    self.validate_epb(epb)?;
+    let number = self.number;
 
     fs::write(
       format!("/sys/devices/system/cpu/cpu{number}/power/energy_perf_bias"),
@@ -565,116 +549,12 @@ impl Cpu {
     Ok(())
   }
 
-  pub fn set_frequency_mhz_minimum(
-    &self,
-    frequency_mhz: u64,
-  ) -> anyhow::Result<()> {
-    let Self { number, .. } = *self;
-
-    self.validate_frequency_mhz_minimum(frequency_mhz)?;
-
-    // We use u64 for the intermediate calculation to prevent overflow
-    let frequency_khz = frequency_mhz * 1000;
-    let frequency_khz = frequency_khz.to_string();
-
-    fs::write(
-      format!("/sys/devices/system/cpu/cpu{number}/cpufreq/scaling_min_freq"),
-      &frequency_khz,
-    )
-    .with_context(|| {
-      format!(
-        "this probably means that {self} doesn't exist or doesn't support \
-         changing minimum frequency"
-      )
-    })?;
-
-    log::info!(
-      "CPU {number} min frequency set to {frequency_mhz} MHz",
-      number = self.number,
-    );
-
-    Ok(())
-  }
-
-  fn validate_frequency_mhz_minimum(
-    &self,
-    new_frequency_mhz: u64,
-  ) -> anyhow::Result<()> {
-    let Self { number, .. } = self;
-
-    let Some(minimum_frequency_khz) = fs::read_n::<u64>(format!(
-      "/sys/devices/system/cpu/cpu{number}/cpufreq/cpuinfo_min_freq"
-    ))
-    .with_context(|| format!("failed to read {self} minimum frequency"))?
-    else {
-      // Just let it pass if we can't find anything.
-      return Ok(());
-    };
-
-    if new_frequency_mhz * 1000 < minimum_frequency_khz {
+  fn validate_epb(&self, epb: &str) -> anyhow::Result<()> {
+    if !self.available_epbs.iter().any(|value| value == epb) {
       bail!(
-        "new software minimum frequency ({new_frequency_mhz} MHz) cannot be \
-         lower than the hardware minimum frequency ({mhz} MHz) for {self}",
-        mhz = minimum_frequency_khz / 1000,
-      );
-    }
-
-    Ok(())
-  }
-
-  pub fn set_frequency_mhz_maximum(
-    &self,
-    frequency_mhz: u64,
-  ) -> anyhow::Result<()> {
-    let Self { number, .. } = *self;
-
-    self.validate_frequency_mhz_maximum(frequency_mhz)?;
-
-    // We use u64 for the intermediate calculation to prevent overflow
-    let frequency_khz = frequency_mhz * 1000;
-    let frequency_khz = frequency_khz.to_string();
-
-    fs::write(
-      format!("/sys/devices/system/cpu/cpu{number}/cpufreq/scaling_max_freq"),
-      &frequency_khz,
-    )
-    .with_context(|| {
-      format!(
-        "this probably means that {self} doesn't exist or doesn't support \
-         changing maximum frequency"
-      )
-    })?;
-
-    log::info!(
-      "CPU {number} max frequency set to {frequency_mhz} MHz",
-      number = self.number,
-    );
-
-    Ok(())
-  }
-
-  fn validate_frequency_mhz_maximum(
-    &self,
-    new_frequency_mhz: u64,
-  ) -> anyhow::Result<()> {
-    let Self { number, .. } = self;
-
-    let Some(maximum_frequency_khz) = fs::read_n::<u64>(format!(
-      "/sys/devices/system/cpu/cpu{number}/cpufreq/cpuinfo_max_freq"
-    ))
-    .with_context(|| {
-      format!("failed to read {self} hardware maximum frequency")
-    })?
-    else {
-      // Just let it pass if we can't find anything.
-      return Ok(());
-    };
-
-    if new_frequency_mhz * 1000 > maximum_frequency_khz {
-      bail!(
-        "new software maximum frequency ({new_frequency_mhz} MHz) cannot be \
-         higher than the hardware maximum frequency ({mhz} MHz) for {self}",
-        mhz = maximum_frequency_khz / 1000,
+        "EPB value '{epb}' is not available for {self}. available EPB values: \
+         {valid}",
+        valid = self.available_epbs.join(", "),
       );
     }
 
@@ -685,6 +565,7 @@ impl Cpu {
     &self,
     latency: &str,
   ) -> anyhow::Result<()> {
+    self.validate_pm_qos_resume_latency()?;
     let Self { number, .. } = *self;
 
     fs::write(
@@ -704,6 +585,17 @@ impl Cpu {
       "CPU {number} PM QoS resume latency set to {latency} us",
       number = self.number,
     );
+
+    Ok(())
+  }
+
+  fn validate_pm_qos_resume_latency(&self) -> anyhow::Result<()> {
+    let number = self.number;
+    if !fs::exists(format!(
+      "/sys/devices/system/cpu/cpu{number}/power/pm_qos_resume_latency_us"
+    )) {
+      bail!("PM QoS resume latency is not available for {self}");
+    }
 
     Ok(())
   }
@@ -788,20 +680,6 @@ impl Cpu {
     bail!("no supported CPU boost control mechanism found");
   }
 
-  pub fn hardware_frequency_mhz_maximum() -> anyhow::Result<Option<u64>> {
-    log::trace!("reading hardware frequency limits");
-
-    fs::read_n::<u64>("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq")
-      .context("failed to read CPU hardware maximum frequency")
-      .map(|x| x.map(|freq| freq / 1000))
-  }
-
-  pub fn hardware_frequency_mhz_minimum() -> anyhow::Result<Option<u64>> {
-    fs::read_n::<u64>("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_min_freq")
-      .context("failed to read CPU hardware minimum frequency")
-      .map(|x| x.map(|freq| freq / 1000))
-  }
-
   pub fn is_intel_pstate() -> bool {
     fs::exists("/sys/devices/system/cpu/intel_pstate")
   }
@@ -833,8 +711,8 @@ pub struct Delta {
   pub governor:                      Option<String>,
   pub energy_performance_preference: Option<String>,
   pub energy_perf_bias:              Option<String>,
-  pub frequency_mhz_minimum:         Option<u64>,
-  pub frequency_mhz_maximum:         Option<u64>,
+  pub frequency_minimum:             Option<Frequency>,
+  pub frequency_maximum:             Option<Frequency>,
   pub pm_qos_resume_latency_us:      Option<String>,
 }
 
@@ -843,8 +721,8 @@ impl Delta {
     self.governor.is_some()
       && self.energy_performance_preference.is_some()
       && self.energy_perf_bias.is_some()
-      && self.frequency_mhz_minimum.is_some()
-      && self.frequency_mhz_maximum.is_some()
+      && self.frequency_minimum.is_some()
+      && self.frequency_maximum.is_some()
       && self.pm_qos_resume_latency_us.is_some()
   }
 
@@ -859,19 +737,41 @@ impl Delta {
       energy_perf_bias:              self
         .energy_perf_bias
         .or_else(|| that.energy_perf_bias.clone()),
-      frequency_mhz_minimum:         self
-        .frequency_mhz_minimum
-        .or(that.frequency_mhz_minimum),
-      frequency_mhz_maximum:         self
-        .frequency_mhz_maximum
-        .or(that.frequency_mhz_maximum),
+      frequency_minimum:             self
+        .frequency_minimum
+        .or(that.frequency_minimum),
+      frequency_maximum:             self
+        .frequency_maximum
+        .or(that.frequency_maximum),
       pm_qos_resume_latency_us:      self
         .pm_qos_resume_latency_us
         .or_else(|| that.pm_qos_resume_latency_us.clone()),
     }
   }
 
+  pub fn validate(&self, cpu: &Cpu) -> anyhow::Result<()> {
+    if let Some(governor) = &self.governor {
+      cpu.validate_governor(governor)?;
+    }
+    if let Some(epp) = &self.energy_performance_preference {
+      cpu.validate_epp(epp)?;
+    }
+    if let Some(epb) = &self.energy_perf_bias {
+      cpu.validate_epb(epb)?;
+    }
+    if self.pm_qos_resume_latency_us.is_some() {
+      cpu.validate_pm_qos_resume_latency()?;
+    }
+
+    cpu
+      .frequency_transition(self.frequency_minimum, self.frequency_maximum)
+      .map(|_| ())
+  }
+
   pub fn apply(&self, cpu: &mut Cpu) -> anyhow::Result<()> {
+    let frequency = cpu
+      .frequency_transition(self.frequency_minimum, self.frequency_maximum)?;
+
     if let Some(governor) = &self.governor {
       cpu.set_governor(governor)?;
     }
@@ -884,12 +784,8 @@ impl Delta {
       cpu.set_epb(epb)?;
     }
 
-    if let Some(mhz_minimum) = self.frequency_mhz_minimum {
-      cpu.set_frequency_mhz_minimum(mhz_minimum)?;
-    }
-
-    if let Some(mhz_maximum) = self.frequency_mhz_maximum {
-      cpu.set_frequency_mhz_maximum(mhz_maximum)?;
+    if let Some(frequency) = frequency {
+      cpu.apply_frequency_transition(frequency)?;
     }
 
     if let Some(latency) = &self.pm_qos_resume_latency_us {
