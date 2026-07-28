@@ -1184,7 +1184,7 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
         frequency_available: system
           .cpus
           .iter()
-          .any(|cpu| cpu.frequency_mhz.is_some()),
+          .any(|cpu| cpu.frequency_available()),
         turbo_available: cpu::Cpu::turbo()
           .context(
             "failed to read CPU turbo boost status for `is-turbo-available`",
@@ -1198,12 +1198,18 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
           .cpu_volatility()
           .and_then(|vol| vol.temperature),
         cpu_idle_seconds: last_user_activity.elapsed().as_secs_f64(),
-        cpu_frequency_maximum: cpu::Cpu::hardware_frequency_mhz_maximum()
-          .context("failed to read CPU hardware maximum frequency")?
-          .map(|u64| u64 as f64),
-        cpu_frequency_minimum: cpu::Cpu::hardware_frequency_mhz_minimum()
-          .context("failed to read CPU hardware minimum frequency")?
-          .map(|u64| u64 as f64),
+        cpu_frequency_maximum: system
+          .cpus
+          .iter()
+          .filter_map(|cpu| cpu.frequency_maximum)
+          .max()
+          .map(|frequency| frequency.as_mhz()),
+        cpu_frequency_minimum: system
+          .cpus
+          .iter()
+          .filter_map(|cpu| cpu.frequency_minimum)
+          .min()
+          .map(|frequency| frequency.as_mhz()),
 
         lid_closed: system.lid_closed,
         virtual_machine: system.virtual_machine,
@@ -1388,6 +1394,12 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
             break;
           }
         }
+      }
+
+      for (cpu, delta) in &cpu_deltas {
+        delta
+          .validate(cpu)
+          .with_context(|| format!("failed to validate delta for {cpu}"))?;
       }
 
       for (cpu, delta) in &cpu_deltas {

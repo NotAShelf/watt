@@ -104,12 +104,12 @@ pub struct CpusDelta {
 
   /// Set minimum CPU frequency in MHz.
   ///
-  /// Type: `u64`.
+  /// Type: positive number, in MHz with kHz precision.
   #[serde(skip_serializing_if = "is_default")]
   pub frequency_mhz_minimum: Option<Expression>,
   /// Set maximum CPU frequency in MHz.
   ///
-  /// Type: `u64`.
+  /// Type: positive number, in MHz with kHz precision.
   #[serde(skip_serializing_if = "is_default")]
   pub frequency_mhz_maximum: Option<Expression>,
 
@@ -222,49 +222,16 @@ impl CpusDelta {
         delta.energy_perf_bias = Some(energy_perf_bias);
       }
 
-      if let Some(frequency_mhz_minimum) = &self.frequency_mhz_minimum
-        && let Some(frequency_mhz_minimum) =
-          frequency_mhz_minimum.eval(&state)?
-      {
-        let frequency_mhz_minimum = frequency_mhz_minimum
-          .try_into_number()
-          .context("`cpu.frequency-mhz-minimum` was not a number")?;
-
-        let rounded_value = if frequency_mhz_minimum.fract() != 0.0 {
-          let rounded = frequency_mhz_minimum.round() as u64;
-          log::warn!(
-            "`cpu.frequency-mhz-minimum` yielded a float value \
-             ({frequency_mhz_minimum}), rounding to {rounded}"
-          );
-          rounded
-        } else {
-          frequency_mhz_minimum as u64
-        };
-
-        delta.frequency_mhz_minimum = Some(rounded_value);
-      }
-
-      if let Some(frequency_mhz_maximum) = &self.frequency_mhz_maximum
-        && let Some(frequency_mhz_maximum) =
-          frequency_mhz_maximum.eval(&state)?
-      {
-        let frequency_mhz_maximum = frequency_mhz_maximum
-          .try_into_number()
-          .context("`cpu.frequency-mhz-maximum` was not a number")?;
-
-        let rounded_value = if frequency_mhz_maximum.fract() != 0.0 {
-          let rounded = frequency_mhz_maximum.round() as u64;
-          log::warn!(
-            "`cpu.frequency-mhz-maximum` yielded a float value \
-             ({frequency_mhz_maximum}), rounding to {rounded}"
-          );
-          rounded
-        } else {
-          frequency_mhz_maximum as u64
-        };
-
-        delta.frequency_mhz_maximum = Some(rounded_value);
-      }
+      delta.frequency_minimum = eval_frequency(
+        &self.frequency_mhz_minimum,
+        &state,
+        "cpu.frequency-mhz-minimum",
+      )?;
+      delta.frequency_maximum = eval_frequency(
+        &self.frequency_mhz_maximum,
+        &state,
+        "cpu.frequency-mhz-maximum",
+      )?;
 
       if let Some(pm_qos_resume_latency_us) = &self.pm_qos_resume_latency_us
         && let Some(pm_qos_resume_latency_us) =
@@ -719,6 +686,25 @@ fn eval_u32(
   }
 
   Ok(Some(value as u32))
+}
+
+fn eval_frequency(
+  expression: &Option<Expression>,
+  state: &EvalState<'_, '_>,
+  name: &str,
+) -> anyhow::Result<Option<cpu::frequency::Frequency>> {
+  let Some(expression) = expression else {
+    return Ok(None);
+  };
+  let Some(value) = expression.eval(state)? else {
+    return Ok(None);
+  };
+  let value = value
+    .try_into_number()
+    .with_context(|| format!("`{name}` was not a number"))?;
+  cpu::frequency::Frequency::from_mhz(value)
+    .with_context(|| format!("invalid `{name}`"))
+    .map(Some)
 }
 
 fn eval_i32(
@@ -1578,7 +1564,7 @@ impl Expression {
       },
       FrequencyAvailable => {
         Boolean(match state.context {
-          EvalContext::Cpu(cpu) => cpu.frequency_mhz.is_some(),
+          EvalContext::Cpu(cpu) => cpu.frequency_available(),
           EvalContext::PowerSupply(_) => false,
           EvalContext::WidestPossible => state.frequency_available,
         })
@@ -1620,11 +1606,16 @@ impl Expression {
         Number(try_ok!(state.cpu_temperature_volatility))
       },
       CpuIdleSeconds => Number(state.cpu_idle_seconds),
-      CpuFrequencyMaximum => Number(try_ok!(state.cpu_frequency_maximum)),
+      CpuFrequencyMaximum => {
+        Number(try_ok!(match state.context {
+          EvalContext::Cpu(cpu) => cpu.frequency_maximum.map(|f| f.as_mhz()),
+          EvalContext::PowerSupply(_) => None,
+          EvalContext::WidestPossible => state.cpu_frequency_maximum,
+        }))
+      },
       CpuFrequencyMinimum => {
         Number(try_ok!(match state.context {
-          EvalContext::Cpu(cpu) =>
-            cpu.frequency_mhz_minimum.map(|mhz| mhz as f64),
+          EvalContext::Cpu(cpu) => cpu.frequency_minimum.map(|f| f.as_mhz()),
           EvalContext::PowerSupply(_) => None,
           EvalContext::WidestPossible => state.cpu_frequency_minimum,
         }))
@@ -1634,9 +1625,9 @@ impl Expression {
         let max = state
           .cpus
           .iter()
-          .filter_map(|cpu| cpu.frequency_mhz_maximum)
+          .filter_map(|cpu| cpu.frequency_maximum)
           .max()
-          .map(|v| v as f64);
+          .map(|frequency| frequency.as_mhz());
         Number(try_ok!(max))
       },
 
@@ -2008,6 +1999,11 @@ mod tests {
 
   use super::*;
 
+  fn frequency_mhz(mhz: u64) -> cpu::frequency::Frequency {
+    cpu::frequency::Frequency::from_mhz(mhz as f64)
+      .expect("valid test frequency")
+  }
+
   proptest! {
     #[test]
     fn test_multiply_float(
@@ -2020,11 +2016,12 @@ mod tests {
       let cpu = Arc::new(cpu::Cpu {
         number: 0,
         has_cpufreq: true,
+        frequency_control: true,
         available_governors: vec![],
         governor: None,
-        frequency_mhz: Some(base_freq),
-        frequency_mhz_minimum: Some(1000),
-        frequency_mhz_maximum: Some(base_freq),
+        frequency: Some(frequency_mhz(base_freq)),
+        frequency_minimum: Some(frequency_mhz(1000)),
+        frequency_maximum: Some(frequency_mhz(base_freq)),
         available_epps: vec![],
         epp: None,
         available_epbs: vec![],
@@ -2124,20 +2121,21 @@ mod tests {
   #[test]
   fn test_rounding() {
     let cpu = Arc::new(cpu::Cpu {
-      number:                0,
-      has_cpufreq:           true,
-      available_governors:   vec![],
-      governor:              None,
-      frequency_mhz:         Some(3333),
-      frequency_mhz_minimum: Some(1000),
-      frequency_mhz_maximum: Some(3333),
-      available_epps:        vec![],
-      epp:                   None,
-      available_epbs:        vec![],
-      epb:                   None,
-      stat:                  cpu::CpuStat::default(),
-      previous_stat:         None,
-      info:                  None,
+      number:              0,
+      has_cpufreq:         true,
+      frequency_control:   true,
+      available_governors: vec![],
+      governor:            None,
+      frequency:           Some(frequency_mhz(3333)),
+      frequency_minimum:   Some(frequency_mhz(1000)),
+      frequency_maximum:   Some(frequency_mhz(3333)),
+      available_epps:      vec![],
+      epp:                 None,
+      available_epbs:      vec![],
+      epb:                 None,
+      stat:                cpu::CpuStat::default(),
+      previous_stat:       None,
+      info:                None,
     });
 
     let mut cpus = HashSet::new();
@@ -2208,29 +2206,30 @@ mod tests {
 
     if let Ok((deltas, _)) = result {
       let delta = deltas.get(&cpu).unwrap();
-      assert!(delta.frequency_mhz_maximum.is_some());
-      let freq = delta.frequency_mhz_maximum.unwrap();
-      assert_eq!(freq, 2166); // should be rounded to 2166
+      assert!(delta.frequency_maximum.is_some());
+      let frequency = delta.frequency_maximum.unwrap();
+      assert_eq!(frequency.as_khz(), 2_166_450);
     }
   }
 
   #[test]
   fn test_volatility_expressions_with_insufficient_data() {
     let cpu = Arc::new(cpu::Cpu {
-      number:                0,
-      has_cpufreq:           true,
-      available_governors:   vec![],
-      governor:              None,
-      frequency_mhz:         Some(3333),
-      frequency_mhz_minimum: Some(1000),
-      frequency_mhz_maximum: Some(3333),
-      available_epps:        vec![],
-      epp:                   None,
-      available_epbs:        vec![],
-      epb:                   None,
-      stat:                  cpu::CpuStat::default(),
-      previous_stat:         None,
-      info:                  None,
+      number:              0,
+      has_cpufreq:         true,
+      frequency_control:   true,
+      available_governors: vec![],
+      governor:            None,
+      frequency:           Some(frequency_mhz(3333)),
+      frequency_minimum:   Some(frequency_mhz(1000)),
+      frequency_maximum:   Some(frequency_mhz(3333)),
+      available_epps:      vec![],
+      epp:                 None,
+      available_epbs:      vec![],
+      epb:                 None,
+      stat:                cpu::CpuStat::default(),
+      previous_stat:       None,
+      info:                None,
     });
 
     let mut cpus = HashSet::new();
@@ -2294,23 +2293,21 @@ mod tests {
   #[test]
   fn first_available_governor_selects_first_supported_value() {
     let cpu = Arc::new(cpu::Cpu {
-      number:                0,
-      has_cpufreq:           true,
-      available_governors:   vec![
-        "powersave".to_owned(),
-        "schedutil".to_owned(),
-      ],
-      governor:              None,
-      frequency_mhz:         Some(3333),
-      frequency_mhz_minimum: Some(1000),
-      frequency_mhz_maximum: Some(3333),
-      available_epps:        vec![],
-      epp:                   None,
-      available_epbs:        vec![],
-      epb:                   None,
-      stat:                  cpu::CpuStat::default(),
-      previous_stat:         None,
-      info:                  None,
+      number:              0,
+      has_cpufreq:         true,
+      frequency_control:   true,
+      available_governors: vec!["powersave".to_owned(), "schedutil".to_owned()],
+      governor:            None,
+      frequency:           Some(frequency_mhz(3333)),
+      frequency_minimum:   Some(frequency_mhz(1000)),
+      frequency_maximum:   Some(frequency_mhz(3333)),
+      available_epps:      vec![],
+      epp:                 None,
+      available_epbs:      vec![],
+      epb:                 None,
+      stat:                cpu::CpuStat::default(),
+      previous_stat:       None,
+      info:                None,
     });
 
     let mut cpus = HashSet::new();
@@ -2375,78 +2372,8 @@ mod tests {
 
     assert_eq!(result, None);
   }
-
-  #[test]
-  fn frequency_expressions_are_scoped_to_the_cpu_being_evaluated() {
-    let available_cpu = Arc::new(cpu::Cpu {
-      number: 0,
-      frequency_mhz: Some(1000),
-      frequency_mhz_minimum: Some(702),
-      ..cpu::Cpu::default()
-    });
-    let unavailable_cpu = Arc::new(cpu::Cpu {
-      number: 6,
-      frequency_mhz: None,
-      ..cpu::Cpu::default()
-    });
-    let cpus =
-      HashSet::from([Arc::clone(&available_cpu), Arc::clone(&unavailable_cpu)]);
-
-    let power_supplies = HashSet::new();
-    let uncores = HashSet::new();
-    let disks = HashSet::new();
-    let usb_devices = HashSet::new();
-    let gpus = HashSet::new();
-    let cpu_log = VecDeque::new();
-    let state = EvalState {
-      frequency_available:         true,
-      turbo_available:             false,
-      cpu_usage:                   0.0,
-      cpu_usage_volatility:        None,
-      cpu_temperature:             None,
-      cpu_temperature_volatility:  None,
-      cpu_idle_seconds:            0.0,
-      cpu_frequency_maximum:       None,
-      cpu_frequency_minimum:       None,
-      lid_closed:                  false,
-      virtual_machine:             false,
-      chassis_type:                None,
-      power_supply_charge:         None,
-      power_supply_discharge_rate: None,
-      battery_cycles:              None,
-      battery_health:              None,
-      discharging:                 false,
-      power_profile_preference:    crate::profile::PowerProfile::Balanced,
-      context:                     EvalContext::WidestPossible,
-      cpus:                        &cpus,
-      uncores:                     &uncores,
-      disks:                       &disks,
-      usb_devices:                 &usb_devices,
-      gpus:                        &gpus,
-      power_supplies:              &power_supplies,
-      cpu_log:                     &cpu_log,
-    };
-    let config = DaemonConfig::load_from(None).expect("load default config");
-    let cpu_delta = &config
-      .rules
-      .iter()
-      .find(|rule| rule.name == "battery-balanced")
-      .expect("default battery-balanced rule")
-      .cpu;
-
-    let (deltas, _) = cpu_delta.eval(&state).expect("evaluate CPU deltas");
-
-    assert_eq!(
-      deltas
-        .get(&available_cpu)
-        .and_then(|delta| delta.frequency_mhz_minimum),
-      Some(702)
-    );
-    assert_eq!(
-      deltas
-        .get(&unavailable_cpu)
-        .and_then(|delta| delta.frequency_mhz_minimum),
-      None
-    );
-  }
 }
+
+#[cfg(test)]
+#[path = "config/frequency_tests.rs"]
+mod frequency_tests;
