@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use anyhow::{
   Context,
   bail,
@@ -120,12 +118,12 @@ fn write_transparent_hugepage(name: &str, value: &str) -> anyhow::Result<()> {
     .with_context(|| format!("failed to set transparent hugepage '{name}'"))
 }
 
-fn transparent_hugepage_path() -> Option<&'static Path> {
-  let path = Path::new("/sys/kernel/mm/transparent_hugepage");
-  if path.exists() {
+fn transparent_hugepage_path() -> Option<std::path::PathBuf> {
+  let path = fs::path("/sys/kernel/mm/transparent_hugepage");
+  if fs::exists(&path) {
     return Some(path);
   }
 
-  let path = Path::new("/sys/kernel/mm/redhat_transparent_hugepage");
-  path.exists().then_some(path)
+  let path = fs::path("/sys/kernel/mm/redhat_transparent_hugepage");
+  fs::exists(&path).then_some(path)
 }

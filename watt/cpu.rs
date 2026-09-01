@@ -866,7 +866,7 @@ impl DmaLatency {
     if let Some(latency_us) = latency_us {
       let mut file = OpenOptions::new()
         .write(true)
-        .open("/dev/cpu_dma_latency")
+        .open(fs::path("/dev/cpu_dma_latency"))
         .context("failed to open /dev/cpu_dma_latency")?;
 
       file
@@ -883,5 +883,65 @@ impl DmaLatency {
     }
 
     Ok(())
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use std::{
+    env,
+    fs,
+    process,
+  };
+
+  use super::*;
+
+  #[test]
+  fn scans_and_applies_cpu_controls_in_a_virtual_system_tree() {
+    let root =
+      env::temp_dir().join(format!("watt-cpu-fixture-{}", process::id(),));
+    let cpufreq = root.join("sys/devices/system/cpu/cpu0/cpufreq");
+    fs::create_dir_all(&cpufreq).unwrap();
+    fs::create_dir_all(root.join("proc")).unwrap();
+
+    for (name, value) in [
+      ("scaling_governor", "schedutil"),
+      ("scaling_available_governors", "schedutil powersave"),
+      ("cpuinfo_cur_freq", "1500000"),
+      ("cpuinfo_min_freq", "800000"),
+      ("cpuinfo_max_freq", "3000000"),
+      ("scaling_min_freq", "800000"),
+      ("scaling_max_freq", "3000000"),
+    ] {
+      fs::write(cpufreq.join(name), value).unwrap();
+    }
+    fs::write(
+      root.join("proc/stat"),
+      "cpu 1 0 1 8 0 0 0 0\ncpu0 1 0 1 8 0 0 0 0\n",
+    )
+    .unwrap();
+    fs::write(root.join("proc/cpuinfo"), "processor : 0\n\n").unwrap();
+
+    let _root = crate::fs::set_system_root_for_tests(&root);
+    let mut cpu = Cpu::all().unwrap().pop().unwrap();
+    Delta {
+      governor: Some("powersave".to_owned()),
+      frequency_minimum: Some(Frequency::from_khz(1_000_000).unwrap()),
+      ..Delta::default()
+    }
+    .apply(&mut cpu)
+    .unwrap();
+
+    assert_eq!(
+      fs::read_to_string(cpufreq.join("scaling_governor")).unwrap(),
+      "powersave"
+    );
+    assert_eq!(
+      fs::read_to_string(cpufreq.join("scaling_min_freq")).unwrap(),
+      "1000000"
+    );
+
+    drop(_root);
+    fs::remove_dir_all(root).unwrap();
   }
 }
