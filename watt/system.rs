@@ -68,6 +68,43 @@ struct PowerSupplyLog {
   charge: f64,
 }
 
+#[derive(Default, Debug)]
+struct RuntimeFailures {
+  errors: HashMap<String, u64>,
+  seen:   HashSet<String>,
+}
+
+impl RuntimeFailures {
+  fn begin_iteration(&mut self) {
+    self.seen.clear();
+  }
+
+  fn record(&mut self, context: &'static str, error: anyhow::Error) {
+    let message = error.to_string();
+    let key = format!("{context}: {message}");
+    self.seen.insert(key.clone());
+
+    if let Some(occurrences) = self.errors.get_mut(&key) {
+      *occurrences += 1;
+      log::debug!("runtime failure persists: {key}");
+      return;
+    }
+
+    log::error!("runtime failure: {key}");
+    self.errors.insert(key, 1);
+  }
+
+  fn finish_iteration(&mut self) {
+    self.errors.retain(|key, _| {
+      let recovered = !self.seen.contains(key);
+      if recovered {
+        log::info!("runtime failure recovered: {key}");
+      }
+      !recovered
+    });
+  }
+}
+
 #[derive(Default, Debug, Clone)]
 struct System {
   is_ac: bool,
@@ -110,264 +147,173 @@ struct System {
 }
 
 impl System {
-  fn scan(&mut self) -> anyhow::Result<()> {
+  fn scan(&mut self, failures: &mut RuntimeFailures) {
     log::info!("scanning view of system hardware...");
 
-    {
-      let start = Instant::now();
+    self.scan_component(failures, "CPU scan", Self::scan_cpus);
+    self.scan_component(
+      failures,
+      "power supply scan",
+      Self::scan_power_supplies,
+    );
+    self.scan_component(failures, "uncore scan", Self::scan_uncores);
+    self.scan_component(failures, "disk scan", Self::scan_disks);
+    self.scan_component(failures, "USB scan", Self::scan_usb_devices);
+    self.scan_component(failures, "GPU scan", Self::scan_gpus);
+    self.scan_component(failures, "AC state scan", Self::scan_ac_state);
+    self.scan_component(failures, "load average scan", Self::scan_load_average);
+    self.scan_component(failures, "lid state scan", Self::scan_lid_state);
+    self.scan_component(failures, "chassis type scan", Self::scan_chassis_type);
+    self.scan_component(
+      failures,
+      "virtual machine scan",
+      Self::scan_virtual_machine,
+    );
+    self.scan_component(failures, "temperature scan", Self::scan_temperatures);
+    self.append_logs();
+  }
 
-      // Preserve previous stats for delta calculation
-      let previous_stats: HashMap<u32, cpu::CpuStat> = self
-        .cpus
-        .iter()
-        .map(|cpu| (cpu.number, cpu.stat.clone()))
-        .collect();
-
-      self.cpus = cpu::Cpu::all()
-        .context("failed to scan CPUs")?
-        .into_iter()
-        .map(|mut cpu| {
-          // Transfer previous stat for this CPU
-          cpu.previous_stat = previous_stats.get(&cpu.number).cloned();
-          Arc::from(cpu)
-        })
-        .collect();
-      log::info!(
-        "scanned all CPUs in {millis}ms",
-        millis = start.elapsed().as_millis(),
-      );
+  fn scan_component(
+    &mut self,
+    failures: &mut RuntimeFailures,
+    context: &'static str,
+    scan: impl FnOnce(&mut Self) -> anyhow::Result<()>,
+  ) {
+    if let Err(error) = scan(self) {
+      failures.record(context, error);
     }
+  }
 
-    {
-      let start = Instant::now();
-      self.power_supplies = power_supply::PowerSupply::all()
-        .context("failed to scan power supplies")?
-        .into_iter()
-        .map(Arc::from)
-        .collect();
-      log::info!(
-        "scanned all power supplies in {millis}ms",
-        millis = start.elapsed().as_millis(),
-      );
-    }
+  fn scan_cpus(&mut self) -> anyhow::Result<()> {
+    let previous_stats: HashMap<u32, cpu::CpuStat> = self
+      .cpus
+      .iter()
+      .map(|cpu| (cpu.number, cpu.stat.clone()))
+      .collect();
+    self.cpus = cpu::Cpu::all()?
+      .into_iter()
+      .map(|mut cpu| {
+        cpu.previous_stat = previous_stats.get(&cpu.number).cloned();
+        Arc::from(cpu)
+      })
+      .collect();
+    Ok(())
+  }
 
-    {
-      let start = Instant::now();
-      self.uncores = uncore::Uncore::all()
-        .context("failed to scan uncore devices")?
-        .into_iter()
-        .map(Arc::from)
-        .collect();
-      log::info!(
-        "scanned all uncore devices in {millis}ms",
-        millis = start.elapsed().as_millis(),
-      );
-    }
+  fn scan_power_supplies(&mut self) -> anyhow::Result<()> {
+    self.power_supplies = power_supply::PowerSupply::all()?
+      .into_iter()
+      .map(Arc::from)
+      .collect();
+    Ok(())
+  }
 
-    {
-      let start = Instant::now();
-      self.disks = disk::Disk::all()
-        .context("failed to scan disks")?
-        .into_iter()
-        .map(Arc::from)
-        .collect();
-      log::info!(
-        "scanned all disks in {millis}ms",
-        millis = start.elapsed().as_millis(),
-      );
-    }
+  fn scan_uncores(&mut self) -> anyhow::Result<()> {
+    self.uncores = uncore::Uncore::all()?.into_iter().map(Arc::from).collect();
+    Ok(())
+  }
 
-    {
-      let start = Instant::now();
-      self.usb_devices = usb::UsbDevice::all()
-        .context("failed to scan USB devices")?
-        .into_iter()
-        .map(Arc::from)
-        .collect();
-      log::info!(
-        "scanned all USB devices in {millis}ms",
-        millis = start.elapsed().as_millis(),
-      );
-    }
+  fn scan_disks(&mut self) -> anyhow::Result<()> {
+    self.disks = disk::Disk::all()?.into_iter().map(Arc::from).collect();
+    Ok(())
+  }
 
-    {
-      let start = Instant::now();
-      self.gpus = gpu::Gpu::all()
-        .context("failed to scan GPUs")?
-        .into_iter()
-        .map(Arc::from)
-        .collect();
-      log::info!(
-        "scanned all GPUs in {millis}ms",
-        millis = start.elapsed().as_millis(),
-      );
-    }
+  fn scan_usb_devices(&mut self) -> anyhow::Result<()> {
+    self.usb_devices =
+      usb::UsbDevice::all()?.into_iter().map(Arc::from).collect();
+    Ok(())
+  }
 
+  fn scan_gpus(&mut self) -> anyhow::Result<()> {
+    self.gpus = gpu::Gpu::all()?.into_iter().map(Arc::from).collect();
+    Ok(())
+  }
+
+  fn scan_ac_state(&mut self) -> anyhow::Result<()> {
     self.is_ac = self
       .power_supplies
       .iter()
       .any(|power_supply| power_supply.is_ac())
-      || {
-        log::debug!(
-          "checking whether if this device is a desktop to determine if it is \
-           AC as no power supplies are"
-        );
+      || self.is_desktop()?;
+    Ok(())
+  }
 
-        let start = Instant::now();
-        let is_desktop = self.is_desktop()?;
-        log::debug!(
-          "checked if is a desktop in {millis}ms",
-          millis = start.elapsed().as_millis(),
-        );
+  fn scan_chassis_type(&mut self) -> anyhow::Result<()> {
+    self.chassis_type = read_chassis_type()?;
+    Ok(())
+  }
 
-        log::debug!(
-          "scan result: {elaborate}",
-          elaborate = if is_desktop {
-            "is a desktop, therefore is AC"
-          } else {
-            "not a desktop, and not AC"
-          },
-        );
+  fn scan_virtual_machine(&mut self) -> anyhow::Result<()> {
+    self.virtual_machine = detect_virtual_machine()?;
+    Ok(())
+  }
 
-        is_desktop
-      };
-
-    {
-      let start = Instant::now();
-      self.scan_load_average()?;
-      log::info!(
-        "scanned load average in {millis}ms",
-        millis = start.elapsed().as_millis(),
-      );
-    }
-
-    {
-      let start = Instant::now();
-      self.scan_lid_state()?;
-      log::info!(
-        "scanned lid state in {millis}ms",
-        millis = start.elapsed().as_millis(),
-      );
-    }
-
-    {
-      let start = Instant::now();
-      self.chassis_type =
-        read_chassis_type().context("failed to read chassis type")?;
-      self.virtual_machine = detect_virtual_machine()
-        .context("failed to detect virtualization status")?;
-      log::info!(
-        "scanned platform identity in {millis}ms",
-        millis = start.elapsed().as_millis(),
-      );
-    }
-
-    {
-      let start = Instant::now();
-      self.scan_temperatures()?;
-      log::info!(
-        "scanned temperatures in {millis}ms",
-        millis = start.elapsed().as_millis(),
-      );
-    }
-
-    log::debug!("appending to system logs...");
-
+  fn append_logs(&mut self) {
     let at = Instant::now();
+    self.append_cpu_log(at);
+    self.append_power_supply_log(at);
+    self.aggregate_battery_data();
+  }
 
-    while self.cpu_log.len() > 100 {
-      log::debug!("daemon CPU log was too long, popping element");
+  fn append_cpu_log(&mut self, at: Instant) {
+    if self.cpus.is_empty() {
+      return;
+    }
+    while self.cpu_log.len() >= 100 {
       self.cpu_log.pop_front();
     }
-
-    let cpu_log = CpuLog {
+    self.cpu_log.push_back(CpuLog {
       at,
-
       usage: self.cpus.iter().map(|cpu| cpu.current_usage()).sum::<f64>()
         / self.cpus.len() as f64,
-
       temperature: (!self.cpu_temperatures.is_empty()).then(|| {
         self.cpu_temperatures.values().sum::<f64>()
           / self.cpu_temperatures.len() as f64
       }),
-
       load_average: self.load_average_1min,
-    };
-    log::debug!("appending CPU log item: {cpu_log:?}");
-    self.cpu_log.push_back(cpu_log);
+    });
+  }
 
-    while self.power_supply_log.len() > 100 {
-      log::debug!("daemon power supply log was too long, popping element");
+  fn append_power_supply_log(&mut self, at: Instant) {
+    let (charge_sum, charge_count) = self.power_supplies.iter().fold(
+      (0.0, 0u32),
+      |(sum, count), power_supply| {
+        match power_supply.charge_percent {
+          Some(charge) => (sum + charge, count + 1),
+          None => (sum, count),
+        }
+      },
+    );
+    if charge_count == 0 {
+      return;
+    }
+    while self.power_supply_log.len() >= 100 {
       self.power_supply_log.pop_front();
     }
+    self.power_supply_log.push_back(PowerSupplyLog {
+      at,
+      charge: charge_sum / charge_count as f64,
+    });
+  }
 
-    if !self.power_supplies.is_empty() {
-      let power_supply_log = PowerSupplyLog {
-        at,
-        charge: {
-          let (charge_sum, charge_nr) = self.power_supplies.iter().fold(
-            (0.0, 0u32),
-            |(sum, count), power_supply| {
-              if let Some(charge_percent) = power_supply.charge_percent {
-                (sum + charge_percent, count + 1)
-              } else {
-                (sum, count)
-              }
-            },
-          );
-
-          charge_sum / charge_nr as f64
-        },
-      };
-      log::debug!("appending power supply log item: {power_supply_log:?}");
-      self.power_supply_log.push_back(power_supply_log);
-    }
-
-    // Aggregate battery cycle count and health
+  fn aggregate_battery_data(&mut self) {
     let batteries = config::find_batteries(&self.power_supplies);
-
-    if self.power_supplies.is_empty() || batteries.is_empty() {
-      self.battery_cycles = None;
-      self.battery_health = None;
-    } else {
-      // Calculate average cycle count across all batteries
-      let (cycle_sum, cycles) =
-        batteries
-          .iter()
-          .fold((0u64, 0u32), |(sum, count), power_supply| {
-            if let Some(cycles) = power_supply.cycles {
-              (sum + cycles, count + 1)
-            } else {
-              (sum, count)
-            }
-          });
-
-      self.battery_cycles = if cycles > 0 {
-        Some(cycle_sum as f64 / cycles as f64)
-      } else {
-        None
-      };
-
-      // Calculate average health across all batteries
-      let (health_sum, health_count) =
-        batteries
-          .iter()
-          .fold((0.0, 0u32), |(sum, count), power_supply| {
-            if let Some(health) = power_supply.health {
-              (sum + health, count + 1)
-            } else {
-              (sum, count)
-            }
-          });
-
-      self.battery_health = if health_count > 0 {
-        Some(health_sum / health_count as f64)
-      } else {
-        None
-      };
-    }
-
-    Ok(())
+    let (cycle_sum, cycle_count, health_sum, health_count) =
+      batteries.iter().fold(
+        (0u64, 0u32, 0.0, 0u32),
+        |(cycles, cycle_count, health, health_count), battery| {
+          (
+            cycles + battery.cycles.unwrap_or_default(),
+            cycle_count + u32::from(battery.cycles.is_some()),
+            health + battery.health.unwrap_or_default(),
+            health_count + u32::from(battery.health.is_some()),
+          )
+        },
+      );
+    self.battery_cycles =
+      (cycle_count > 0).then(|| cycle_sum as f64 / cycle_count as f64);
+    self.battery_health =
+      (health_count > 0).then(|| health_sum / health_count as f64);
   }
 
   fn scan_temperatures(&mut self) -> anyhow::Result<()> {
@@ -1152,6 +1098,7 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
   let mut last_polling_delay = None::<Duration>;
   let mut last_user_activity = Instant::now();
   let mut system = System::default();
+  let mut runtime_failures = RuntimeFailures::default();
   let mut dma_latency = cpu::DmaLatency::default();
   let shutdown_signal = signal::ctrl_c();
   tokio::pin!(shutdown_signal);
@@ -1170,7 +1117,9 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
     log::debug!("starting main polling loop iteration");
     let start = Instant::now();
 
-    system.scan()?;
+    runtime_failures.begin_iteration();
+    system.scan(&mut runtime_failures);
+    runtime_failures.finish_iteration();
 
     if !system.is_cpu_idle() {
       last_user_activity = Instant::now();
@@ -1517,4 +1466,28 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
   log::info!("stopping polling loop and shutting down");
 
   Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn a_failed_scan_keeps_other_scan_failures_local() {
+    let root = std::env::temp_dir()
+      .join(format!("watt-empty-system-{}", std::process::id(),));
+    std::fs::create_dir_all(&root).unwrap();
+    let _root = crate::fs::set_system_root_for_tests(&root);
+    let mut system = System::default();
+    let mut failures = RuntimeFailures::default();
+
+    failures.begin_iteration();
+    system.scan(&mut failures);
+
+    assert!(failures.errors.len() > 1);
+    assert!(system.cpu_log.is_empty());
+
+    drop(_root);
+    std::fs::remove_dir_all(root).unwrap();
+  }
 }
