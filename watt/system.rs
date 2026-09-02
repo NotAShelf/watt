@@ -70,8 +70,15 @@ struct PowerSupplyLog {
 
 #[derive(Default, Debug)]
 struct RuntimeFailures {
-  errors: HashMap<String, u64>,
+  errors: HashMap<String, RuntimeFailure>,
   seen:   HashSet<String>,
+}
+
+#[derive(Debug, Clone)]
+struct RuntimeFailure {
+  first:       Instant,
+  latest:      Instant,
+  occurrences: u64,
 }
 
 impl RuntimeFailures {
@@ -80,19 +87,37 @@ impl RuntimeFailures {
   }
 
   fn record(&mut self, context: impl Into<String>, error: anyhow::Error) {
+    const MAX_FAILURES: usize = 32;
+
     let context = context.into();
     let message = error.to_string();
     let key = format!("{context}: {message}");
     self.seen.insert(key.clone());
 
-    if let Some(occurrences) = self.errors.get_mut(&key) {
-      *occurrences += 1;
+    if let Some(failure) = self.errors.get_mut(&key) {
+      failure.latest = Instant::now();
+      failure.occurrences += 1;
       log::debug!("runtime failure persists: {key}");
       return;
     }
 
+    if self.errors.len() >= MAX_FAILURES
+      && let Some(key) = self
+        .errors
+        .iter()
+        .min_by_key(|(_, failure)| failure.latest)
+        .map(|(key, _)| key.clone())
+    {
+      self.errors.remove(&key);
+    }
+
     log::error!("runtime failure: {key}");
-    self.errors.insert(key, 1);
+    let now = Instant::now();
+    self.errors.insert(key, RuntimeFailure {
+      first:       now,
+      latest:      now,
+      occurrences: 1,
+    });
   }
 
   fn attempt<T>(
@@ -117,6 +142,20 @@ impl RuntimeFailures {
       }
       !recovered
     });
+  }
+
+  fn latest_message(&self) -> Option<String> {
+    self
+      .errors
+      .iter()
+      .max_by_key(|(_, failure)| failure.latest)
+      .map(|(message, failure)| {
+        let elapsed = failure.latest.duration_since(failure.first).as_secs();
+        format!(
+          "{message} ({} occurrence(s), active for {elapsed}s)",
+          failure.occurrences,
+        )
+      })
   }
 }
 
@@ -1072,6 +1111,8 @@ pub struct DaemonState {
   profile:              profile::ProfileState,
   last_applied_rules:   Vec<String>,
   performance_degraded: Option<String>,
+  error_count:          usize,
+  latest_error:         Option<String>,
 }
 
 impl DaemonState {
@@ -1083,6 +1124,8 @@ impl DaemonState {
       profile: profile::ProfileState::new(),
       last_applied_rules: Vec::new(),
       performance_degraded: None,
+      error_count: 0,
+      latest_error: None,
     }
   }
 
@@ -1095,10 +1138,13 @@ impl DaemonState {
     system: &System,
     last_applied_rules: Vec<String>,
     performance_degraded: Option<String>,
+    failures: &RuntimeFailures,
   ) {
     self.system = system.clone();
     self.last_applied_rules = last_applied_rules;
     self.performance_degraded = performance_degraded;
+    self.error_count = failures.errors.len();
+    self.latest_error = failures.latest_message();
   }
 
   pub fn active_profile(&self) -> profile::PowerProfile {
@@ -1148,6 +1194,14 @@ impl DaemonState {
 
   pub fn last_applied_rules(&self) -> Vec<String> {
     self.last_applied_rules.clone()
+  }
+
+  pub fn error_count(&self) -> usize {
+    self.error_count
+  }
+
+  pub fn latest_error(&self) -> Option<&str> {
+    self.latest_error.as_deref()
   }
 }
 
@@ -1532,6 +1586,7 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
         &system,
         last_applied_rules.clone(),
         performance_degraded,
+        &runtime_failures,
       );
       applied_rules_tx.send_if_modified(|rules| {
         if *rules == last_applied_rules {
@@ -1615,5 +1670,20 @@ mod tests {
 
     assert!(applied);
     assert_eq!(failures.errors.len(), 1);
+  }
+
+  #[test]
+  fn runtime_failures_keep_a_bounded_latest_summary() {
+    let mut failures = RuntimeFailures::default();
+
+    failures.begin_iteration();
+    failures.record("CPU 0 governor", anyhow::anyhow!("rejected"));
+    failures.record("CPU 0 governor", anyhow::anyhow!("rejected"));
+
+    assert_eq!(failures.errors.len(), 1);
+    assert_eq!(
+      failures.latest_message(),
+      Some("CPU 0 governor: rejected (2 occurrence(s), active for 0s)".into())
+    );
   }
 }

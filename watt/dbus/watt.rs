@@ -63,6 +63,15 @@ impl WattInterface {
       Value::from(state.is_discharging()),
     );
 
+    status.insert(
+      "error-count".to_owned(),
+      Value::from(state.error_count() as u64),
+    );
+
+    if let Some(error) = state.latest_error() {
+      status.insert("latest-error".to_owned(), Value::from(error.to_owned()));
+    }
+
     status
   }
 
