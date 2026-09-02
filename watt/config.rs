@@ -1582,23 +1582,18 @@ impl Expression {
         let duration = eval!(duration).try_into_string()?;
         let duration = humantime::parse_duration(&duration)
           .with_context(|| format!("failed to parse duration '{duration}'"))?;
-        let recent_logs: Vec<&system::CpuLog> = state
+        let (total_usage, count) = state
           .cpu_log
           .iter()
           .rev()
           .take_while(|log| log.at.elapsed() < duration)
-          .collect();
+          .fold((0.0, 0usize), |(total, count), log| {
+            (total + log.usage, count + 1)
+          });
 
-        if recent_logs.len() < 2 {
-          // Return None for insufficient data, consistent with volatility
-          // expressions
-          return Ok(None);
-        }
-
-        Number(
-          recent_logs.iter().map(|log| log.usage).sum::<f64>()
-            / recent_logs.len() as f64,
-        )
+        // Each sample already measures usage between polls. Short windows
+        // can contain only one sample when adaptive polling takes longer.
+        return Ok((count > 0).then(|| Number(total_usage / count as f64)));
       },
       CpuUsageVolatility => Number(try_ok!(state.cpu_usage_volatility)),
       CpuTemperature => Number(try_ok!(state.cpu_temperature)),
@@ -2377,3 +2372,7 @@ mod tests {
 #[cfg(test)]
 #[path = "config/frequency_tests.rs"]
 mod frequency_tests;
+
+#[cfg(test)]
+#[path = "config/usage_tests.rs"]
+mod usage_tests;
