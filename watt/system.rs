@@ -1113,6 +1113,7 @@ pub struct DaemonState {
   performance_degraded: Option<String>,
   error_count:          usize,
   latest_error:         Option<String>,
+  applied_settings:     Vec<fs::AppliedSetting>,
 }
 
 impl DaemonState {
@@ -1126,6 +1127,7 @@ impl DaemonState {
       performance_degraded: None,
       error_count: 0,
       latest_error: None,
+      applied_settings: Vec::new(),
     }
   }
 
@@ -1145,6 +1147,7 @@ impl DaemonState {
     self.performance_degraded = performance_degraded;
     self.error_count = failures.errors.len();
     self.latest_error = failures.latest_message();
+    self.applied_settings = fs::applied_settings();
   }
 
   pub fn active_profile(&self) -> profile::PowerProfile {
@@ -1202,6 +1205,10 @@ impl DaemonState {
 
   pub fn latest_error(&self) -> Option<&str> {
     self.latest_error.as_deref()
+  }
+
+  pub fn applied_settings(&self) -> Vec<fs::AppliedSetting> {
+    self.applied_settings.clone()
   }
 }
 

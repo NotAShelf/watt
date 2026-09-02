@@ -221,9 +221,10 @@ impl Cpu {
     let path =
       format!("/sys/devices/system/cpu/cpu{}/cpufreq/{name}", self.number);
 
-    fs::write(path, &frequency.as_khz().to_string())
+    fs::write(&path, &frequency.as_khz().to_string())
       .with_context(|| format!("failed to set {name} for {self}"))?;
     let observed = self.read_frequency(name)?;
+    fs::observe(path, observed.as_khz().to_string());
     if observed != frequency {
       log::warn!(
         "{self} {name} requested {frequency}, kernel applied {observed}",

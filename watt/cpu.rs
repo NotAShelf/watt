@@ -128,6 +128,7 @@ fn write_verified(
   fs::write(path, value)?;
   let observed = fs::read(path)?
     .with_context(|| format!("{setting} disappeared after it was written"))?;
+  fs::observe(path, &observed);
 
   if observed != value {
     bail!("{setting} did not retain '{value}'; observed '{observed}'");
@@ -661,16 +662,24 @@ impl Cpu {
     let generic_boost_path = "/sys/devices/system/cpu/cpufreq/boost";
 
     // Try each boost control path in order of specificity
-    if fs::write(intel_boost_path_negated, value_boost_negated).is_ok() {
+    if write_verified(
+      intel_boost_path_negated,
+      value_boost_negated,
+      "Intel P-State turbo",
+    )
+    .is_ok()
+    {
       return Ok(());
     }
-    if fs::write(amd_boost_path, value_boost).is_ok() {
+    if write_verified(amd_boost_path, value_boost, "AMD P-State turbo").is_ok()
+    {
       return Ok(());
     }
-    if fs::write(msr_boost_path, value_boost).is_ok() {
+    if write_verified(msr_boost_path, value_boost, "AMD turbo").is_ok() {
       return Ok(());
     }
-    if fs::write(generic_boost_path, value_boost).is_ok() {
+    if write_verified(generic_boost_path, value_boost, "generic turbo").is_ok()
+    {
       return Ok(());
     }
 
@@ -678,9 +687,10 @@ impl Cpu {
     if cpus.any(|cpu| {
       let Cpu { number, .. } = cpu;
 
-      fs::write(
+      write_verified(
         format!("/sys/devices/system/cpu/cpu{number}/cpufreq/boost"),
         value_boost,
+        "CPU turbo",
       )
       .is_ok()
     }) {

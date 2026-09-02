@@ -29,7 +29,24 @@ thread_local! {
 struct ManagedSetting {
   original:     String,
   last_written: String,
+  observed:     Option<String>,
   generation:   u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct AppliedSetting {
+  pub path:      PathBuf,
+  pub requested: String,
+  pub observed:  Option<String>,
+}
+
+impl AppliedSetting {
+  pub fn is_verified(&self) -> bool {
+    self
+      .observed
+      .as_deref()
+      .is_some_and(|observed| equivalent_value(observed, &self.requested))
+  }
 }
 
 #[derive(Default, Debug)]
@@ -174,6 +191,7 @@ pub fn write(input: impl AsRef<Path>, value: &str) -> anyhow::Result<()> {
         settings.settings.insert(path, ManagedSetting {
           original,
           last_written: value.to_owned(),
+          observed: None,
           generation,
         });
       }
@@ -181,6 +199,32 @@ pub fn write(input: impl AsRef<Path>, value: &str) -> anyhow::Result<()> {
   }
 
   Ok(())
+}
+
+pub fn observe(input: impl AsRef<Path>, observed: impl Into<String>) {
+  let path = path(input);
+  let observed = observed.into();
+  with_managed_settings(|settings| {
+    if let Some(setting) = settings.settings.get_mut(&path) {
+      setting.observed = Some(observed);
+    }
+  });
+}
+
+pub fn applied_settings() -> Vec<AppliedSetting> {
+  with_managed_settings(|settings| {
+    settings
+      .settings
+      .iter()
+      .map(|(path, setting)| {
+        AppliedSetting {
+          path:      path.clone(),
+          requested: setting.last_written.clone(),
+          observed:  setting.observed.clone(),
+        }
+      })
+      .collect()
+  })
 }
 
 pub fn manage_settings() -> SettingsGuard {
@@ -374,6 +418,11 @@ mod tests {
 
     begin_settings_iteration();
     write(&setting, "watt").unwrap();
+    observe(&setting, "watt");
+    let applied = applied_settings();
+    assert_eq!(applied.len(), 1);
+    assert_eq!(applied[0].requested, "watt");
+    assert!(applied[0].is_verified());
     begin_settings_iteration();
     assert!(restore_unmanaged_settings().is_empty());
     assert_eq!(stdfs::read_to_string(&setting).unwrap(), "original");
