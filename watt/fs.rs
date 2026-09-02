@@ -211,6 +211,18 @@ pub fn observe(input: impl AsRef<Path>, observed: impl Into<String>) {
   });
 }
 
+pub fn keep_setting(input: impl AsRef<Path>, observed: impl Into<String>) {
+  let path = path(input);
+  let observed = observed.into();
+  with_managed_settings(|settings| {
+    let generation = settings.generation;
+    if let Some(setting) = settings.settings.get_mut(&path) {
+      setting.generation = generation;
+      setting.observed = Some(observed);
+    }
+  });
+}
+
 pub fn applied_settings() -> Vec<AppliedSetting> {
   with_managed_settings(|settings| {
     settings
@@ -423,6 +435,11 @@ mod tests {
     assert_eq!(applied.len(), 1);
     assert_eq!(applied[0].requested, "watt");
     assert!(applied[0].is_verified());
+    begin_settings_iteration();
+    keep_setting(&setting, "watt");
+    assert!(restore_unmanaged_settings().is_empty());
+    assert_eq!(stdfs::read_to_string(&setting).unwrap(), "watt");
+
     begin_settings_iteration();
     assert!(restore_unmanaged_settings().is_empty());
     assert_eq!(stdfs::read_to_string(&setting).unwrap(), "original");

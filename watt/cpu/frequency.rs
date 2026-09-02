@@ -221,6 +221,11 @@ impl Cpu {
     let path =
       format!("/sys/devices/system/cpu/cpu{}/cpufreq/{name}", self.number);
 
+    if self.read_frequency(name)? == frequency {
+      fs::keep_setting(&path, frequency.as_khz().to_string());
+      return Ok(());
+    }
+
     fs::write(&path, &frequency.as_khz().to_string())
       .with_context(|| format!("failed to set {name} for {self}"))?;
     let observed = self.read_frequency(name)?;

@@ -125,6 +125,11 @@ fn write_verified(
   setting: &str,
 ) -> anyhow::Result<()> {
   let path = path.as_ref();
+  if fs::read(path)?.is_some_and(|observed| observed == value) {
+    fs::keep_setting(path, value);
+    return Ok(());
+  }
+
   fs::write(path, value)?;
   let observed = fs::read(path)?
     .with_context(|| format!("{setting} disappeared after it was written"))?;
