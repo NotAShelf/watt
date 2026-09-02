@@ -1626,6 +1626,29 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
 mod tests {
   use super::*;
 
+  fn write_cpu_fixture(root: &Path, governor: &str) {
+    let cpu = root.join("sys/devices/system/cpu/cpu0/cpufreq");
+    std::fs::create_dir_all(&cpu).unwrap();
+    for (name, value) in [
+      ("scaling_governor", governor),
+      ("scaling_available_governors", "powersave performance"),
+      ("cpuinfo_cur_freq", "1000000"),
+      ("cpuinfo_min_freq", "500000"),
+      ("cpuinfo_max_freq", "2000000"),
+      ("scaling_min_freq", "500000"),
+      ("scaling_max_freq", "2000000"),
+    ] {
+      std::fs::write(cpu.join(name), value).unwrap();
+    }
+    std::fs::create_dir_all(root.join("proc")).unwrap();
+    std::fs::write(
+      root.join("proc/stat"),
+      "cpu 0 0 0 0 0 0 0 0\ncpu0 1 0 1 1 0 0 0 0\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("proc/cpuinfo"), "processor : 0\n").unwrap();
+  }
+
   #[test]
   fn a_failed_scan_keeps_other_scan_failures_local() {
     let root = std::env::temp_dir()
@@ -1685,5 +1708,37 @@ mod tests {
       failures.latest_message(),
       Some("CPU 0 governor: rejected (2 occurrence(s), active for 0s)".into())
     );
+  }
+
+  #[test]
+  fn rescans_reappearing_cpus_without_stale_capabilities() {
+    let root = std::env::temp_dir()
+      .join(format!("watt-hotplug-fixture-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let _root = crate::fs::set_system_root_for_tests(&root);
+    let mut system = System::default();
+    let mut failures = RuntimeFailures::default();
+
+    write_cpu_fixture(&root, "powersave");
+    failures.begin_iteration();
+    system.scan(&mut failures);
+    assert_eq!(system.cpus.len(), 1);
+
+    std::fs::remove_dir_all(root.join("sys/devices/system/cpu/cpu0")).unwrap();
+    failures.begin_iteration();
+    system.scan(&mut failures);
+    assert!(system.cpus.is_empty());
+
+    write_cpu_fixture(&root, "performance");
+    failures.begin_iteration();
+    system.scan(&mut failures);
+    assert_eq!(system.cpus.len(), 1);
+    assert_eq!(
+      system.cpus.iter().next().unwrap().governor.as_deref(),
+      Some("performance"),
+    );
+
+    drop(_root);
+    std::fs::remove_dir_all(root).unwrap();
   }
 }

@@ -166,33 +166,32 @@ impl Cpu {
 
     log::debug!("scanning CPU entries in {PATH}");
 
-    for entry in fs::read_dir(PATH)
-      .context("failed to read CPU entries")?
-      .with_context(|| format!("'{PATH}' doesn't exist, are you on linux?"))?
-    {
-      let entry =
-        entry.with_context(|| format!("failed to read entry of '{PATH}'"))?;
+    let entries = fs::read_dir(PATH).context("failed to read CPU entries")?;
+    if let Some(entries) = entries {
+      for entry in entries {
+        let entry =
+          entry.with_context(|| format!("failed to read entry of '{PATH}'"))?;
 
-      let entry_file_name = entry.file_name();
+        let entry_file_name = entry.file_name();
 
-      let Some(name) = entry_file_name.to_str() else {
-        continue;
-      };
+        let Some(name) = entry_file_name.to_str() else {
+          continue;
+        };
 
-      let Some(cpu_prefix_removed) = name.strip_prefix("cpu") else {
-        continue;
-      };
+        let Some(cpu_prefix_removed) = name.strip_prefix("cpu") else {
+          continue;
+        };
 
-      // Has to match "cpu{N}".
-      let Ok(number) = cpu_prefix_removed.parse() else {
-        continue;
-      };
+        // Has to match "cpu{N}".
+        let Ok(number) = cpu_prefix_removed.parse() else {
+          continue;
+        };
 
-      cpus.push(from_number(number, &cache)?);
-    }
-
-    // Fall back if sysfs iteration above fails to find any cpufreq CPUs.
-    if cpus.is_empty() {
+        cpus.push(from_number(number, &cache)?);
+      }
+    } else {
+      // Fall back only when sysfs is unavailable. An empty CPU directory can
+      // legitimately occur while every CPU is offline during hotplug.
       log::warn!("no CPUs found in sysfs, using logical CPU count fallback");
       for number in 0..num_cpus::get() as u32 {
         cpus.push(from_number(number, &cache)?);
