@@ -80,18 +80,20 @@ impl WattInterface {
     state.last_applied_rules()
   }
 
-  async fn get_applied_settings(&self) -> Vec<(String, String, String, bool)> {
+  async fn get_applied_settings(
+    &self,
+  ) -> Vec<(String, String, String, String)> {
     let state = self.state.read().await;
     state
       .applied_settings()
       .into_iter()
       .map(|setting| {
-        let verified = setting.is_verified();
+        let verification = setting.verification().to_owned();
         (
           setting.path.display().to_string(),
           setting.requested,
           setting.observed.unwrap_or_default(),
-          verified,
+          verification,
         )
       })
       .collect()

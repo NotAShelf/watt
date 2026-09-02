@@ -47,6 +47,24 @@ impl AppliedSetting {
       .as_deref()
       .is_some_and(|observed| equivalent_value(observed, &self.requested))
   }
+
+  pub fn verification(&self) -> &'static str {
+    if self.is_verified() {
+      return "verified";
+    }
+
+    match self.observed {
+      Some(_)
+        if self.path.file_name().is_some_and(|name| {
+          matches!(name.to_str(), Some("scaling_min_freq" | "scaling_max_freq"))
+        }) =>
+      {
+        "clamped"
+      },
+      Some(_) => "mismatch",
+      None => "unverified",
+    }
+  }
 }
 
 #[derive(Default, Debug)]
@@ -460,5 +478,21 @@ mod tests {
 
     drop(_settings);
     stdfs::remove_dir_all(root).unwrap();
+  }
+
+  #[test]
+  fn distinguishes_frequency_clamping_from_a_mismatch() {
+    let setting = AppliedSetting {
+      path:      PathBuf::from("/sys/cpu/scaling_min_freq"),
+      requested: "1000".into(),
+      observed:  Some("900".into()),
+    };
+    assert_eq!(setting.verification(), "clamped");
+
+    let setting = AppliedSetting {
+      path: PathBuf::from("/sys/cpu/scaling_governor"),
+      ..setting
+    };
+    assert_eq!(setting.verification(), "mismatch");
   }
 }
