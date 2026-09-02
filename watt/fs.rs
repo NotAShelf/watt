@@ -1,5 +1,7 @@
 #[cfg(test)] use std::cell::RefCell;
+#[cfg(not(test))] use std::sync::Mutex;
 use std::{
+  collections::BTreeMap,
   env,
   error,
   fs,
@@ -15,9 +17,42 @@ use std::{
 use anyhow::Context;
 
 static SYSTEM_ROOT: OnceLock<Option<PathBuf>> = OnceLock::new();
+#[cfg(not(test))]
+static MANAGED_SETTINGS: OnceLock<Mutex<ManagedSettings>> = OnceLock::new();
 #[cfg(test)]
 thread_local! {
   static TEST_SYSTEM_ROOT: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+  static TEST_MANAGED_SETTINGS: RefCell<ManagedSettings> = RefCell::new(ManagedSettings::default());
+}
+
+#[derive(Debug)]
+struct ManagedSetting {
+  original:     String,
+  last_written: String,
+  generation:   u64,
+}
+
+#[derive(Default, Debug)]
+struct ManagedSettings {
+  active:     bool,
+  generation: u64,
+  settings:   BTreeMap<PathBuf, ManagedSetting>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RestoreFailure {
+  pub path:    PathBuf,
+  pub message: String,
+}
+
+pub struct SettingsGuard;
+
+impl Drop for SettingsGuard {
+  fn drop(&mut self) {
+    for failure in restore_all_settings() {
+      log::error!("{}: {}", failure.path.display(), failure.message);
+    }
+  }
 }
 
 fn system_root() -> Option<PathBuf> {
@@ -115,13 +150,160 @@ where
 
 pub fn write(input: impl AsRef<Path>, value: &str) -> anyhow::Result<()> {
   let path = path(input);
+  let (track, capture_original) = with_managed_settings(|settings| {
+    (settings.active, !settings.settings.contains_key(&path))
+  });
+  let original = (track && capture_original)
+    .then(|| fs::read_to_string(&path).ok().map(normalize_value))
+    .flatten();
 
   fs::write(&path, value).with_context(|| {
     format!(
       "failed to write '{value}' to '{path}'",
       path = path.display(),
     )
-  })
+  })?;
+
+  if track {
+    with_managed_settings(|settings| {
+      let generation = settings.generation;
+      if let Some(setting) = settings.settings.get_mut(&path) {
+        setting.last_written = value.to_owned();
+        setting.generation = generation;
+      } else if let Some(original) = original {
+        settings.settings.insert(path, ManagedSetting {
+          original,
+          last_written: value.to_owned(),
+          generation,
+        });
+      }
+    });
+  }
+
+  Ok(())
+}
+
+pub fn manage_settings() -> SettingsGuard {
+  SettingsGuard
+}
+
+pub fn begin_settings_iteration() {
+  with_managed_settings(|settings| {
+    settings.active = true;
+    settings.generation = settings.generation.wrapping_add(1);
+  });
+}
+
+pub fn restore_unmanaged_settings() -> Vec<RestoreFailure> {
+  restore_settings(|setting, generation| setting.generation < generation)
+}
+
+fn restore_all_settings() -> Vec<RestoreFailure> {
+  let failures = restore_settings(|_, _| true);
+  with_managed_settings(|settings| settings.active = false);
+  failures
+}
+
+fn with_managed_settings<T>(
+  operation: impl FnOnce(&mut ManagedSettings) -> T,
+) -> T {
+  #[cfg(test)]
+  {
+    return TEST_MANAGED_SETTINGS
+      .with(|settings| operation(&mut settings.borrow_mut()));
+  }
+
+  #[cfg(not(test))]
+  {
+    operation(
+      &mut MANAGED_SETTINGS
+        .get_or_init(|| Mutex::new(ManagedSettings::default()))
+        .lock()
+        .expect("managed settings lock poisoned"),
+    )
+  }
+}
+
+fn restore_settings(
+  should_restore: impl Fn(&ManagedSetting, u64) -> bool,
+) -> Vec<RestoreFailure> {
+  let settings = with_managed_settings(|managed| {
+    let generation = managed.generation;
+    managed
+      .settings
+      .iter()
+      .filter(|(_, setting)| should_restore(setting, generation))
+      .map(|(path, setting)| {
+        (
+          path.clone(),
+          setting.original.clone(),
+          setting.last_written.clone(),
+        )
+      })
+      .collect::<Vec<_>>()
+  });
+
+  let mut restored = Vec::new();
+  let failures = settings
+    .into_iter()
+    .filter_map(|(path, original, last_written)| {
+      match fs::read_to_string(&path) {
+        Ok(current) if equivalent_value(&current, &last_written) => {
+          match fs::write(&path, original) {
+            Ok(()) => {
+              restored.push(path);
+              None
+            },
+            Err(error) => {
+              Some(RestoreFailure {
+                path,
+                message: format!("failed to restore setting: {error}"),
+              })
+            },
+          }
+        },
+        Ok(_) => {
+          log::warn!(
+            "not restoring '{}' because it changed outside Watt",
+            path.display(),
+          );
+          restored.push(path);
+          None
+        },
+        Err(error) => {
+          Some(RestoreFailure {
+            path,
+            message: format!(
+              "failed to read setting before restoration: {error}"
+            ),
+          })
+        },
+      }
+    })
+    .collect();
+
+  with_managed_settings(|managed| {
+    for path in restored {
+      managed.settings.remove(&path);
+    }
+  });
+  failures
+}
+
+fn normalize_value(value: String) -> String {
+  value
+    .split_whitespace()
+    .find_map(|value| {
+      value
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+    })
+    .unwrap_or(value.trim())
+    .to_owned()
+}
+
+fn equivalent_value(observed: &str, expected: &str) -> bool {
+  normalize_value(observed.to_owned()) == expected.trim()
 }
 
 #[cfg(test)]
@@ -148,6 +330,12 @@ impl Drop for SystemRootGuard {
 
 #[cfg(test)]
 mod tests {
+  use std::{
+    env,
+    fs as stdfs,
+    process,
+  };
+
   use super::*;
 
   #[test]
@@ -164,5 +352,31 @@ mod tests {
       path(root.join("sys/devices/system/cpu")),
       root.join("sys/devices/system/cpu")
     );
+  }
+
+  #[test]
+  fn restores_only_settings_watt_still_owns() {
+    let root =
+      env::temp_dir().join(format!("watt-settings-fixture-{}", process::id(),));
+    stdfs::create_dir_all(&root).unwrap();
+    let setting = root.join("setting");
+    stdfs::write(&setting, "original").unwrap();
+    let _settings = manage_settings();
+
+    begin_settings_iteration();
+    write(&setting, "watt").unwrap();
+    begin_settings_iteration();
+    assert!(restore_unmanaged_settings().is_empty());
+    assert_eq!(stdfs::read_to_string(&setting).unwrap(), "original");
+
+    begin_settings_iteration();
+    write(&setting, "watt").unwrap();
+    stdfs::write(&setting, "external").unwrap();
+    begin_settings_iteration();
+    assert!(restore_unmanaged_settings().is_empty());
+    assert_eq!(stdfs::read_to_string(&setting).unwrap(), "external");
+
+    drop(_settings);
+    stdfs::remove_dir_all(root).unwrap();
   }
 }
