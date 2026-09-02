@@ -119,6 +119,23 @@ impl fmt::Display for Cpu {
   }
 }
 
+fn write_verified(
+  path: impl AsRef<std::path::Path>,
+  value: &str,
+  setting: &str,
+) -> anyhow::Result<()> {
+  let path = path.as_ref();
+  fs::write(path, value)?;
+  let observed = fs::read(path)?
+    .with_context(|| format!("{setting} disappeared after it was written"))?;
+
+  if observed != value {
+    bail!("{setting} did not retain '{value}'; observed '{observed}'");
+  }
+
+  Ok(())
+}
+
 impl Cpu {
   /// Returns current CPU usage based on delta from previous reading.
   /// Returns 0.0 on first reading when no previous stat is available.
@@ -452,12 +469,10 @@ impl Cpu {
   pub fn set_governor(&mut self, governor: &str) -> anyhow::Result<()> {
     self.validate_governor(governor)?;
     let number = self.number;
+    let path =
+      format!("/sys/devices/system/cpu/cpu{number}/cpufreq/scaling_governor");
 
-    fs::write(
-      format!("/sys/devices/system/cpu/cpu{number}/cpufreq/scaling_governor"),
-      governor,
-    )
-    .with_context(|| {
+    write_verified(&path, governor, "CPU governor").with_context(|| {
       format!(
         "this probably means that {self} doesn't exist or doesn't support \
          changing governors"
@@ -493,15 +508,12 @@ impl Cpu {
   pub fn set_epp(&mut self, epp: &str) -> anyhow::Result<()> {
     self.validate_epp(epp)?;
     let number = self.number;
+    let path = format!(
+      "/sys/devices/system/cpu/cpu{number}/cpufreq/\
+       energy_performance_preference"
+    );
 
-    fs::write(
-      format!(
-        "/sys/devices/system/cpu/cpu{number}/cpufreq/\
-         energy_performance_preference"
-      ),
-      epp,
-    )
-    .with_context(|| {
+    write_verified(&path, epp, "CPU EPP").with_context(|| {
       format!(
         "this probably means that {self} doesn't exist or doesn't support \
          changing EPP"
@@ -530,12 +542,10 @@ impl Cpu {
   pub fn set_epb(&mut self, epb: &str) -> anyhow::Result<()> {
     self.validate_epb(epb)?;
     let number = self.number;
+    let path =
+      format!("/sys/devices/system/cpu/cpu{number}/power/energy_perf_bias");
 
-    fs::write(
-      format!("/sys/devices/system/cpu/cpu{number}/power/energy_perf_bias"),
-      epb,
-    )
-    .with_context(|| {
+    write_verified(&path, epb, "CPU EPB").with_context(|| {
       format!(
         "this probably means that {self} doesn't exist or doesn't support \
          changing EPB"
@@ -567,19 +577,18 @@ impl Cpu {
   ) -> anyhow::Result<()> {
     self.validate_pm_qos_resume_latency()?;
     let Self { number, .. } = *self;
+    let path = format!(
+      "/sys/devices/system/cpu/cpu{number}/power/pm_qos_resume_latency_us"
+    );
 
-    fs::write(
-      format!(
-        "/sys/devices/system/cpu/cpu{number}/power/pm_qos_resume_latency_us"
-      ),
-      latency,
-    )
-    .with_context(|| {
-      format!(
-        "this probably means that {self} doesn't exist or doesn't support \
-         changing PM QoS resume latency"
-      )
-    })?;
+    write_verified(&path, latency, "CPU PM QoS resume latency").with_context(
+      || {
+        format!(
+          "this probably means that {self} doesn't exist or doesn't support \
+           changing PM QoS resume latency"
+        )
+      },
+    )?;
 
     log::info!(
       "CPU {number} PM QoS resume latency set to {latency} us",
@@ -601,9 +610,10 @@ impl Cpu {
   }
 
   pub fn set_pstate_min_performance_percent(percent: u8) -> anyhow::Result<()> {
-    fs::write(
+    write_verified(
       "/sys/devices/system/cpu/intel_pstate/min_perf_pct",
       &percent.to_string(),
+      "Intel P-State minimum performance",
     )
     .context("failed to set Intel P-State minimum performance percent")?;
 
@@ -613,9 +623,10 @@ impl Cpu {
   }
 
   pub fn set_pstate_max_performance_percent(percent: u8) -> anyhow::Result<()> {
-    fs::write(
+    write_verified(
       "/sys/devices/system/cpu/intel_pstate/max_perf_pct",
       &percent.to_string(),
+      "Intel P-State maximum performance",
     )
     .context("failed to set Intel P-State maximum performance percent")?;
 

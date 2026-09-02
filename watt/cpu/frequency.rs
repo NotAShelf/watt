@@ -223,7 +223,14 @@ impl Cpu {
 
     fs::write(path, &frequency.as_khz().to_string())
       .with_context(|| format!("failed to set {name} for {self}"))?;
-    log::info!("{self} {name} set to {frequency}");
+    let observed = self.read_frequency(name)?;
+    if observed != frequency {
+      log::warn!(
+        "{self} {name} requested {frequency}, kernel applied {observed}",
+      );
+    } else {
+      log::info!("{self} {name} set to {frequency}");
+    }
 
     Ok(())
   }
