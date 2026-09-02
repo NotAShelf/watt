@@ -161,6 +161,18 @@ struct System {
   battery_health: Option<f64>,
 }
 
+fn retire_missing_devices<T>(
+  previous: Vec<std::path::PathBuf>,
+  current: &HashSet<Arc<T>>,
+  path: impl Fn(&T) -> &Path,
+) {
+  for previous_path in previous {
+    if !current.iter().any(|device| path(device) == previous_path) {
+      fs::retire_settings_under(previous_path);
+    }
+  }
+}
+
 impl System {
   fn scan(&mut self, failures: &mut RuntimeFailures) {
     log::info!("scanning view of system hardware...");
@@ -205,42 +217,98 @@ impl System {
       .iter()
       .map(|cpu| (cpu.number, cpu.stat.clone()))
       .collect();
-    self.cpus = cpu::Cpu::all()?
+    let cpus = cpu::Cpu::all()?
       .into_iter()
       .map(|mut cpu| {
         cpu.previous_stat = previous_stats.get(&cpu.number).cloned();
         Arc::from(cpu)
       })
-      .collect();
+      .collect::<HashSet<_>>();
+    for number in previous_stats.keys() {
+      if !cpus.iter().any(|cpu| cpu.number == *number) {
+        fs::retire_settings_under(format!(
+          "/sys/devices/system/cpu/cpu{number}",
+        ));
+      }
+    }
+    self.cpus = cpus;
     Ok(())
   }
 
   fn scan_power_supplies(&mut self) -> anyhow::Result<()> {
-    self.power_supplies = power_supply::PowerSupply::all()?
+    let previous = self
+      .power_supplies
+      .iter()
+      .map(|power_supply| power_supply.path.clone())
+      .collect::<Vec<_>>();
+    let power_supplies = power_supply::PowerSupply::all()?
       .into_iter()
       .map(Arc::from)
-      .collect();
+      .collect::<HashSet<_>>();
+    retire_missing_devices(previous, &power_supplies, |power_supply| {
+      &power_supply.path
+    });
+    self.power_supplies = power_supplies;
     Ok(())
   }
 
   fn scan_uncores(&mut self) -> anyhow::Result<()> {
-    self.uncores = uncore::Uncore::all()?.into_iter().map(Arc::from).collect();
+    let previous = self
+      .uncores
+      .iter()
+      .map(|uncore| uncore.path.clone())
+      .collect::<Vec<_>>();
+    let uncores = uncore::Uncore::all()?
+      .into_iter()
+      .map(Arc::from)
+      .collect::<HashSet<_>>();
+    retire_missing_devices(previous, &uncores, |uncore| &uncore.path);
+    self.uncores = uncores;
     Ok(())
   }
 
   fn scan_disks(&mut self) -> anyhow::Result<()> {
-    self.disks = disk::Disk::all()?.into_iter().map(Arc::from).collect();
+    let previous = self
+      .disks
+      .iter()
+      .map(|disk| disk.path.clone())
+      .collect::<Vec<_>>();
+    let disks = disk::Disk::all()?
+      .into_iter()
+      .map(Arc::from)
+      .collect::<HashSet<_>>();
+    retire_missing_devices(previous, &disks, |disk| &disk.path);
+    self.disks = disks;
     Ok(())
   }
 
   fn scan_usb_devices(&mut self) -> anyhow::Result<()> {
-    self.usb_devices =
-      usb::UsbDevice::all()?.into_iter().map(Arc::from).collect();
+    let previous = self
+      .usb_devices
+      .iter()
+      .map(|device| device.path.clone())
+      .collect::<Vec<_>>();
+    let usb_devices = usb::UsbDevice::all()?
+      .into_iter()
+      .map(Arc::from)
+      .collect::<HashSet<_>>();
+    retire_missing_devices(previous, &usb_devices, |device| &device.path);
+    self.usb_devices = usb_devices;
     Ok(())
   }
 
   fn scan_gpus(&mut self) -> anyhow::Result<()> {
-    self.gpus = gpu::Gpu::all()?.into_iter().map(Arc::from).collect();
+    let previous = self
+      .gpus
+      .iter()
+      .map(|gpu| gpu.path.clone())
+      .collect::<Vec<_>>();
+    let gpus = gpu::Gpu::all()?
+      .into_iter()
+      .map(Arc::from)
+      .collect::<HashSet<_>>();
+    retire_missing_devices(previous, &gpus, |gpu| &gpu.path);
+    self.gpus = gpus;
     Ok(())
   }
 
