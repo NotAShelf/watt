@@ -1046,6 +1046,24 @@ fn detect_performance_degradation(
     .then(|| "Watt could not apply one or more requested settings".to_owned())
 }
 
+async fn wait_for_shutdown() -> anyhow::Result<()> {
+  #[cfg(unix)]
+  {
+    let mut terminate =
+      signal::unix::signal(signal::unix::SignalKind::terminate())
+        .context("failed to listen for SIGTERM")?;
+    tokio::select! {
+      result = signal::ctrl_c() => result.context("failed to listen for Ctrl-C"),
+      _ = terminate.recv() => Ok(()),
+    }
+  }
+
+  #[cfg(not(unix))]
+  signal::ctrl_c()
+    .await
+    .context("failed to listen for Ctrl-C")
+}
+
 fn read_chassis_type() -> anyhow::Result<Option<String>> {
   let Some(chassis_type) = fs::read("/sys/class/dmi/id/chassis_type")? else {
     return Ok(None);
@@ -1249,14 +1267,14 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
   let mut runtime_failures = RuntimeFailures::default();
   let mut dma_latency = cpu::DmaLatency::default();
   let _managed_settings = fs::manage_settings();
-  let shutdown_signal = signal::ctrl_c();
+  let shutdown_signal = wait_for_shutdown();
   tokio::pin!(shutdown_signal);
   let mut sleep_for = Duration::ZERO;
 
   loop {
     tokio::select! {
       result = &mut shutdown_signal => {
-        result.context("failed to listen for shutdown signal")?;
+        result?;
         log::info!("received shutdown signal");
         break;
       },
