@@ -198,6 +198,15 @@ pub fn restore_unmanaged_settings() -> Vec<RestoreFailure> {
   restore_settings(|setting, generation| setting.generation < generation)
 }
 
+pub fn retire_settings_under(input: impl AsRef<Path>) {
+  let path = path(input);
+  with_managed_settings(|settings| {
+    settings
+      .settings
+      .retain(|setting, _| !setting.starts_with(&path));
+  });
+}
+
 fn restore_all_settings() -> Vec<RestoreFailure> {
   let failures = restore_settings(|_, _| true);
   with_managed_settings(|settings| settings.active = false);
@@ -375,6 +384,13 @@ mod tests {
     begin_settings_iteration();
     assert!(restore_unmanaged_settings().is_empty());
     assert_eq!(stdfs::read_to_string(&setting).unwrap(), "external");
+
+    begin_settings_iteration();
+    write(&setting, "watt").unwrap();
+    retire_settings_under(&root);
+    begin_settings_iteration();
+    assert!(restore_unmanaged_settings().is_empty());
+    assert_eq!(stdfs::read_to_string(&setting).unwrap(), "watt");
 
     drop(_settings);
     stdfs::remove_dir_all(root).unwrap();
