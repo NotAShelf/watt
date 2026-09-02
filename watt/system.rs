@@ -79,7 +79,8 @@ impl RuntimeFailures {
     self.seen.clear();
   }
 
-  fn record(&mut self, context: &'static str, error: anyhow::Error) {
+  fn record(&mut self, context: impl Into<String>, error: anyhow::Error) {
+    let context = context.into();
     let message = error.to_string();
     let key = format!("{context}: {message}");
     self.seen.insert(key.clone());
@@ -92,6 +93,20 @@ impl RuntimeFailures {
 
     log::error!("runtime failure: {key}");
     self.errors.insert(key, 1);
+  }
+
+  fn attempt<T>(
+    &mut self,
+    context: impl Into<String>,
+    operation: impl FnOnce() -> anyhow::Result<T>,
+  ) -> Option<T> {
+    match operation() {
+      Ok(value) => Some(value),
+      Err(error) => {
+        self.record(context, error);
+        None
+      },
+    }
   }
 
   fn finish_iteration(&mut self) {
@@ -916,8 +931,12 @@ fn compute_poll_delay(
   Duration::from_secs_f64(delay.as_secs_f64().clamp(1.0, 30.0))
 }
 
-fn detect_performance_degradation(_system: &System) -> Option<String> {
-  None
+fn detect_performance_degradation(
+  _system: &System,
+  failures: &RuntimeFailures,
+) -> Option<String> {
+  (!failures.errors.is_empty())
+    .then(|| "Watt could not apply one or more requested settings".to_owned())
 }
 
 fn read_chassis_type() -> anyhow::Result<Option<String>> {
@@ -1119,28 +1138,24 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
 
     runtime_failures.begin_iteration();
     system.scan(&mut runtime_failures);
-    runtime_failures.finish_iteration();
 
     if !system.is_cpu_idle() {
       last_user_activity = Instant::now();
     }
 
     let power_profile_preference = state.read().await.active_profile();
-    let performance_degraded = detect_performance_degradation(&system);
-
     let delay = {
       let eval_state = config::EvalState {
         frequency_available: system
           .cpus
           .iter()
           .any(|cpu| cpu.frequency_available()),
-        turbo_available: cpu::Cpu::turbo()
-          .context(
-            "failed to read CPU turbo boost status for `is-turbo-available`",
-          )?
+        turbo_available: runtime_failures
+          .attempt("turbo capability scan", cpu::Cpu::turbo)
+          .flatten()
           .is_some(),
 
-        cpu_usage: system.cpu_log.back().context("CPU log is empty")?.usage,
+        cpu_usage: system.cpu_log.back().map_or(0.0, |log| log.usage),
         cpu_usage_volatility: system.cpu_volatility().map(|vol| vol.usage),
         cpu_temperature: system.cpu_log.back().and_then(|log| log.temperature),
         cpu_temperature_volatility: system
@@ -1346,22 +1361,23 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
       }
 
       for (cpu, delta) in &cpu_deltas {
-        delta
-          .validate(cpu)
-          .with_context(|| format!("failed to validate delta for {cpu}"))?;
-      }
-
-      for (cpu, delta) in &cpu_deltas {
-        delta
-          .apply(&mut (**cpu).clone())
-          .with_context(|| format!("failed to apply delta to {cpu}"))?;
+        if runtime_failures
+          .attempt(format!("CPU validation for {cpu}"), || delta.validate(cpu))
+          .is_some()
+        {
+          runtime_failures
+            .attempt(format!("CPU application for {cpu}"), || {
+              delta.apply(&mut (**cpu).clone())
+            });
+        }
       }
 
       log::info!("applying CPU deltas to {len} CPUs", len = cpu_deltas.len());
 
-      cpu_global_delta
-        .apply(cpu_deltas.keys().map(|arc| &**arc), &mut dma_latency)
-        .context("failed to apply global CPU delta")?;
+      runtime_failures.attempt("global CPU application", || {
+        cpu_global_delta
+          .apply(cpu_deltas.keys().map(|arc| &**arc), &mut dma_latency)
+      });
 
       log::info!(
         "applying uncore deltas to {len} devices",
@@ -1369,46 +1385,47 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
       );
 
       for (uncore, delta) in uncore_deltas {
-        delta
-          .apply(&uncore)
-          .with_context(|| format!("failed to apply delta to {uncore}"))?;
+        runtime_failures
+          .attempt(format!("uncore application for {uncore}"), || {
+            delta.apply(&uncore)
+          });
       }
 
-      vm_delta.apply().context("failed to apply VM delta")?;
+      runtime_failures.attempt("VM application", || vm_delta.apply());
 
       log::info!(
         "applying disk deltas to {len} devices",
         len = disk_deltas.len(),
       );
       for (disk, delta) in disk_deltas {
-        delta
-          .apply(&disk)
-          .with_context(|| format!("failed to apply delta to {disk}"))?;
+        runtime_failures
+          .attempt(format!("disk application for {disk}"), || {
+            delta.apply(&disk)
+          });
       }
-      disk_global_delta
-        .apply()
-        .context("failed to apply global disk delta")?;
+      runtime_failures
+        .attempt("global disk application", || disk_global_delta.apply());
 
       log::info!(
         "applying USB deltas to {len} devices",
         len = usb_deltas.len(),
       );
       for (device, delta) in usb_deltas {
-        delta
-          .apply(&device)
-          .with_context(|| format!("failed to apply delta to {device}"))?;
+        runtime_failures
+          .attempt(format!("USB application for {device}"), || {
+            delta.apply(&device)
+          });
       }
 
-      audio_delta.apply().context("failed to apply audio delta")?;
+      runtime_failures.attempt("audio application", || audio_delta.apply());
 
       log::info!(
         "applying GPU deltas to {len} devices",
         len = gpu_deltas.len(),
       );
       for (gpu, delta) in gpu_deltas {
-        delta
-          .apply(&gpu)
-          .with_context(|| format!("failed to apply delta to {gpu}"))?;
+        runtime_failures
+          .attempt(format!("GPU application for {gpu}"), || delta.apply(&gpu));
       }
 
       log::info!(
@@ -1417,18 +1434,23 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
       );
 
       for (power, delta) in power_deltas {
-        delta
-          .apply(&mut (*power).clone())
-          .with_context(|| format!("failed to apply delta to {power}"))?;
+        runtime_failures
+          .attempt(format!("power supply application for {power}"), || {
+            delta.apply(&mut (*power).clone())
+          });
       }
 
       if let Some(platform_profile) = power_platform_profile {
-        power_supply::PowerSupply::set_platform_profile(&platform_profile)
-          .context("failed to set power supply platform profile")?;
+        runtime_failures.attempt("platform profile application", || {
+          power_supply::PowerSupply::set_platform_profile(&platform_profile)
+        });
       }
 
       let delay =
         compute_poll_delay(&system, last_polling_delay, last_user_activity);
+      runtime_failures.finish_iteration();
+      let performance_degraded =
+        detect_performance_degradation(&system, &runtime_failures);
       state.write().await.update_system(
         &system,
         last_applied_rules.clone(),
@@ -1489,5 +1511,32 @@ mod tests {
 
     drop(_root);
     std::fs::remove_dir_all(root).unwrap();
+  }
+
+  #[test]
+  fn a_failed_operation_does_not_skip_the_next_operation() {
+    let mut failures = RuntimeFailures::default();
+    let mut applied = false;
+
+    failures.begin_iteration();
+    assert!(
+      failures
+        .attempt("first operation", || {
+          Err::<(), _>(anyhow::anyhow!("rejected"))
+        })
+        .is_none()
+    );
+    assert!(
+      failures
+        .attempt("second operation", || {
+          applied = true;
+          Ok(())
+        })
+        .is_some()
+    );
+    failures.finish_iteration();
+
+    assert!(applied);
+    assert_eq!(failures.errors.len(), 1);
   }
 }
