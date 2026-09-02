@@ -1,3 +1,4 @@
+#[cfg(test)] use std::cell::RefCell;
 use std::{
   env,
   error,
@@ -8,25 +9,25 @@ use std::{
     PathBuf,
   },
   str,
-  sync::{
-    Mutex,
-    OnceLock,
-  },
+  sync::OnceLock,
 };
 
 use anyhow::Context;
 
-static SYSTEM_ROOT: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+static SYSTEM_ROOT: OnceLock<Option<PathBuf>> = OnceLock::new();
 #[cfg(test)]
-static TEST_ROOT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+thread_local! {
+  static TEST_SYSTEM_ROOT: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+}
 
 fn system_root() -> Option<PathBuf> {
+  #[cfg(test)]
+  if let Some(root) = TEST_SYSTEM_ROOT.with(|root| root.borrow().clone()) {
+    return Some(root);
+  }
+
   SYSTEM_ROOT
-    .get_or_init(|| {
-      Mutex::new(env::var_os("WATT_SYSTEM_ROOT").map(PathBuf::from))
-    })
-    .lock()
-    .expect("system root lock poisoned")
+    .get_or_init(|| env::var_os("WATT_SYSTEM_ROOT").map(PathBuf::from))
     .clone()
 }
 
@@ -125,33 +126,23 @@ pub fn write(input: impl AsRef<Path>, value: &str) -> anyhow::Result<()> {
 
 #[cfg(test)]
 pub struct SystemRootGuard {
-  old:   Option<PathBuf>,
-  _lock: std::sync::MutexGuard<'static, ()>,
+  old: Option<PathBuf>,
 }
 
 #[cfg(test)]
 pub fn set_system_root_for_tests(root: impl Into<PathBuf>) -> SystemRootGuard {
-  let lock = TEST_ROOT_LOCK
-    .get_or_init(|| Mutex::new(()))
-    .lock()
-    .expect("test system root lock poisoned");
-  let mut configured = SYSTEM_ROOT
-    .get_or_init(|| Mutex::new(None))
-    .lock()
-    .expect("system root lock poisoned");
   SystemRootGuard {
-    old:   configured.replace(root.into()),
-    _lock: lock,
+    old: TEST_SYSTEM_ROOT
+      .with(|configured| configured.replace(Some(root.into()))),
   }
 }
 
 #[cfg(test)]
 impl Drop for SystemRootGuard {
   fn drop(&mut self) {
-    *SYSTEM_ROOT
-      .get_or_init(|| Mutex::new(None))
-      .lock()
-      .expect("system root lock poisoned") = self.old.take();
+    TEST_SYSTEM_ROOT.with(|configured| {
+      configured.replace(self.old.take());
+    });
   }
 }
 
