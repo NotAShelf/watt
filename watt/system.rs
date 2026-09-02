@@ -1,3 +1,4 @@
+#[cfg(not(unix))] use std::future;
 use std::{
   collections::{
     HashMap,
@@ -5,7 +6,10 @@ use std::{
     VecDeque,
   },
   mem,
-  path::Path,
+  path::{
+    Path,
+    PathBuf,
+  },
   sync::Arc,
   time::{
     Duration,
@@ -1064,6 +1068,19 @@ async fn wait_for_shutdown() -> anyhow::Result<()> {
     .context("failed to listen for Ctrl-C")
 }
 
+async fn wait_for_reload() -> anyhow::Result<()> {
+  #[cfg(unix)]
+  {
+    let mut reload = signal::unix::signal(signal::unix::SignalKind::hangup())
+      .context("failed to listen for SIGHUP")?;
+    reload.recv().await;
+    Ok(())
+  }
+
+  #[cfg(not(unix))]
+  future::pending().await
+}
+
 fn read_chassis_type() -> anyhow::Result<Option<String>> {
   let Some(chassis_type) = fs::read("/sys/class/dmi/id/chassis_type")? else {
     return Ok(None);
@@ -1153,6 +1170,11 @@ impl DaemonState {
     &self.config
   }
 
+  fn set_config(&mut self, config: String, rule_count: usize) {
+    self.config = config;
+    self.rule_count = rule_count;
+  }
+
   fn update_system(
     &mut self,
     system: &System,
@@ -1230,7 +1252,26 @@ impl DaemonState {
   }
 }
 
-pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
+fn load_config(path: &Path) -> anyhow::Result<(config::DaemonConfig, String)> {
+  let config = config::DaemonConfig::load_from(Some(path))?;
+  let serialized = toml::to_string_pretty(&config)
+    .context("failed to serialize daemon config")?;
+  Ok((config, serialized))
+}
+
+fn reload_config(
+  path: &Path,
+  active: &mut config::DaemonConfig,
+) -> anyhow::Result<String> {
+  let (config, serialized) = load_config(path)?;
+  *active = config;
+  Ok(serialized)
+}
+
+pub async fn run_daemon(
+  config: config::DaemonConfig,
+  config_path: Option<PathBuf>,
+) -> anyhow::Result<()> {
   if !config.rules.is_sorted_by_key(|rule| rule.priority) {
     bail!("daemon config rules must be sorted by priority");
   }
@@ -1269,6 +1310,9 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
   let _managed_settings = fs::manage_settings();
   let shutdown_signal = wait_for_shutdown();
   tokio::pin!(shutdown_signal);
+  let reload_signal = wait_for_reload();
+  tokio::pin!(reload_signal);
+  let mut config = config;
   let mut sleep_for = Duration::ZERO;
 
   loop {
@@ -1277,6 +1321,21 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
         result?;
         log::info!("received shutdown signal");
         break;
+      },
+      result = &mut reload_signal => {
+        result?;
+        reload_signal.set(wait_for_reload());
+        if let Some(path) = config_path.as_deref() {
+          match reload_config(path, &mut config) {
+            Ok(serialized) => {
+              state.write().await.set_config(serialized, config.rules.len());
+              log::info!("reloaded daemon config");
+            },
+            Err(error) => log::error!("failed to reload daemon config: {error:#}"),
+          }
+        } else {
+          log::debug!("ignoring SIGHUP for the builtin config");
+        }
       },
       () = tokio::time::sleep(sleep_for) => {},
     }
@@ -1649,11 +1708,17 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+  use std::{
+    env,
+    fs as stdfs,
+    process,
+  };
+
   use super::*;
 
   fn write_cpu_fixture(root: &Path, governor: &str) {
     let cpu = root.join("sys/devices/system/cpu/cpu0/cpufreq");
-    std::fs::create_dir_all(&cpu).unwrap();
+    stdfs::create_dir_all(&cpu).unwrap();
     for (name, value) in [
       ("scaling_governor", governor),
       ("scaling_available_governors", "powersave performance"),
@@ -1663,22 +1728,22 @@ mod tests {
       ("scaling_min_freq", "500000"),
       ("scaling_max_freq", "2000000"),
     ] {
-      std::fs::write(cpu.join(name), value).unwrap();
+      stdfs::write(cpu.join(name), value).unwrap();
     }
-    std::fs::create_dir_all(root.join("proc")).unwrap();
-    std::fs::write(
+    stdfs::create_dir_all(root.join("proc")).unwrap();
+    stdfs::write(
       root.join("proc/stat"),
       "cpu 0 0 0 0 0 0 0 0\ncpu0 1 0 1 1 0 0 0 0\n",
     )
     .unwrap();
-    std::fs::write(root.join("proc/cpuinfo"), "processor : 0\n").unwrap();
+    stdfs::write(root.join("proc/cpuinfo"), "processor : 0\n").unwrap();
   }
 
   #[test]
   fn a_failed_scan_keeps_other_scan_failures_local() {
-    let root = std::env::temp_dir()
-      .join(format!("watt-empty-system-{}", std::process::id(),));
-    std::fs::create_dir_all(&root).unwrap();
+    let root =
+      env::temp_dir().join(format!("watt-empty-system-{}", process::id(),));
+    stdfs::create_dir_all(&root).unwrap();
     let _root = crate::fs::set_system_root_for_tests(&root);
     let mut system = System::default();
     let mut failures = RuntimeFailures::default();
@@ -1690,7 +1755,7 @@ mod tests {
     assert!(system.cpu_log.is_empty());
 
     drop(_root);
-    std::fs::remove_dir_all(root).unwrap();
+    stdfs::remove_dir_all(root).unwrap();
   }
 
   #[test]
@@ -1737,9 +1802,9 @@ mod tests {
 
   #[test]
   fn rescans_reappearing_cpus_without_stale_capabilities() {
-    let root = std::env::temp_dir()
-      .join(format!("watt-hotplug-fixture-{}", std::process::id()));
-    std::fs::create_dir_all(&root).unwrap();
+    let root =
+      env::temp_dir().join(format!("watt-hotplug-fixture-{}", process::id()));
+    stdfs::create_dir_all(&root).unwrap();
     let _root = crate::fs::set_system_root_for_tests(&root);
     let mut system = System::default();
     let mut failures = RuntimeFailures::default();
@@ -1749,7 +1814,7 @@ mod tests {
     system.scan(&mut failures);
     assert_eq!(system.cpus.len(), 1);
 
-    std::fs::remove_dir_all(root.join("sys/devices/system/cpu/cpu0")).unwrap();
+    stdfs::remove_dir_all(root.join("sys/devices/system/cpu/cpu0")).unwrap();
     failures.begin_iteration();
     system.scan(&mut failures);
     assert!(system.cpus.is_empty());
@@ -1764,6 +1829,6 @@ mod tests {
     );
 
     drop(_root);
-    std::fs::remove_dir_all(root).unwrap();
+    stdfs::remove_dir_all(root).unwrap();
   }
 }

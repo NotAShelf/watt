@@ -88,7 +88,8 @@ pub fn main() -> anyhow::Result<()> {
     return run_config_command(command);
   }
 
-  let config = config::DaemonConfig::load_from(cli.config.as_deref())
+  let config_path = cli.config.clone();
+  let config = config::DaemonConfig::load_from(config_path.as_deref())
     .context("failed to load daemon config")?;
 
   log::info!("starting watt daemon");
@@ -101,7 +102,7 @@ pub fn main() -> anyhow::Result<()> {
     .build()
     .context("failed to build tokio runtime")?;
 
-  runtime.block_on(system::run_daemon(config))
+  runtime.block_on(system::run_daemon(config, config_path))
 }
 
 fn run_config_command(command: ConfigCommand) -> anyhow::Result<()> {
