@@ -1119,6 +1119,7 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
   let mut system = System::default();
   let mut runtime_failures = RuntimeFailures::default();
   let mut dma_latency = cpu::DmaLatency::default();
+  let _managed_settings = fs::manage_settings();
   let shutdown_signal = signal::ctrl_c();
   tokio::pin!(shutdown_signal);
   let mut sleep_for = Duration::ZERO;
@@ -1360,6 +1361,7 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
         }
       }
 
+      fs::begin_settings_iteration();
       for (cpu, delta) in &cpu_deltas {
         if runtime_failures
           .attempt(format!("CPU validation for {cpu}"), || delta.validate(cpu))
@@ -1444,6 +1446,13 @@ pub async fn run_daemon(config: config::DaemonConfig) -> anyhow::Result<()> {
         runtime_failures.attempt("platform profile application", || {
           power_supply::PowerSupply::set_platform_profile(&platform_profile)
         });
+      }
+
+      for failure in fs::restore_unmanaged_settings() {
+        runtime_failures.record(
+          format!("setting restoration for {}", failure.path.display()),
+          anyhow::anyhow!(failure.message),
+        );
       }
 
       let delay =
