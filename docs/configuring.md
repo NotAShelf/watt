@@ -34,11 +34,10 @@ preserved.
 current build. Feature-gated fields, such as `metrics`, only appear when the
 corresponding feature is enabled.
 
-`watt config active` queries the running daemon over the system D-Bus and
-prints the rules selected during its latest successful polling cycle, in
-priority order. Add `--watch` to print the latest snapshot after a change;
-rapid changes may be coalesced. Watched snapshots are separated by a line
-containing `--`.
+`watt config active` queries the running daemon over the system D-Bus and prints
+the rules selected during its latest successful polling cycle, in priority
+order. Add `--watch` to print the latest snapshot after a change; rapid changes
+may be coalesced. Watched snapshots are separated by a line containing `--`.
 
 ## Rule Structure
 
@@ -158,8 +157,10 @@ Supported CPU fields:
 - `cpu.governor`: CPU frequency governor string
 - `cpu.energy-performance-preference`: EPP string
 - `cpu.energy-perf-bias`: EPB string
-- `cpu.frequency-mhz-minimum`: minimum scaling frequency in MHz
-- `cpu.frequency-mhz-maximum`: maximum scaling frequency in MHz
+- `cpu.frequency-mhz-minimum`: positive minimum scaling frequency in MHz,
+  rounded to the nearest kHz
+- `cpu.frequency-mhz-maximum`: positive maximum scaling frequency in MHz,
+  rounded to the nearest kHz
 - `cpu.turbo`: global turbo/boost boolean
 - `cpu.pstate-min-performance-percent`: Intel P-State minimum percentage
 - `cpu.pstate-max-performance-percent`: Intel P-State maximum percentage
