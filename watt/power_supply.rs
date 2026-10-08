@@ -315,6 +315,13 @@ impl PowerSupply {
         let model_name_lower = model_name.to_lowercase();
         if model_name_lower.contains("bluetooth")
           || model_name_lower.contains("wireless")
+	  || model_name_lower.contains("mouse")
+          || model_name_lower.contains("keyboard")
+          || model_name_lower.contains("trackpad")
+          || model_name_lower.contains("gamepad")
+          || model_name_lower.contains("controller")
+          || model_name_lower.contains("headset")
+          || model_name_lower.contains("headphone")
         {
           break 'is_from_peripheral true;
         }
