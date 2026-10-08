@@ -315,7 +315,7 @@ impl PowerSupply {
         let model_name_lower = model_name.to_lowercase();
         if model_name_lower.contains("bluetooth")
           || model_name_lower.contains("wireless")
-	  || model_name_lower.contains("mouse")
+          || model_name_lower.contains("mouse")
           || model_name_lower.contains("keyboard")
           || model_name_lower.contains("trackpad")
           || model_name_lower.contains("gamepad")
@@ -329,6 +329,11 @@ impl PowerSupply {
 
       false
     };
+    log::debug!(
+      "supply {name} is_from_peripheral: {}",
+      self.is_from_peripheral,
+      name = self.name,
+    );
 
     if self.type_ == "Battery" {
       self.charge_state = fs::read(self.path.join("status"))
