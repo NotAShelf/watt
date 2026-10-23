@@ -111,17 +111,23 @@ fn run_hdparm(disk: &Disk, option: String) -> anyhow::Result<()> {
   Ok(())
 }
 
-pub fn set_alpm(policy: &str) -> anyhow::Result<()> {
+/// Returns the canonical policy controls for internal, non-hotplug SATA hosts.
+pub fn alpm_paths() -> anyhow::Result<Vec<PathBuf>> {
   let Some(entries) = fs::read_dir("/sys/class/scsi_host")? else {
-    return Ok(());
+    return Ok(Vec::new());
   };
 
+  let mut paths = Vec::new();
   for entry in entries {
     let entry = entry.context("failed to read SCSI host entry")?;
     let Some(host_path) = fs::canonicalize(entry.path())? else {
       continue;
     };
-    let policy_path = host_path.join("link_power_management_policy");
+    let Some(policy_path) =
+      fs::canonicalize(host_path.join("link_power_management_policy"))?
+    else {
+      continue;
+    };
 
     if is_external_sata_port(&host_path)? {
       log::trace!(
@@ -130,15 +136,19 @@ pub fn set_alpm(policy: &str) -> anyhow::Result<()> {
       );
       continue;
     }
+    paths.push(policy_path);
+  }
 
-    if policy_path.exists() {
-      fs::write(&policy_path, policy).with_context(|| {
-        format!(
-          "failed to set ALPM policy at '{path}'",
-          path = policy_path.display()
-        )
-      })?;
-    }
+  paths.sort_unstable();
+  paths.dedup();
+  Ok(paths)
+}
+
+pub fn set_alpm(policy: &str) -> anyhow::Result<()> {
+  for path in alpm_paths()? {
+    fs::write(&path, policy).with_context(|| {
+      format!("failed to set ALPM policy at '{}'", path.display())
+    })?;
   }
 
   Ok(())
@@ -237,13 +247,14 @@ mod tests {
   use std::{
     fs as stdfs,
     os::unix::fs::symlink,
+    slice::from_ref,
   };
 
   use super::*;
   use crate::test_support::SystemFixture;
 
   #[test]
-  fn alpm_restores_after_alias_rename_and_skips_external_ports() {
+  fn alpm_deduplicates_aliases_skips_unsafe_ports_and_restores_policy() {
     let fixture = SystemFixture::new();
     let host = fixture.path("/sys/devices/ata1/host0");
     let policy = host.join("link_power_management_policy");
@@ -253,21 +264,34 @@ mod tests {
     stdfs::create_dir_all(&aliases).unwrap();
     let alias = aliases.join("host0");
     symlink(&host, &alias).unwrap();
+    let duplicate = aliases.join("duplicate");
+    symlink(&host, &duplicate).unwrap();
 
     let external_port = aliases.join("host1");
     let external_policy = external_port.join("link_power_management_policy");
     fixture.write(&external_policy, "max_performance");
     fixture.write(external_port.join("ahci_port_cmd"), "0x200000");
 
+    let hotplug_port = aliases.join("host3");
+    let hotplug_policy = hotplug_port.join("link_power_management_policy");
+    fixture.write(&hotplug_policy, "max_performance");
+    fixture.write(hotplug_port.join("ahci_port_cmd"), "0x40000");
+
+    assert_eq!(alpm_paths().unwrap(), from_ref(&policy));
+
     let _managed = fs::manage_settings();
     fs::begin_settings_iteration();
     set_alpm("min_power").unwrap();
+    assert_eq!(fixture.write_count(&policy), 1);
+    stdfs::remove_file(duplicate).unwrap();
     stdfs::rename(&alias, aliases.join("host2")).unwrap();
 
     fs::begin_settings_iteration();
     set_alpm("med_power_with_dipm").unwrap();
+    assert_eq!(fixture.write_count(&policy), 2);
     assert_eq!(fs::applied_settings().len(), 1);
     assert_eq!(fixture.write_count(&external_policy), 0);
+    assert_eq!(fixture.write_count(&hotplug_policy), 0);
 
     fs::begin_settings_iteration();
     assert!(fs::restore_unmanaged_settings().is_empty());
