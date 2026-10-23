@@ -1,4 +1,9 @@
 #[cfg(test)] use std::cell::RefCell;
+#[cfg(not(test))]
+use std::fs::{
+  read_to_string as read_raw,
+  write as write_raw,
+};
 #[cfg(not(test))] use std::sync::Mutex;
 use std::{
   collections::BTreeMap,
@@ -16,6 +21,12 @@ use std::{
 };
 
 use anyhow::Context;
+
+#[cfg(test)]
+use crate::test_support::{
+  read_raw,
+  write_raw,
+};
 
 static SYSTEM_ROOT: OnceLock<Option<PathBuf>> = OnceLock::new();
 #[cfg(not(test))]
@@ -147,7 +158,7 @@ pub fn read_dir(
 pub fn read(input: impl AsRef<Path>) -> anyhow::Result<Option<String>> {
   let path = path(input);
 
-  match fs::read_to_string(&path) {
+  match read_raw(&path) {
     Ok(string) => Ok(Some(string.trim().to_owned())),
 
     Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
@@ -187,10 +198,10 @@ pub fn write(input: impl AsRef<Path>, value: &str) -> anyhow::Result<()> {
     (settings.active, !settings.settings.contains_key(&path))
   });
   let original = (track && capture_original)
-    .then(|| fs::read_to_string(&path).ok().map(normalize_value))
+    .then(|| read_raw(&path).ok().map(normalize_value))
     .flatten();
 
-  fs::write(&path, value).with_context(|| {
+  write_raw(&path, value).with_context(|| {
     format!(
       "failed to write '{value}' to '{path}'",
       path = path.display(),
@@ -290,8 +301,7 @@ fn with_managed_settings<T>(
 ) -> T {
   #[cfg(test)]
   {
-    return TEST_MANAGED_SETTINGS
-      .with(|settings| operation(&mut settings.borrow_mut()));
+    TEST_MANAGED_SETTINGS.with(|settings| operation(&mut settings.borrow_mut()))
   }
 
   #[cfg(not(test))]
@@ -328,9 +338,9 @@ fn restore_settings(
   let failures = settings
     .into_iter()
     .filter_map(|(path, original, last_written)| {
-      match fs::read_to_string(&path) {
+      match read_raw(&path) {
         Ok(current) if equivalent_value(&current, &last_written) => {
-          match fs::write(&path, original) {
+          match write_raw(&path, original) {
             Ok(()) => {
               restored.push(path);
               None

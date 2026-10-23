@@ -918,60 +918,169 @@ impl DmaLatency {
 #[cfg(test)]
 mod tests {
   use std::{
-    env,
-    fs,
-    process,
+    fs as stdfs,
+    io::ErrorKind,
   };
 
-  use super::*;
-  use crate::fs::set_system_root_for_tests;
+  use super::{
+    Cpu,
+    Delta,
+    DmaLatency,
+    Frequency,
+  };
+  use crate::{
+    fs,
+    test_support::SystemFixture,
+  };
 
   #[test]
   fn scans_and_applies_cpu_controls_in_a_virtual_system_tree() {
-    let root =
-      env::temp_dir().join(format!("watt-cpu-fixture-{}", process::id(),));
-    let cpufreq = root.join("sys/devices/system/cpu/cpu0/cpufreq");
-    fs::create_dir_all(&cpufreq).unwrap();
-    fs::create_dir_all(root.join("proc")).unwrap();
-
-    for (name, value) in [
-      ("scaling_governor", "schedutil"),
-      ("scaling_available_governors", "schedutil powersave"),
-      ("cpuinfo_cur_freq", "1500000"),
-      ("cpuinfo_min_freq", "800000"),
-      ("cpuinfo_max_freq", "3000000"),
-      ("scaling_min_freq", "800000"),
-      ("scaling_max_freq", "3000000"),
+    for (driver, epp) in [
+      ("intel_pstate", Some("power")),
+      ("amd-pstate-epp", Some("power")),
+      ("acpi-cpufreq", None),
     ] {
-      fs::write(cpufreq.join(name), value).unwrap();
-    }
-    fs::write(
-      root.join("proc/stat"),
-      "cpu 1 0 1 8 0 0 0 0\ncpu0 1 0 1 8 0 0 0 0\n",
-    )
-    .unwrap();
-    fs::write(root.join("proc/cpuinfo"), "processor : 0\n\n").unwrap();
+      let fixture = SystemFixture::new();
+      let policy = fixture.policy(0, &[0, 1], driver);
+      fixture.cpu_telemetry(&[0, 1]);
+      let mut cpus = Cpu::all().unwrap();
+      assert_eq!(cpus.len(), 2);
+      let cpu = cpus.iter_mut().find(|cpu| cpu.number == 0).unwrap();
+      Delta {
+        governor: Some("performance".to_owned()),
+        energy_performance_preference: epp.map(str::to_owned),
+        frequency_minimum: Some(Frequency::from_khz(1_000_000).unwrap()),
+        ..Delta::default()
+      }
+      .apply(cpu)
+      .unwrap();
 
-    let _root = set_system_root_for_tests(&root);
+      let scanned = Cpu::all().unwrap();
+      for cpu in scanned {
+        assert_eq!(cpu.governor.as_deref(), Some("performance"));
+        assert_eq!(cpu.epp.as_deref(), epp);
+        assert_eq!(cpu.frequency.unwrap().as_khz(), 1_500_000);
+      }
+      assert_eq!(
+        stdfs::read_to_string(policy.join("scaling_min_freq")).unwrap(),
+        "1000000"
+      );
+    }
+  }
+
+  #[test]
+  fn failed_dma_request_keeps_the_previous_request_until_release() {
+    let fixture = SystemFixture::new();
+    fixture.write("/dev/cpu_dma_latency", []);
+    let mut request = DmaLatency::default();
+    request.apply(Some(100)).unwrap();
+    assert_eq!(
+      stdfs::read(fixture.path("/dev/cpu_dma_latency")).unwrap(),
+      100i32.to_ne_bytes()
+    );
+
+    // A new request cannot open the device, but the existing handle survives.
+    stdfs::remove_file(fixture.path("/dev/cpu_dma_latency")).unwrap();
+    assert!(request.apply(Some(200)).is_err());
+    assert_eq!(request.current, Some(100));
+    assert!(request.file.is_some());
+    request.apply(None).unwrap();
+    assert!(request.file.is_none());
+    assert_eq!(request.current, None);
+  }
+
+  #[test]
+  fn rejected_cpu_io_preserves_state_and_recovers() {
+    let fixture = SystemFixture::new();
+    let policy = fixture.policy(0, &[0], "acpi-cpufreq");
+    fixture.cpu_telemetry(&[0]);
+    let mut cpu = Cpu::all().unwrap().pop().unwrap();
+    let governor = policy.join("scaling_governor");
+
+    fixture.write_result(&governor, Err(ErrorKind::PermissionDenied));
+    assert!(cpu.set_governor("performance").is_err());
+    assert_eq!(cpu.governor.as_deref(), Some("powersave"));
+    assert_eq!(stdfs::read_to_string(&governor).unwrap(), "powersave");
+
+    fixture.clear_io(&governor);
+    cpu.set_governor("performance").unwrap();
+    fixture.fail_read(&governor, ErrorKind::PermissionDenied);
+    assert!(Cpu::all().is_err());
+    fixture.clear_io(&governor);
+    let scanned = Cpu::all().unwrap().pop().unwrap();
+    assert_eq!(scanned.governor.as_deref(), Some("performance"));
+  }
+
+  #[test]
+  fn current_frequency_prefers_cpuinfo_and_falls_back_to_scaling() {
+    let fixture = SystemFixture::new();
+    let policy = fixture.policy(0, &[0], "acpi-cpufreq");
+    fixture.cpu_telemetry(&[0]);
+    let cpuinfo = policy.join("cpuinfo_cur_freq");
+    fixture.write(&cpuinfo, "1234567");
+    let cpu = Cpu::all().unwrap().pop().unwrap();
+    assert_eq!(cpu.frequency.unwrap().as_khz(), 1_234_567);
+    stdfs::remove_file(cpuinfo).unwrap();
+    let cpu = Cpu::all().unwrap().pop().unwrap();
+    assert_eq!(cpu.frequency.unwrap().as_khz(), 1_500_000);
+  }
+
+  #[test]
+  fn invalid_frequency_targets_leave_both_bounds_untouched() {
+    for (minimum, maximum) in [
+      (Some(2_000_000), Some(1_000_000)),
+      (Some(2_500_000), None),
+      (None, Some(800_000)),
+      (Some(700_000), Some(2_000_000)),
+      (Some(1_000_000), Some(3_100_000)),
+    ] {
+      let fixture = SystemFixture::new();
+      let policy = fixture.policy(0, &[0], "acpi-cpufreq");
+      fixture.cpu_telemetry(&[0]);
+      let min_path = policy.join("scaling_min_freq");
+      let max_path = policy.join("scaling_max_freq");
+      fixture.write(&min_path, "1000000");
+      fixture.write(&max_path, "2000000");
+      let mut cpu = Cpu::all().unwrap().pop().unwrap();
+      let result = Delta {
+        frequency_minimum: minimum
+          .map(|value| Frequency::from_khz(value).unwrap()),
+        frequency_maximum: maximum
+          .map(|value| Frequency::from_khz(value).unwrap()),
+        ..Delta::default()
+      }
+      .apply(&mut cpu);
+      assert!(result.is_err(), "accepted {minimum:?}, {maximum:?}");
+      assert_eq!(fixture.write_count(&min_path), 0);
+      assert_eq!(fixture.write_count(&max_path), 0);
+      assert_eq!(stdfs::read_to_string(&min_path).unwrap(), "1000000");
+      assert_eq!(stdfs::read_to_string(&max_path).unwrap(), "2000000");
+    }
+  }
+
+  #[test]
+  fn clamped_frequency_records_requested_and_observed_values() {
+    let fixture = SystemFixture::new();
+    let policy = fixture.policy(0, &[0], "acpi-cpufreq");
+    fixture.cpu_telemetry(&[0]);
+    let _settings = fs::manage_settings();
+    fs::begin_settings_iteration();
+    let minimum = policy.join("scaling_min_freq");
+    fixture.write_result(&minimum, Ok("900000"));
     let mut cpu = Cpu::all().unwrap().pop().unwrap();
     Delta {
-      governor: Some("powersave".to_owned()),
       frequency_minimum: Some(Frequency::from_khz(1_000_000).unwrap()),
       ..Delta::default()
     }
     .apply(&mut cpu)
     .unwrap();
 
-    assert_eq!(
-      fs::read_to_string(cpufreq.join("scaling_governor")).unwrap(),
-      "powersave"
-    );
-    assert_eq!(
-      fs::read_to_string(cpufreq.join("scaling_min_freq")).unwrap(),
-      "1000000"
-    );
-
-    drop(_root);
-    fs::remove_dir_all(root).unwrap();
+    let settings = fs::applied_settings();
+    assert_eq!(settings.len(), 1);
+    assert_eq!(settings[0].requested, "1000000");
+    assert_eq!(settings[0].observed.as_deref(), Some("900000"));
+    assert_eq!(settings[0].verification(), "clamped");
+    assert_eq!(stdfs::read_to_string(&minimum).unwrap(), "900000");
+    fixture.clear_io(&minimum);
   }
 }

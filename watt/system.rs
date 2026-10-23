@@ -1716,29 +1716,7 @@ mod tests {
   };
 
   use super::*;
-
-  fn write_cpu_fixture(root: &Path, governor: &str) {
-    let cpu = root.join("sys/devices/system/cpu/cpu0/cpufreq");
-    stdfs::create_dir_all(&cpu).unwrap();
-    for (name, value) in [
-      ("scaling_governor", governor),
-      ("scaling_available_governors", "powersave performance"),
-      ("cpuinfo_cur_freq", "1000000"),
-      ("cpuinfo_min_freq", "500000"),
-      ("cpuinfo_max_freq", "2000000"),
-      ("scaling_min_freq", "500000"),
-      ("scaling_max_freq", "2000000"),
-    ] {
-      stdfs::write(cpu.join(name), value).unwrap();
-    }
-    stdfs::create_dir_all(root.join("proc")).unwrap();
-    stdfs::write(
-      root.join("proc/stat"),
-      "cpu 0 0 0 0 0 0 0 0\ncpu0 1 0 1 1 0 0 0 0\n",
-    )
-    .unwrap();
-    stdfs::write(root.join("proc/cpuinfo"), "processor : 0\n").unwrap();
-  }
+  use crate::test_support::SystemFixture;
 
   #[test]
   fn a_failed_scan_keeps_other_scan_failures_local() {
@@ -1803,24 +1781,24 @@ mod tests {
 
   #[test]
   fn rescans_reappearing_cpus_without_stale_capabilities() {
-    let root =
-      env::temp_dir().join(format!("watt-hotplug-fixture-{}", process::id()));
-    stdfs::create_dir_all(&root).unwrap();
-    let _root = fs::set_system_root_for_tests(&root);
+    let fixture = SystemFixture::new();
     let mut system = System::default();
     let mut failures = RuntimeFailures::default();
 
-    write_cpu_fixture(&root, "powersave");
+    fixture.policy(0, &[0], "acpi-cpufreq");
+    fixture.cpu_telemetry(&[0]);
     failures.begin_iteration();
     system.scan(&mut failures);
     assert_eq!(system.cpus.len(), 1);
 
-    stdfs::remove_dir_all(root.join("sys/devices/system/cpu/cpu0")).unwrap();
+    stdfs::remove_dir_all(fixture.path("/sys/devices/system/cpu/cpu0"))
+      .unwrap();
     failures.begin_iteration();
     system.scan(&mut failures);
     assert!(system.cpus.is_empty());
 
-    write_cpu_fixture(&root, "performance");
+    let policy = fixture.policy(0, &[0], "acpi-cpufreq");
+    fixture.write(policy.join("scaling_governor"), "performance");
     failures.begin_iteration();
     system.scan(&mut failures);
     assert_eq!(system.cpus.len(), 1);
@@ -1828,8 +1806,5 @@ mod tests {
       system.cpus.iter().next().unwrap().governor.as_deref(),
       Some("performance"),
     );
-
-    drop(_root);
-    stdfs::remove_dir_all(root).unwrap();
   }
 }
