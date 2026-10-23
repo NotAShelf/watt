@@ -7,8 +7,8 @@ const AUDIO_MODULES: &[&str] = &["snd_hda_intel", "snd_ac97_codec"];
 #[derive(Default, Debug, Clone, PartialEq)]
 #[must_use]
 pub struct Delta {
-  pub timeout_seconds:  Option<u64>,
-  pub reset_controller: Option<bool>,
+  pub timeout_seconds:  Option<fs::Setting<u64>>,
+  pub reset_controller: Option<fs::Setting<bool>>,
 }
 
 impl Delta {
@@ -18,22 +18,29 @@ impl Delta {
 
   pub fn or(self, that: &Self) -> Self {
     Self {
-      timeout_seconds:  self.timeout_seconds.or(that.timeout_seconds),
-      reset_controller: self.reset_controller.or(that.reset_controller),
+      timeout_seconds:  fs::prefer(self.timeout_seconds, &that.timeout_seconds),
+      reset_controller: fs::prefer(
+        self.reset_controller,
+        &that.reset_controller,
+      ),
     }
   }
 
   pub fn apply(&self) -> anyhow::Result<()> {
     for module in AUDIO_MODULES {
-      if let Some(timeout) = self.timeout_seconds {
-        write_if_exists(module, "power_save", &timeout.to_string())?;
+      if let Some(timeout) = &self.timeout_seconds {
+        timeout.apply(|value| {
+          write_if_exists(module, "power_save", &value.to_string())
+        })?;
       }
-      if let Some(reset) = self.reset_controller {
-        write_if_exists(
-          module,
-          "power_save_controller",
-          if reset { "Y" } else { "N" },
-        )?;
+      if let Some(reset) = &self.reset_controller {
+        reset.apply(|&value| {
+          write_if_exists(
+            module,
+            "power_save_controller",
+            if value { "Y" } else { "N" },
+          )
+        })?;
       }
     }
 

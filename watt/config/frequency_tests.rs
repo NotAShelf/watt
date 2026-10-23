@@ -42,14 +42,14 @@ fn default_frequency_rule_uses_each_cpu_hardware_range() {
     assert_eq!(
       deltas
         .get(&available_cpu)
-        .and_then(|delta| delta.frequency_minimum)
+        .and_then(|delta| delta.frequency_minimum.as_ref().map(|setting| setting.value))
         .map(cpu::frequency::Frequency::as_khz),
       Some(702_400)
     );
     assert_eq!(
       deltas
         .get(&unavailable_cpu)
-        .and_then(|delta| delta.frequency_minimum),
+        .and_then(|delta| delta.frequency_minimum.as_ref().map(|setting| setting.value)),
       None
     );
   });
@@ -85,8 +85,8 @@ fn cpu_selectors_validate_indices_and_treat_lists_as_sets() {
     };
     let (deltas, global) = rule.eval(state).unwrap();
     assert_eq!(deltas.len(), 1);
-    assert_eq!(deltas[&cpu].governor.as_deref(), Some("performance"));
-    assert_eq!(global.turbo, Some(false));
+    assert_eq!(deltas[&cpu].governor.as_ref().map(|setting| setting.value.as_str()), Some("performance"));
+    assert_eq!(global.turbo.map(|setting| setting.value), Some(false));
 
     let empty = CpusDelta {
       for_: Some(Expression::List(vec![])),
@@ -94,7 +94,7 @@ fn cpu_selectors_validate_indices_and_treat_lists_as_sets() {
     };
     let (deltas, global) = empty.eval(state).unwrap();
     assert!(deltas.is_empty());
-    assert_eq!(global.turbo, Some(false));
+    assert_eq!(global.turbo.map(|setting| setting.value), Some(false));
   });
 }
 
@@ -125,7 +125,7 @@ fn resume_latency_rules_reject_unrepresentable_values() {
           .next()
           .unwrap()
           .pm_qos_resume_latency_us
-          .as_deref(),
+          .as_ref().map(|setting| setting.value.as_str()),
         Some(expected)
       );
     }
@@ -162,9 +162,9 @@ fn shared_governor_uses_rule_priority_and_bias_stays_per_cpu() {
       } else {
         "performance"
       };
-      assert_eq!(delta.governor.as_deref(), Some(expected));
+      assert_eq!(delta.governor.as_ref().map(|setting| setting.value.as_str()), Some(expected));
       assert_eq!(
-        delta.energy_perf_bias.as_deref(),
+        delta.energy_perf_bias.as_ref().map(|setting| setting.value.as_str()),
         (cpu.number == 1).then_some("performance")
       );
     }

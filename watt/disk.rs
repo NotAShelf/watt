@@ -175,10 +175,10 @@ fn is_external_sata_port(host_path: &Path) -> anyhow::Result<bool> {
 #[derive(Default, Debug, Clone, PartialEq)]
 #[must_use]
 pub struct Delta {
-  pub scheduler:     Option<String>,
-  pub readahead_kib: Option<u64>,
-  pub apm:           Option<u8>,
-  pub spindown:      Option<u8>,
+  pub scheduler:     Option<fs::Setting<String>>,
+  pub readahead_kib: Option<fs::Setting<u64>>,
+  pub apm:           Option<fs::Setting<u8>>,
+  pub spindown:      Option<fs::Setting<u8>>,
 }
 
 impl Delta {
@@ -191,25 +191,25 @@ impl Delta {
 
   pub fn or(self, that: &Self) -> Self {
     Self {
-      scheduler:     self.scheduler.or_else(|| that.scheduler.clone()),
-      readahead_kib: self.readahead_kib.or(that.readahead_kib),
-      apm:           self.apm.or(that.apm),
-      spindown:      self.spindown.or(that.spindown),
+      scheduler:     fs::prefer(self.scheduler, &that.scheduler),
+      readahead_kib: fs::prefer(self.readahead_kib, &that.readahead_kib),
+      apm:           fs::prefer(self.apm, &that.apm),
+      spindown:      fs::prefer(self.spindown, &that.spindown),
     }
   }
 
   pub fn apply(&self, disk: &Disk) -> anyhow::Result<()> {
-    if let Some(value) = &self.scheduler {
-      disk.set_scheduler(value)?;
+    if let Some(setting) = &self.scheduler {
+      setting.apply(|value| disk.set_scheduler(value))?;
     }
-    if let Some(value) = self.readahead_kib {
-      disk.set_readahead_kib(value)?;
+    if let Some(setting) = &self.readahead_kib {
+      setting.apply(|&value| disk.set_readahead_kib(value))?;
     }
-    if let Some(value) = self.apm {
-      disk.set_apm(value)?;
+    if let Some(setting) = &self.apm {
+      disk.set_apm(setting.value)?;
     }
-    if let Some(value) = self.spindown {
-      disk.set_spindown(value)?;
+    if let Some(setting) = &self.spindown {
+      disk.set_spindown(setting.value)?;
     }
 
     Ok(())
@@ -219,7 +219,7 @@ impl Delta {
 #[derive(Default, Debug, Clone, PartialEq)]
 #[must_use]
 pub struct GlobalDelta {
-  pub alpm: Option<String>,
+  pub alpm: Option<fs::Setting<String>>,
 }
 
 impl GlobalDelta {
@@ -229,13 +229,13 @@ impl GlobalDelta {
 
   pub fn or(self, that: &Self) -> Self {
     Self {
-      alpm: self.alpm.or_else(|| that.alpm.clone()),
+      alpm: fs::prefer(self.alpm, &that.alpm),
     }
   }
 
   pub fn apply(&self) -> anyhow::Result<()> {
-    if let Some(value) = &self.alpm {
-      set_alpm(value)?;
+    if let Some(setting) = &self.alpm {
+      setting.apply(|value| set_alpm(value))?;
     }
 
     Ok(())

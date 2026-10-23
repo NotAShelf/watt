@@ -13,12 +13,12 @@ use crate::fs;
 #[derive(Default, Debug, Clone, PartialEq)]
 #[must_use]
 pub struct Delta {
-  pub dirty_bytes:                 Option<u64>,
-  pub dirty_ratio:                 Option<u8>,
-  pub dirty_background_bytes:      Option<u64>,
-  pub dirty_background_ratio:      Option<u8>,
-  pub transparent_hugepages:       Option<String>,
-  pub transparent_hugepage_defrag: Option<String>,
+  pub dirty_bytes:                 Option<fs::Setting<u64>>,
+  pub dirty_ratio:                 Option<fs::Setting<u8>>,
+  pub dirty_background_bytes:      Option<fs::Setting<u64>>,
+  pub dirty_background_ratio:      Option<fs::Setting<u8>>,
+  pub transparent_hugepages:       Option<fs::Setting<String>>,
+  pub transparent_hugepage_defrag: Option<fs::Setting<String>>,
 }
 
 impl Delta {
@@ -33,20 +33,30 @@ impl Delta {
 
   pub fn or(self, that: &Self) -> Self {
     Self {
-      dirty_bytes:                 self.dirty_bytes.or(that.dirty_bytes),
-      dirty_ratio:                 self.dirty_ratio.or(that.dirty_ratio),
-      dirty_background_bytes:      self
-        .dirty_background_bytes
-        .or(that.dirty_background_bytes),
-      dirty_background_ratio:      self
-        .dirty_background_ratio
-        .or(that.dirty_background_ratio),
-      transparent_hugepages:       self
-        .transparent_hugepages
-        .or_else(|| that.transparent_hugepages.clone()),
-      transparent_hugepage_defrag: self
-        .transparent_hugepage_defrag
-        .or_else(|| that.transparent_hugepage_defrag.clone()),
+      dirty_bytes:                 fs::prefer(
+        self.dirty_bytes,
+        &that.dirty_bytes,
+      ),
+      dirty_ratio:                 fs::prefer(
+        self.dirty_ratio,
+        &that.dirty_ratio,
+      ),
+      dirty_background_bytes:      fs::prefer(
+        self.dirty_background_bytes,
+        &that.dirty_background_bytes,
+      ),
+      dirty_background_ratio:      fs::prefer(
+        self.dirty_background_ratio,
+        &that.dirty_background_ratio,
+      ),
+      transparent_hugepages:       fs::prefer(
+        self.transparent_hugepages,
+        &that.transparent_hugepages,
+      ),
+      transparent_hugepage_defrag: fs::prefer(
+        self.transparent_hugepage_defrag,
+        &that.transparent_hugepage_defrag,
+      ),
     }
   }
 
@@ -63,12 +73,12 @@ impl Delta {
       );
     }
 
-    if let Some(value) = &self.transparent_hugepages {
-      validate_hugepage_mode(value)?;
+    if let Some(setting) = &self.transparent_hugepages {
+      validate_hugepage_mode(&setting.value)?;
     }
 
-    if let Some(value) = &self.transparent_hugepage_defrag {
-      validate_hugepage_defrag(value)?;
+    if let Some(setting) = &self.transparent_hugepage_defrag {
+      validate_hugepage_defrag(&setting.value)?;
     }
 
     Ok(())
@@ -77,24 +87,26 @@ impl Delta {
   pub fn apply(&self) -> anyhow::Result<()> {
     self.validate()?;
 
-    if let Some(value) = self.dirty_bytes {
-      write_proc_sys_vm("dirty_bytes", value)?;
+    if let Some(setting) = &self.dirty_bytes {
+      setting.apply(|value| write_proc_sys_vm("dirty_bytes", value))?;
     }
-    if let Some(value) = self.dirty_ratio {
-      write_proc_sys_vm("dirty_ratio", value)?;
+    if let Some(setting) = &self.dirty_ratio {
+      setting.apply(|value| write_proc_sys_vm("dirty_ratio", value))?;
     }
-    if let Some(value) = self.dirty_background_bytes {
-      write_proc_sys_vm("dirty_background_bytes", value)?;
+    if let Some(setting) = &self.dirty_background_bytes {
+      setting
+        .apply(|value| write_proc_sys_vm("dirty_background_bytes", value))?;
     }
-    if let Some(value) = self.dirty_background_ratio {
-      write_proc_sys_vm("dirty_background_ratio", value)?;
+    if let Some(setting) = &self.dirty_background_ratio {
+      setting
+        .apply(|value| write_proc_sys_vm("dirty_background_ratio", value))?;
     }
 
-    if let Some(value) = &self.transparent_hugepages {
-      write_transparent_hugepage("enabled", value)?;
+    if let Some(setting) = &self.transparent_hugepages {
+      setting.apply(|value| write_transparent_hugepage("enabled", value))?;
     }
-    if let Some(value) = &self.transparent_hugepage_defrag {
-      write_transparent_hugepage("defrag", value)?;
+    if let Some(setting) = &self.transparent_hugepage_defrag {
+      setting.apply(|value| write_transparent_hugepage("defrag", value))?;
     }
 
     Ok(())

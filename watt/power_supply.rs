@@ -557,8 +557,8 @@ impl PowerSupply {
 #[derive(Default, Debug, Clone, PartialEq)]
 #[must_use]
 pub struct Delta {
-  pub charge_threshold_start: Option<f64>,
-  pub charge_threshold_end:   Option<f64>,
+  pub charge_threshold_start: Option<fs::Setting<f64>>,
+  pub charge_threshold_end:   Option<fs::Setting<f64>>,
 }
 
 impl Delta {
@@ -568,28 +568,29 @@ impl Delta {
 
   pub fn or(self, that: &Self) -> Self {
     Self {
-      charge_threshold_start: self
-        .charge_threshold_start
-        .or(that.charge_threshold_start),
-      charge_threshold_end:   self
-        .charge_threshold_end
-        .or(that.charge_threshold_end),
+      charge_threshold_start: fs::prefer(
+        self.charge_threshold_start,
+        &that.charge_threshold_start,
+      ),
+      charge_threshold_end:   fs::prefer(
+        self.charge_threshold_end,
+        &that.charge_threshold_end,
+      ),
     }
   }
 
   pub fn apply(&self, power_supply: &mut PowerSupply) -> anyhow::Result<()> {
-    for value in [self.charge_threshold_start, self.charge_threshold_end]
-      .into_iter()
-      .flatten()
-    {
-      threshold_percentage(value)?;
+    let start = self.charge_threshold_start.as_ref();
+    let end = self.charge_threshold_end.as_ref();
+    for setting in [start, end].into_iter().flatten() {
+      threshold_percentage(setting.value)?;
     }
-    if let Some(charge_threshold_start) = self.charge_threshold_start {
-      power_supply.set_charge_threshold_start(charge_threshold_start)?;
+    if let Some(setting) = start {
+      setting.apply(|&value| power_supply.set_charge_threshold_start(value))?;
     }
 
-    if let Some(charge_threshold_end) = self.charge_threshold_end {
-      power_supply.set_charge_threshold_end(charge_threshold_end)?;
+    if let Some(setting) = end {
+      setting.apply(|&value| power_supply.set_charge_threshold_end(value))?;
     }
 
     Ok(())
@@ -646,8 +647,8 @@ mod tests {
       assert!(supply.set_charge_threshold_end(invalid).is_err());
       assert!(
         Delta {
-          charge_threshold_start: Some(0.4),
-          charge_threshold_end:   Some(invalid),
+          charge_threshold_start: Some(0.4.into()),
+          charge_threshold_end:   Some(invalid.into()),
         }
         .apply(&mut supply)
         .is_err()

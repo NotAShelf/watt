@@ -21,6 +21,7 @@ use super::{
   UsbDeltas,
 };
 use crate::{
+  fs,
   audio,
   cpu,
   disk,
@@ -34,17 +35,17 @@ use crate::{
 /// Actions from one matching rule, available only after complete evaluation.
 #[derive(Default)]
 pub struct EvaluatedRule {
-  pub cpu:              CpuDeltas,
-  pub cpu_global:       cpu::GlobalDelta,
-  pub uncore:           UncoreDeltas,
-  pub vm:               vm::Delta,
-  pub disk:             DiskDeltas,
-  pub disk_global:      disk::GlobalDelta,
-  pub usb:              UsbDeltas,
-  pub audio:            audio::Delta,
-  pub gpu:              GpuDeltas,
-  pub power:            PowerSupplyDeltas,
-  pub platform_profile: Option<String>,
+  pub cpu:                CpuDeltas,
+  pub cpu_global:         cpu::GlobalDelta,
+  pub uncore:             UncoreDeltas,
+  pub vm:                 vm::Delta,
+  pub disk:               DiskDeltas,
+  pub disk_global:        disk::GlobalDelta,
+  pub usb:                UsbDeltas,
+  pub audio:              audio::Delta,
+  pub gpu:                GpuDeltas,
+  pub power:              PowerSupplyDeltas,
+  pub platform_profile:   Option<fs::Setting<String>>,
 }
 
 impl EvaluatedRule {
@@ -72,7 +73,7 @@ impl EvaluatedRule {
     self.disk_global = mem::take(&mut self.disk_global).or(&lower.disk_global);
     self.audio = mem::take(&mut self.audio).or(&lower.audio);
     self.platform_profile =
-      self.platform_profile.take().or(lower.platform_profile);
+      fs::prefer(self.platform_profile.take(), &lower.platform_profile);
   }
 
   pub(crate) fn complete(&self) -> bool {
@@ -127,6 +128,16 @@ impl Rule {
       return Ok(None);
     }
 
+    let rule = Arc::new(fs::RuleOrigin {
+      name:     self.name.clone(),
+      priority: self.priority,
+    });
+    let state = &EvalState {
+      context: state.context.clone(),
+      rule: Some(&rule),
+      ..*state
+    };
+
     let (cpu, cpu_global) = self.cpu.eval(state).context("CPU actions")?;
     let uncore = self.uncore.eval(state).context("uncore actions")?;
     let vm = self.vm.eval(state).context("VM actions")?;
@@ -147,7 +158,7 @@ impl Rule {
       audio,
       gpu,
       power,
-      platform_profile,
+      platform_profile: platform_profile.map(|value| state.setting(value)),
     }))
   }
 }
@@ -171,7 +182,7 @@ mod tests {
       assert!(format!("{error:#}").contains("audio"));
       rule.audio = Default::default();
       let result = rule.evaluate(state).unwrap().unwrap();
-      assert_eq!(result.cpu_global.turbo, Some(true));
+      assert_eq!(result.cpu_global.turbo.map(|setting| setting.value), Some(true));
     });
   }
 

@@ -30,6 +30,7 @@ use zbus::{
 };
 
 use crate::{
+  cpu::BoostCapabilities,
   dbus::{
     ppd::PowerProfilesInterface,
     watt::{
@@ -39,8 +40,10 @@ use crate::{
   },
   fs::AppliedSetting,
   system::{
+    CpuCapabilities,
     DaemonState,
     DegradedCondition,
+    DeviceCapabilities,
     ReloadResult,
   },
 };
@@ -191,6 +194,9 @@ struct StatusSnapshot {
   performance_degraded: Option<String>,
   settings:             Vec<AppliedSetting>,
   conditions:           Vec<DegradedCondition>,
+  cpus:                 Vec<CpuCapabilities>,
+  devices:              Vec<DeviceCapabilities>,
+  boost:                Option<BoostCapabilities>,
 }
 
 impl StatusSnapshot {
@@ -201,6 +207,9 @@ impl StatusSnapshot {
       performance_degraded: state.performance_degraded().map(str::to_owned),
       settings:             state.applied_settings(),
       conditions:           state.degraded_conditions().to_vec(),
+      cpus:                 state.cpu_capabilities(),
+      devices:              state.device_capabilities().to_vec(),
+      boost:                state.boost_capabilities().cloned(),
     }
   }
 
@@ -230,6 +239,12 @@ impl StatusSnapshot {
     }
     if current.settings != self.settings {
       WattInterface::applied_settings_changed(emitter).await?;
+    }
+    if current.cpus != self.cpus
+      || current.devices != self.devices
+      || current.boost != self.boost
+    {
+      WattInterface::capabilities_changed(emitter).await?;
     }
     *self = current;
     Ok(())

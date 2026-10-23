@@ -8,7 +8,7 @@ use std::{
   },
   env,
   future::Future,
-  iter::once,
+  iter::{from_fn, once},
   path::{
     Path,
     PathBuf,
@@ -63,6 +63,15 @@ use crate::{
   usb,
 };
 
+mod capabilities;
+mod diagnostics;
+
+pub use capabilities::DeviceCapabilities;
+pub use diagnostics::{
+  DurationMetricDiagnostics,
+  PollingDiagnostics,
+};
+
 pub type ReloadResult = (bool, String);
 
 pub(crate) const HISTORY_SAMPLE_LIMIT: usize = 100;
@@ -101,6 +110,13 @@ struct CpuVolatility {
   usage: f64,
 
   temperature: Option<f64>,
+}
+
+struct CpuHistory {
+  samples:             usize,
+  temperature_samples: usize,
+  idle:                bool,
+  volatility:          Option<CpuVolatility>,
 }
 
 #[derive(Debug, Clone)]
@@ -288,9 +304,11 @@ struct System {
   power_supply_log: VecDeque<PowerSupplyLog>,
 
   /// Battery cycle count (aggregated average across all batteries).
-  battery_cycles: Option<f64>,
+  battery_cycles:      Option<f64>,
   /// Battery health (aggregated average across all batteries).
-  battery_health: Option<f64>,
+  battery_health:      Option<f64>,
+  device_capabilities: Vec<DeviceCapabilities>,
+  boost_capabilities:  Option<cpu::BoostCapabilities>,
 }
 
 fn retire_missing_devices<T>(
@@ -347,10 +365,12 @@ impl System {
     last_cpu_activity: Instant,
     power_profile_preference: profile::PowerProfile,
     turbo_available: bool,
+    history: &CpuHistory,
   ) -> config::EvalState<'_, '_> {
-    let volatility = self.cpu_volatility(now);
+    let volatility = history.volatility.as_ref();
     config::EvalState {
       now,
+      rule: None,
       frequency_available: self
         .cpus
         .iter()
@@ -358,7 +378,7 @@ impl System {
       turbo_available,
 
       cpu_usage: self.cpu_log.back().map_or(0.0, |log| log.usage),
-      cpu_usage_volatility: volatility.as_ref().map(|vol| vol.usage),
+      cpu_usage_volatility: volatility.map(|vol| vol.usage),
       cpu_temperature: self.cpu_log.back().and_then(|log| log.temperature),
       cpu_temperature_volatility: volatility.and_then(|vol| vol.temperature),
       cpu_idle_seconds: now
@@ -429,6 +449,9 @@ impl System {
     );
     self.scan_component(failures, "temperature scan", Self::scan_temperatures);
     self.append_logs();
+    self.boost_capabilities =
+      cpu::Cpu::boost_capabilities(self.cpus.iter().map(AsRef::as_ref));
+    self.device_capabilities = capabilities::snapshot(self, failures);
   }
 
   fn scan_component(
@@ -1076,53 +1099,49 @@ impl System {
     Ok(true)
   }
 
-  fn cpu_volatility(&self, now: Instant) -> Option<CpuVolatility> {
-    let mut logs =
-      CpuLog::recent(&self.cpu_log, now, Duration::from_secs(5 * 60));
-    let mut previous = logs.next()?;
+  fn cpu_history(&self, now: Instant) -> CpuHistory {
+    let mut samples = 0;
+    let mut temperature_samples = 0;
+    let mut usage_sum = 0.0;
     let mut usage_change_sum = 0.0;
-    let mut change_count = 0;
     let mut temperature_change_sum = 0.0;
-    let mut temperature_change_count = 0;
+    let mut temperature_changes = 0;
+    let mut ordered = true;
+    let mut previous: Option<&CpuLog> = None;
 
-    for sample in logs {
-      if sample.at <= previous.at {
-        return None;
+    for sample in CpuLog::recent(&self.cpu_log, now, Duration::from_secs(300)) {
+      samples += 1;
+      temperature_samples += usize::from(sample.temperature.is_some());
+      usage_sum += sample.usage;
+      if let Some(previous) = previous {
+        ordered &= sample.at > previous.at;
+        usage_change_sum += (sample.usage - previous.usage).abs();
+        if let Some((before, after)) =
+          previous.temperature.zip(sample.temperature)
+        {
+          temperature_change_sum += (after - before).abs();
+          temperature_changes += 1;
+        }
       }
-      usage_change_sum += (sample.usage - previous.usage).abs();
-      change_count += 1;
-      if let (Some(before), Some(after)) =
-        (previous.temperature, sample.temperature)
-      {
-        temperature_change_sum += (after - before).abs();
-        temperature_change_count += 1;
-      }
-      previous = sample;
+      previous = Some(sample);
     }
 
-    (change_count > 0).then(|| {
+    let volatility = (ordered && samples > 1).then(|| {
       CpuVolatility {
-        usage:       usage_change_sum / change_count as f64,
-        temperature: (temperature_change_count > 0)
-          .then(|| temperature_change_sum / temperature_change_count as f64),
+        usage:       usage_change_sum / (samples - 1) as f64,
+        temperature: (temperature_changes > 0)
+          .then(|| temperature_change_sum / temperature_changes as f64),
       }
-    })
-  }
-
-  fn is_cpu_idle(&self, now: Instant) -> bool {
-    let (total, count) =
-      CpuLog::recent(&self.cpu_log, now, Duration::from_secs(5 * 60))
-        .fold((0.0, 0usize), |(total, count), log| {
-          (total + log.usage, count + 1)
-        });
-    if count < 2 {
-      return false;
+    });
+    let idle = volatility.as_ref().is_some_and(|vol| {
+      usage_sum / (samples as f64) < 0.1 && vol.usage < 0.05
+    });
+    CpuHistory {
+      samples,
+      temperature_samples,
+      idle,
+      volatility,
     }
-
-    total / (count as f64) < 0.1
-      && self
-        .cpu_volatility(now)
-        .is_some_and(|volatility| volatility.usage < 0.05)
   }
 
   fn poll_delay_for_power_source(&self) -> Duration {
@@ -1185,53 +1204,22 @@ fn idle_multiplier(idle_for: Duration) -> f64 {
   (1.0 + factor).clamp(1.0, 5.0)
 }
 
+#[cfg(test)]
 fn compute_poll_delay(
   system: &System,
   last_polling_delay: Option<Duration>,
   last_cpu_activity: Instant,
   now: Instant,
 ) -> Duration {
-  let mut delay = system.poll_delay_for_power_source();
-
-  if system.is_cpu_idle(now) {
-    let idle_for = now.saturating_duration_since(last_cpu_activity);
-
-    if idle_for > Duration::from_secs(30) {
-      let factor = idle_multiplier(idle_for);
-
-      log::debug!(
-        "CPU has been idle for {seconds} seconds (approx {minutes} minutes), \
-         applying idle factor: {factor:.2}x",
-        seconds = idle_for.as_secs(),
-        minutes = idle_for.as_secs() / 60,
-      );
-
-      delay = Duration::from_secs_f64(delay.as_secs_f64() * factor);
-    }
-  }
-
-  if let Some(volatility) = system.cpu_volatility(now)
-    && (volatility.usage > 0.1
-      || volatility
-        .temperature
-        .is_some_and(|temperature| temperature > 1.0))
-  {
-    delay = (delay / 2).max(Duration::from_secs(1));
-  }
-
-  let delay = match last_polling_delay {
-    Some(last_delay) => {
-      Duration::from_secs_f64(
-        delay.as_secs_f64() * 0.3 + last_delay.as_secs_f64() * 0.7,
-      )
-    },
-    None => delay,
-  };
-
   Duration::from_secs_f64(
-    delay
-      .as_secs_f64()
-      .clamp(1.0, MAX_POLL_INTERVAL_SECONDS as f64),
+    PollingDiagnostics::calculate(
+      system,
+      last_polling_delay,
+      last_cpu_activity,
+      now,
+      &system.cpu_history(now),
+    )
+    .clamped_delay_seconds,
   )
 }
 
@@ -1370,23 +1358,28 @@ pub struct CpuCapabilities {
   pub governors:         Vec<String>,
   pub epps:              Vec<String>,
   pub epbs:              Vec<String>,
+  pub minimum_khz:       Option<u64>,
+  pub maximum_khz:       Option<u64>,
 }
 
 #[derive(Debug)]
 pub struct DaemonState {
-  config:               String,
-  system:               System,
-  rule_count:           usize,
-  profile:              profile::ProfileState,
-  profile_state_path:   Option<PathBuf>,
-  last_applied_rules:   Vec<String>,
-  performance_degraded: Option<String>,
-  error_count:          usize,
-  latest_error:         Option<String>,
-  recent_errors:        Vec<String>,
-  degraded_conditions:  Vec<DegradedCondition>,
-  applied_settings:     Vec<fs::AppliedSetting>,
-  rule_metadata:        Vec<(String, u16)>,
+  config:                String,
+  system:                System,
+  rule_count:            usize,
+  profile:               profile::ProfileState,
+  profile_state_path:    Option<PathBuf>,
+  last_applied_rules:    Vec<String>,
+  performance_degraded:  Option<String>,
+  error_count:           usize,
+  latest_error:          Option<String>,
+  recent_errors:         Vec<String>,
+  degraded_conditions:   Vec<DegradedCondition>,
+  applied_settings:      Vec<fs::AppliedSetting>,
+  polling_diagnostics:   PollingDiagnostics,
+  duration_requirements: diagnostics::DurationRequirements,
+  rule_metadata:         Vec<(String, u16)>,
+  evaluation_count:      u64,
 }
 
 impl DaemonState {
@@ -1415,7 +1408,10 @@ impl DaemonState {
       recent_errors: Vec::new(),
       degraded_conditions: Vec::new(),
       applied_settings: Vec::new(),
+      polling_diagnostics: PollingDiagnostics::default(),
+      duration_requirements: diagnostics::DurationRequirements::default(),
       rule_metadata: Vec::new(),
+      evaluation_count: 0,
     }
   }
 
@@ -1424,6 +1420,7 @@ impl DaemonState {
   }
 
   fn set_config(&mut self, config: String, rules: &[config::Rule]) {
+    self.duration_requirements = diagnostics::duration_requirements(rules);
     self.config = config;
     self.rule_count = rules.len();
     self.rule_metadata = rules
@@ -1575,6 +1572,12 @@ impl DaemonState {
           governors:         cpu.available_governors.clone(),
           epps:              cpu.available_epps.clone(),
           epbs:              cpu.available_epbs.clone(),
+          minimum_khz:       cpu
+            .frequency_minimum
+            .map(|frequency| frequency.as_khz()),
+          maximum_khz:       cpu
+            .frequency_maximum
+            .map(|frequency| frequency.as_khz()),
         }
       })
       .collect();
@@ -1582,8 +1585,8 @@ impl DaemonState {
     capabilities
   }
 
-  pub fn boost_capabilities(&self) -> Option<cpu::BoostCapabilities> {
-    cpu::Cpu::boost_capabilities(self.system.cpus.iter().map(AsRef::as_ref))
+  pub fn boost_capabilities(&self) -> Option<&cpu::BoostCapabilities> {
+    self.system.boost_capabilities.as_ref()
   }
 
   pub fn latest_cpu_log(&self) -> Option<CpuLog> {
@@ -1623,6 +1626,18 @@ impl DaemonState {
 
   pub fn degraded_conditions(&self) -> &[DegradedCondition] {
     &self.degraded_conditions
+  }
+
+  pub fn evaluation_count(&self) -> u64 {
+    self.evaluation_count
+  }
+
+  pub fn polling_diagnostics(&self) -> &PollingDiagnostics {
+    &self.polling_diagnostics
+  }
+
+  pub fn device_capabilities(&self) -> &[DeviceCapabilities] {
+    &self.system.device_capabilities
   }
 
   pub fn rule_metadata(&self) -> &[(String, u16)] {
@@ -1677,11 +1692,71 @@ fn evaluate_rules(
   (actions, applied)
 }
 
+// A device may be named by several aliases. Combine their values before
+// applying a delta; visiting aliases in name order breaks priority ties.
+fn merge_aliases<D, T>(
+  deltas: impl IntoIterator<Item = (Arc<D>, T)>,
+  name: impl Fn(&D) -> &str,
+  root: impl Fn(&D) -> Option<&Path>,
+  merge: impl Fn(T, &T) -> T,
+) -> impl Iterator<Item = (Arc<D>, T)> {
+  let mut aliases: Vec<_> = deltas
+    .into_iter()
+    .filter(|(device, _)| root(device).is_some())
+    .collect();
+  aliases.sort_unstable_by(|(a, _), (b, _)| {
+    root(a).cmp(&root(b)).then_with(|| name(a).cmp(name(b)))
+  });
+  let mut aliases = aliases.into_iter().peekable();
+  from_fn(move || {
+    let (device, mut delta) = aliases.next()?;
+    while let Some((_, other)) =
+      aliases.next_if(|(other, _)| root(other) == root(&device))
+    {
+      delta = merge(delta, &other);
+    }
+    Some((device, delta))
+  })
+}
+
+fn merge_gpu_aliases(
+  mut deltas: HashMap<Arc<gpu::Gpu>, gpu::Delta>,
+) -> HashMap<Arc<gpu::Gpu>, gpu::Delta> {
+  // The card directory and the Radeon device directory can alias independently.
+  let radeon: Vec<_> = deltas
+    .iter_mut()
+    .filter_map(|(gpu, delta)| {
+      let setting = delta.radeon_powersave.take()?;
+      Some((Arc::clone(gpu), gpu::Delta {
+        radeon_powersave: Some(setting),
+        ..gpu::Delta::default()
+      }))
+    })
+    .collect();
+  let mut cards: HashMap<_, _> = merge_aliases(
+    deltas,
+    |gpu| &gpu.name,
+    |gpu| Some(&gpu.path),
+    gpu::Delta::or,
+  )
+  .collect();
+  for (gpu, delta) in merge_aliases(
+    radeon,
+    |gpu| &gpu.name,
+    gpu::Gpu::radeon_control_root,
+    gpu::Delta::or,
+  ) {
+    cards.entry(gpu).or_default().radeon_powersave = delta.radeon_powersave;
+  }
+  cards
+}
+
 fn apply_actions(
   actions: config::EvaluatedRule,
   runtime_failures: &mut RuntimeFailures,
   dma_latency: &mut cpu::DmaLatency,
 ) {
+  fs::begin_settings_iteration();
   let config::EvaluatedRule {
     cpu: cpu_deltas,
     cpu_global: cpu_global_delta,
@@ -1696,7 +1771,6 @@ fn apply_actions(
     platform_profile: power_platform_profile,
   } = actions;
 
-  fs::begin_settings_iteration();
   runtime_failures.apply_cpu_deltas(&cpu_deltas);
 
   log::trace!("applying CPU deltas to {len} CPUs", len = cpu_deltas.len());
@@ -1710,7 +1784,12 @@ fn apply_actions(
     len = uncore_deltas.len(),
   );
 
-  for (uncore, delta) in uncore_deltas {
+  for (uncore, delta) in merge_aliases(
+    uncore_deltas,
+    |device| &device.name,
+    |device| Some(&device.path),
+    uncore::Delta::or,
+  ) {
     runtime_failures
       .attempt(format!("uncore application for {uncore}"), || {
         delta.apply(&uncore)
@@ -1723,7 +1802,12 @@ fn apply_actions(
     "applying disk deltas to {len} devices",
     len = disk_deltas.len(),
   );
-  for (disk, delta) in disk_deltas {
+  for (disk, delta) in merge_aliases(
+    disk_deltas,
+    |device| &device.name,
+    |device| Some(&device.path),
+    disk::Delta::or,
+  ) {
     runtime_failures.attempt(format!("disk application for {disk}"), || {
       delta.apply(&disk)
     });
@@ -1735,7 +1819,12 @@ fn apply_actions(
     "applying USB deltas to {len} devices",
     len = usb_deltas.len(),
   );
-  for (device, delta) in usb_deltas {
+  for (device, delta) in merge_aliases(
+    usb_deltas,
+    |device| &device.name,
+    |device| Some(&device.path),
+    usb::Delta::or,
+  ) {
     runtime_failures.attempt(format!("USB application for {device}"), || {
       delta.apply(&device)
     });
@@ -1747,7 +1836,7 @@ fn apply_actions(
     "applying GPU deltas to {len} devices",
     len = gpu_deltas.len(),
   );
-  for (gpu, delta) in gpu_deltas {
+  for (gpu, delta) in merge_gpu_aliases(gpu_deltas) {
     runtime_failures
       .attempt(format!("GPU application for {gpu}"), || delta.apply(&gpu));
   }
@@ -1757,7 +1846,12 @@ fn apply_actions(
     len = power_deltas.len(),
   );
 
-  for (power, delta) in power_deltas {
+  for (power, delta) in merge_aliases(
+    power_deltas,
+    |device| &device.name,
+    |device| Some(&device.path),
+    power_supply::Delta::or,
+  ) {
     runtime_failures
       .attempt(format!("power supply application for {power}"), || {
         delta.apply(&mut (*power).clone())
@@ -1766,7 +1860,7 @@ fn apply_actions(
 
   if let Some(platform_profile) = power_platform_profile {
     runtime_failures.attempt("platform profile application", || {
-      power_supply::PowerSupply::set_platform_profile(&platform_profile)
+      platform_profile.apply(|value| power_supply::PowerSupply::set_platform_profile(value))
     });
   }
 
@@ -1810,7 +1904,8 @@ impl PollingState {
     self.system.scan(&mut self.runtime_failures);
     let now = Instant::now();
 
-    if !self.system.is_cpu_idle(now) {
+    let history = self.system.cpu_history(now);
+    if !history.idle {
       self.last_cpu_activity = now;
     }
 
@@ -1827,32 +1922,47 @@ impl PollingState {
       self.last_cpu_activity,
       power_profile_preference,
       turbo_available,
+      &history,
     );
 
     let (actions, last_applied_rules) =
       evaluate_rules(&config.rules, &eval_state, &mut self.runtime_failures);
     apply_actions(actions, &mut self.runtime_failures, &mut self.dma_latency);
 
-    let delay = compute_poll_delay(
+    let mut diagnostics = PollingDiagnostics::calculate(
       &self.system,
       self.last_polling_delay,
       self.last_cpu_activity,
       now,
+      &history,
     );
+    let delay = Duration::from_secs_f64(diagnostics.clamped_delay_seconds);
     self.system.polling_delay = Some(delay);
     self.last_polling_delay = Some(delay);
     self.runtime_failures.finish_iteration();
-    let performance_degraded = detect_performance_degradation(
+    let degradation_reason = detect_performance_degradation(
       &self.system,
       &self.runtime_failures,
       config.thermal.degradation_threshold_celsius,
     );
-    state.write().await.update_system(
-      &self.system,
-      last_applied_rules.clone(),
-      performance_degraded,
-      &self.runtime_failures,
-    );
+    {
+      let mut state = state.write().await;
+      diagnostics.evaluation_elapsed_seconds = start.elapsed().as_secs_f64();
+      diagnostics.update_requirements(
+        &state.duration_requirements,
+        &self.system,
+        now,
+      );
+      log::trace!("polling decision: {diagnostics:?}");
+      state.polling_diagnostics = diagnostics;
+      state.evaluation_count = state.evaluation_count.saturating_add(1);
+      state.update_system(
+        &self.system,
+        last_applied_rules.clone(),
+        degradation_reason,
+        &self.runtime_failures,
+      );
+    }
     applied_rules_tx.send_if_modified(|rules| {
       let changed = *rules != last_applied_rules;
       if changed {
@@ -2226,10 +2336,15 @@ mod tests {
         {
           failures.begin_iteration();
           let now = Instant::now();
-          let eval =
-            system.eval_state(now, now, PowerProfile::Performance, true);
+          let eval = system.eval_state(
+            now,
+            now,
+            PowerProfile::Performance,
+            true,
+            &system.cpu_history(now),
+          );
           let mut actions = config::EvaluatedRule::empty(&eval);
-          actions.cpu_global.turbo = Some(true);
+          actions.cpu_global.turbo = Some(true.into());
           apply_actions(actions, &mut failures, &mut dma_latency);
           failures.finish_iteration();
           let degraded =
@@ -2302,6 +2417,142 @@ mod tests {
     {
       yield_now().await;
     }
+  }
+
+  async fn assert_selected_boost(
+    proxy: &Proxy<'_>,
+    expected: Option<(&str, bool, &str)>,
+  ) {
+    let boost: HashMap<String, OwnedValue> =
+      proxy.call("GetBoostCapabilities", &()).await.unwrap();
+    let devices: Vec<HashMap<String, OwnedValue>> =
+      proxy.call("GetDeviceCapabilities", &()).await.unwrap();
+    let paths: Vec<_> = devices
+      .iter()
+      .filter(|device| <&str>::try_from(&device["name"]).unwrap() == "boost")
+      .map(|device| <&str>::try_from(&device["path"]).unwrap())
+      .collect();
+    match expected {
+      Some((scope, inverted, path)) => {
+        assert_eq!(<&str>::try_from(&boost["scope"]).unwrap(), scope);
+        assert_eq!(bool::try_from(&boost["inverted"]).unwrap(), inverted);
+        assert_eq!(
+          Vec::<String>::try_from(boost["control-paths"].try_clone().unwrap())
+            .unwrap(),
+          [path]
+        );
+        assert_eq!(paths, [path]);
+      },
+      None => {
+        assert!(boost.is_empty());
+        assert!(paths.is_empty());
+      },
+    }
+  }
+
+  #[tokio::test]
+  async fn selected_boost_capabilities_change_only_with_completed_snapshots() {
+    let fixture = SystemFixture::new();
+    let policy = fixture.policy(0, &[0], "amd-pstate-epp").join("boost");
+    let global = "/sys/devices/system/cpu/intel_pstate/no_turbo";
+    fixture.cpu_telemetry(&[0]);
+    fixture.write(&policy, "1");
+    fixture.write(global, "0");
+    let mut system = System::default();
+    let mut failures = RuntimeFailures::default();
+    system.scan(&mut failures);
+    let state = Arc::new(RwLock::new(DaemonState::new(String::new(), 0)));
+    state
+      .write()
+      .await
+      .update_system(&system, Vec::new(), None, &failures);
+    let bus = TestBus::new();
+    timeout(Duration::from_secs(10), async {
+      let connection = connection::Builder::address(bus.address.as_str())
+        .unwrap()
+        .build()
+        .await
+        .unwrap();
+      let client = connection::Builder::address(bus.address.as_str())
+        .unwrap()
+        .build()
+        .await
+        .unwrap();
+      let closing = connection.clone();
+      let (_updates, applied_rules) = watch::channel(Vec::new());
+      let (_reloads, reload_results) = broadcast::channel(64);
+      let observe = async {
+        wait_native_service(&client).await;
+        let proxy = Proxy::new(
+          &client,
+          "dev.notashelf.Watt",
+          "/dev/notashelf/Watt",
+          "dev.notashelf.Watt",
+        )
+        .await
+        .unwrap();
+        let mut changes =
+          proxy.receive_signal("CapabilitiesChanged").await.unwrap();
+        let policy_path = policy.to_str().unwrap();
+        let global_path = global;
+        let mut previous = Some(("global", true, global_path));
+        assert_selected_boost(&proxy, previous).await;
+        for selected in [
+          Some(("policy", false, policy_path)),
+          None,
+          Some(("global", true, global_path)),
+        ] {
+          match selected {
+            Some(("policy", ..)) => {
+              stdfs::remove_file(fixture.path(global)).unwrap();
+            },
+            None => {
+              stdfs::remove_file(&policy).unwrap();
+            },
+            Some(_) => fixture.write(global, "0"),
+          }
+          // Hardware mutations are not visible until the next published scan.
+          assert_selected_boost(&proxy, previous).await;
+          failures.begin_iteration();
+          system.scan(&mut failures);
+          failures.finish_iteration();
+          state.write().await.update_system(
+            &system,
+            Vec::new(),
+            None,
+            &failures,
+          );
+          changes
+            .next()
+            .await
+            .unwrap()
+            .body()
+            .deserialize::<()>()
+            .unwrap();
+          assert_selected_boost(&proxy, selected).await;
+          let cpus: Vec<HashMap<String, OwnedValue>> =
+            proxy.call("GetCpuCapabilities", &()).await.unwrap();
+          assert_eq!(cpus.len(), 1);
+          previous = selected;
+        }
+        assert_eq!(fixture.write_count(global), 0);
+        closing.close().await.unwrap();
+      };
+      let (result, ()) = tokio::join!(
+        server::run_connection(
+          connection,
+          state.clone(),
+          applied_rules,
+          mpsc::channel(1).0,
+          reload_results
+        ),
+        observe
+      );
+      assert!(result.is_err());
+      client.close().await.unwrap();
+    })
+    .await
+    .expect("boost snapshot notification timed out");
   }
 
   #[test]
@@ -2501,8 +2752,8 @@ mod tests {
     {
       let _managed = begin_managed_settings_iteration();
       audio::Delta {
-        timeout_seconds:  Some(10),
-        reset_controller: Some(true),
+        timeout_seconds:  Some(10.into()),
+        reset_controller: Some(true.into()),
       }
       .apply()
       .unwrap();
@@ -2524,7 +2775,13 @@ mod tests {
     fixture.cpu_telemetry(&[0]);
     let system = fixture_cpu_system();
     let now = Instant::now();
-    let eval = system.eval_state(now, now, PowerProfile::Balanced, false);
+    let eval = system.eval_state(
+      now,
+      now,
+      PowerProfile::Balanced,
+      false,
+      &system.cpu_history(now),
+    );
     let mut high: config::Rule = toml::from_str(
       "name='high'\npriority=2\ncpu.governor='performance'\naudio.\
        timeout-seconds='invalid'",
@@ -2652,8 +2909,8 @@ priority = 1
       .into_iter()
       .map(|cpu| {
         (Arc::new(cpu), cpu::Delta {
-          governor: Some("performance".into()),
-          pm_qos_resume_latency_us: Some("100".into()),
+          governor: Some("performance".into().into()),
+          pm_qos_resume_latency_us: Some("100".into().into()),
           ..cpu::Delta::default()
         })
       })
@@ -2911,99 +3168,8 @@ priority = 1
     assert!(cpus[2].governors.is_empty());
     assert!(!cpus[2].epbs.is_empty());
   }
-
-  fn apply_rules(system: &System, rules: &[config::Rule]) {
-    let now = Instant::now();
-    let eval = system.eval_state(now, now, PowerProfile::Balanced, false);
-    let mut failures = RuntimeFailures::default();
-    failures.begin_iteration();
-    let (actions, _) = evaluate_rules(rules, &eval, &mut failures);
-    apply_actions(actions, &mut failures, &mut cpu::DmaLatency::default());
-    failures.finish_iteration();
-  }
-
-  #[tokio::test]
-  async fn identical_reload_outcomes_each_complete_and_publish() {
-    let (results, mut receiver) = broadcast::channel(64);
-    for _ in 0..2 {
-      let (response, result) = oneshot::channel();
-      publish_reload_result(&results, Ok(()), Some(response));
-      result.await.unwrap().unwrap();
-    }
-    // Both identical outcomes stay queued even when the subscriber is busy.
-    assert_eq!(
-      receiver.recv().await.unwrap(),
-      (true, "configuration reloaded".into())
-    );
-    assert_eq!(
-      receiver.recv().await.unwrap(),
-      (true, "configuration reloaded".into())
-    );
-    publish_reload_result(
-      &results,
-      Err(anyhow::anyhow!("invalid candidate")),
-      None,
-    );
-    assert_eq!(
-      receiver.recv().await.unwrap(),
-      (false, "invalid candidate".into())
-    );
-  }
-
-  #[test]
-  fn repeated_partial_inventory_keeps_original_until_rediscovery() {
-    let fixture = SystemFixture::new();
-    let root = fixture.path("/sys/block/sda");
-    fixture.write(root.join("queue/scheduler"), "mq-deadline");
-    fixture.write(root.join("removable"), "0");
-    let mut system = System::default();
-    system.scan_disks().unwrap();
-    let _managed = fs::manage_settings();
-    let rule: config::Rule =
-      toml::from_str("name='disk-owner'\npriority=5\ndisk.scheduler='none'")
-        .unwrap();
-    apply_rules(&system, &[rule]);
-    fixture.fail_read(root.join("removable"), ErrorKind::PermissionDenied);
-    for _ in 0..2 {
-      assert!(system.scan_disks().is_err());
-      apply_rules(&system, &[]);
-      assert_eq!(
-        stdfs::read_to_string(root.join("queue/scheduler")).unwrap(),
-        "none"
-      );
-    }
-    fixture.clear_io(root.join("removable"));
-    system.scan_disks().unwrap();
-    apply_rules(&system, &[]);
-    assert_eq!(
-      stdfs::read_to_string(root.join("queue/scheduler")).unwrap(),
-      "mq-deadline"
-    );
-    assert!(fs::applied_settings().is_empty());
-  }
-
-  #[test]
-  fn thermal_fallback_clears_readings_when_sensor_inventory_disappears() {
-    let fixture = SystemFixture::new();
-    stdfs::create_dir_all(fixture.path("/sys/class/hwmon")).unwrap();
-    let root = fixture.path("/sys/devices/virtual/thermal/thermal_zone0");
-    fixture.write(root.join("type"), "x86_pkg_temp");
-    fixture.write(root.join("temp"), "53300");
-    let mut system = System::default();
-    system.scan_temperatures().unwrap();
-    assert_eq!(
-      system
-        .cpu_temperatures
-        .values()
-        .copied()
-        .collect::<Vec<_>>(),
-      [53.3]
-    );
-    stdfs::remove_dir_all(fixture.path("/sys/devices/virtual/thermal"))
-      .unwrap();
-    system.scan_temperatures().unwrap();
-    assert!(system.cpu_temperatures.is_empty());
-  }
 }
 
 #[cfg(test)] mod telemetry_tests;
+
+#[cfg(test)] mod explain_tests;

@@ -759,12 +759,12 @@ impl Cpu {
 #[derive(Default, Debug, Clone, PartialEq)]
 #[must_use]
 pub struct Delta {
-  pub governor:                      Option<String>,
-  pub energy_performance_preference: Option<String>,
-  pub energy_perf_bias:              Option<String>,
-  pub frequency_minimum:             Option<Frequency>,
-  pub frequency_maximum:             Option<Frequency>,
-  pub pm_qos_resume_latency_us:      Option<String>,
+  pub governor:                      Option<fs::Setting<String>>,
+  pub energy_performance_preference: Option<fs::Setting<String>>,
+  pub energy_perf_bias:              Option<fs::Setting<String>>,
+  pub frequency_minimum:             Option<fs::Setting<Frequency>>,
+  pub frequency_maximum:             Option<fs::Setting<Frequency>>,
+  pub pm_qos_resume_latency_us:      Option<fs::Setting<String>>,
 }
 
 impl Delta {
@@ -772,8 +772,8 @@ impl Delta {
     Self {
       governor: self.governor.clone(),
       energy_performance_preference: self.energy_performance_preference.clone(),
-      frequency_minimum: self.frequency_minimum,
-      frequency_maximum: self.frequency_maximum,
+      frequency_minimum: self.frequency_minimum.clone(),
+      frequency_maximum: self.frequency_maximum.clone(),
       ..Self::default()
     }
   }
@@ -797,60 +797,63 @@ impl Delta {
 
   pub fn or(self, that: &Self) -> Self {
     Self {
-      governor:                      self
-        .governor
-        .or_else(|| that.governor.clone()),
-      energy_performance_preference: self
-        .energy_performance_preference
-        .or_else(|| that.energy_performance_preference.clone()),
-      energy_perf_bias:              self
-        .energy_perf_bias
-        .or_else(|| that.energy_perf_bias.clone()),
-      frequency_minimum:             self
-        .frequency_minimum
-        .or(that.frequency_minimum),
-      frequency_maximum:             self
-        .frequency_maximum
-        .or(that.frequency_maximum),
-      pm_qos_resume_latency_us:      self
-        .pm_qos_resume_latency_us
-        .or_else(|| that.pm_qos_resume_latency_us.clone()),
+      governor:                      fs::prefer(self.governor, &that.governor),
+      energy_performance_preference: fs::prefer(
+        self.energy_performance_preference,
+        &that.energy_performance_preference,
+      ),
+      energy_perf_bias:              fs::prefer(
+        self.energy_perf_bias,
+        &that.energy_perf_bias,
+      ),
+      frequency_minimum:             fs::prefer(
+        self.frequency_minimum,
+        &that.frequency_minimum,
+      ),
+      frequency_maximum:             fs::prefer(
+        self.frequency_maximum,
+        &that.frequency_maximum,
+      ),
+      pm_qos_resume_latency_us:      fs::prefer(
+        self.pm_qos_resume_latency_us,
+        &that.pm_qos_resume_latency_us,
+      ),
     }
   }
 
   pub fn validate(&self, cpu: &Cpu) -> anyhow::Result<()> {
     if let Some(governor) = &self.governor {
-      cpu.validate_governor(governor)?;
+      cpu.validate_governor(&governor.value)?;
     }
     if let Some(epp) = &self.energy_performance_preference {
-      cpu.validate_epp(epp)?;
+      cpu.validate_epp(&epp.value)?;
     }
     if let Some(epb) = &self.energy_perf_bias {
-      cpu.validate_epb(epb)?;
+      cpu.validate_epb(&epb.value)?;
     }
     if self.pm_qos_resume_latency_us.is_some() {
       cpu.validate_pm_qos_resume_latency()?;
     }
 
     cpu
-      .frequency_transition(self.frequency_minimum, self.frequency_maximum)
+      .frequency_transition(self.frequency_minimum.as_ref(), self.frequency_maximum.as_ref())
       .map(|_| ())
   }
 
   pub fn apply(&self, cpu: &mut Cpu) -> anyhow::Result<()> {
     let frequency = cpu
-      .frequency_transition(self.frequency_minimum, self.frequency_maximum)?;
+      .frequency_transition(self.frequency_minimum.as_ref(), self.frequency_maximum.as_ref())?;
 
     if let Some(governor) = &self.governor {
-      cpu.set_governor(governor)?;
+      governor.apply(|value| cpu.set_governor(value))?;
     }
 
     if let Some(epp) = &self.energy_performance_preference {
-      cpu.set_epp(epp)?;
+      epp.apply(|value| cpu.set_epp(value))?;
     }
 
     if let Some(epb) = &self.energy_perf_bias {
-      cpu.set_epb(epb)?;
+      epb.apply(|value| cpu.set_epb(value))?;
     }
 
     if let Some(frequency) = frequency {
@@ -858,7 +861,7 @@ impl Delta {
     }
 
     if let Some(latency) = &self.pm_qos_resume_latency_us {
-      cpu.set_pm_qos_resume_latency_us(latency)?;
+      latency.apply(|value| cpu.set_pm_qos_resume_latency_us(value))?;
     }
 
     Ok(())
@@ -868,9 +871,9 @@ impl Delta {
 #[derive(Default, Debug, Clone, PartialEq)]
 #[must_use]
 pub struct GlobalDelta {
-  pub turbo:                          Option<bool>,
-  pub pstate_min_performance_percent: Option<u8>,
-  pub pstate_max_performance_percent: Option<u8>,
+  pub turbo:                          Option<fs::Setting<bool>>,
+  pub pstate_min_performance_percent: Option<fs::Setting<u8>>,
+  pub pstate_max_performance_percent: Option<fs::Setting<u8>>,
   pub dma_latency_us:                 Option<i32>,
 }
 
@@ -884,13 +887,15 @@ impl GlobalDelta {
 
   pub fn or(self, that: &Self) -> Self {
     Self {
-      turbo:                          self.turbo.or(that.turbo),
-      pstate_min_performance_percent: self
-        .pstate_min_performance_percent
-        .or(that.pstate_min_performance_percent),
-      pstate_max_performance_percent: self
-        .pstate_max_performance_percent
-        .or(that.pstate_max_performance_percent),
+      turbo:                          fs::prefer(self.turbo, &that.turbo),
+      pstate_min_performance_percent: fs::prefer(
+        self.pstate_min_performance_percent,
+        &that.pstate_min_performance_percent,
+      ),
+      pstate_max_performance_percent: fs::prefer(
+        self.pstate_max_performance_percent,
+        &that.pstate_max_performance_percent,
+      ),
       dma_latency_us:                 self
         .dma_latency_us
         .or(that.dma_latency_us),
@@ -902,16 +907,16 @@ impl GlobalDelta {
     cpus: impl Iterator<Item = &'a Cpu>,
     dma_latency: &mut DmaLatency,
   ) -> anyhow::Result<()> {
-    if let Some(percent) = self.pstate_min_performance_percent {
-      Cpu::set_pstate_min_performance_percent(percent)?;
+    if let Some(percent) = &self.pstate_min_performance_percent {
+      percent.apply(|&value| Cpu::set_pstate_min_performance_percent(value))?;
     }
 
-    if let Some(percent) = self.pstate_max_performance_percent {
-      Cpu::set_pstate_max_performance_percent(percent)?;
+    if let Some(percent) = &self.pstate_max_performance_percent {
+      percent.apply(|&value| Cpu::set_pstate_max_performance_percent(value))?;
     }
 
-    if let Some(turbo) = self.turbo {
-      Cpu::set_turbo(turbo, cpus)?;
+    if let Some(turbo) = &self.turbo {
+      turbo.apply(|&value| Cpu::set_turbo(value, cpus))?;
     }
 
     dma_latency.apply(self.dma_latency_us)?;
@@ -958,6 +963,7 @@ impl DmaLatency {
 #[cfg(test)]
 mod tests {
   use std::{
+    sync::Arc,
     fs as stdfs,
     io::{
       Error,
@@ -1021,9 +1027,9 @@ mod tests {
       let cpu = cpus.iter_mut().find(|cpu| cpu.number == 0).unwrap();
 
       Delta {
-        governor: Some("performance".to_owned()),
-        energy_performance_preference: epp.map(str::to_owned),
-        frequency_minimum: Some(Frequency::from_khz(1_000_000).unwrap()),
+        governor: Some("performance".to_owned().into()),
+        energy_performance_preference: epp.map(|value| value.to_owned().into()),
+        frequency_minimum: Some(Frequency::from_khz(1_000_000).unwrap().into()),
         ..Delta::default()
       }
       .apply(cpu)
@@ -1304,8 +1310,8 @@ mod tests {
 
     let mut cpu = Cpu::all().unwrap().pop().unwrap();
     let result = Delta {
-      frequency_minimum: Some(Frequency::from_khz(2_000_000).unwrap()),
-      frequency_maximum: Some(Frequency::from_khz(3_000_000).unwrap()),
+      frequency_minimum: Some(Frequency::from_khz(2_000_000).unwrap().into()),
+      frequency_maximum: Some(Frequency::from_khz(3_000_000).unwrap().into()),
       ..Delta::default()
     }
     .apply(&mut cpu);
@@ -1317,7 +1323,15 @@ mod tests {
   }
 
   #[test]
-  fn frequency_transitions_preserve_valid_intermediate_bounds() {
+  fn frequency_transitions_preserve_valid_intermediate_bounds_and_origins() {
+    let minimum_rule = Arc::new(fs::RuleOrigin {
+      name:     "minimum".into(),
+      priority: 10,
+    });
+    let maximum_rule = Arc::new(fs::RuleOrigin {
+      name:     "maximum".into(),
+      priority: 20,
+    });
     for ((old_min, old_max), (new_min, new_max)) in [
       ((800_000, 1_000_000), (2_000_000, 3_000_000)),
       ((2_000_000, 3_000_000), (800_000, 1_000_000)),
@@ -1333,15 +1347,29 @@ mod tests {
       fixture.write(&minimum, old_min.to_string());
       fixture.write(&maximum, old_max.to_string());
       fixture.enforce_bounds(&minimum, &maximum);
+      let _settings = fs::manage_settings();
+      fs::begin_settings_iteration();
 
       let mut cpu = Cpu::all().unwrap().pop().unwrap();
-      Delta {
-        frequency_minimum: Some(Frequency::from_khz(new_min).unwrap()),
-        frequency_maximum: Some(Frequency::from_khz(new_max).unwrap()),
+      let mut set_minimum = Delta {
+        frequency_minimum: Some(Frequency::from_khz(new_min).unwrap().into()),
         ..Delta::default()
-      }
-      .apply(&mut cpu)
-      .unwrap();
+      };
+      set_minimum
+        .frequency_minimum
+        .as_mut()
+        .unwrap()
+        .set_rule(&minimum_rule);
+      let mut set_maximum = Delta {
+        frequency_maximum: Some(Frequency::from_khz(new_max).unwrap().into()),
+        ..Delta::default()
+      };
+      set_maximum
+        .frequency_maximum
+        .as_mut()
+        .unwrap()
+        .set_rule(&maximum_rule);
+      set_minimum.or(&set_maximum).apply(&mut cpu).unwrap();
 
       assert_eq!(
         stdfs::read_to_string(&minimum).unwrap(),
@@ -1351,6 +1379,15 @@ mod tests {
         stdfs::read_to_string(&maximum).unwrap(),
         new_max.to_string()
       );
+      let settings = fs::applied_settings();
+      for (path, rule) in [(&minimum, &minimum_rule), (&maximum, &maximum_rule)]
+      {
+        let origin = settings
+          .iter()
+          .find(|setting| &setting.path == path)
+          .and_then(|setting| setting.rule.as_ref());
+        assert_eq!(origin, Some(rule.as_ref()), "{}", path.display());
+      }
     }
   }
 
@@ -1374,9 +1411,9 @@ mod tests {
       let mut cpu = Cpu::all().unwrap().pop().unwrap();
       let result = Delta {
         frequency_minimum: minimum
-          .map(|value| Frequency::from_khz(value).unwrap()),
+          .map(|value| Frequency::from_khz(value).unwrap().into()),
         frequency_maximum: maximum
-          .map(|value| Frequency::from_khz(value).unwrap()),
+          .map(|value| Frequency::from_khz(value).unwrap().into()),
         ..Delta::default()
       }
       .apply(&mut cpu);
@@ -1400,7 +1437,7 @@ mod tests {
     fixture.write_result(&minimum, Ok("900000"));
     let mut cpu = Cpu::all().unwrap().pop().unwrap();
     Delta {
-      frequency_minimum: Some(Frequency::from_khz(1_000_000).unwrap()),
+      frequency_minimum: Some(Frequency::from_khz(1_000_000).unwrap().into()),
       ..Delta::default()
     }
     .apply(&mut cpu)

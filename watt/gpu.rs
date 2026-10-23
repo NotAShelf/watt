@@ -141,8 +141,8 @@ impl Gpu {
 #[derive(Default, Debug, Clone, PartialEq)]
 #[must_use]
 pub struct Delta {
-  pub panel_power_savings: Option<u8>,
-  pub radeon_powersave:    Option<String>,
+  pub panel_power_savings: Option<fs::Setting<u8>>,
+  pub radeon_powersave:    Option<fs::Setting<String>>,
 }
 
 impl Delta {
@@ -152,21 +152,23 @@ impl Delta {
 
   pub fn or(self, that: &Self) -> Self {
     Self {
-      panel_power_savings: self
-        .panel_power_savings
-        .or(that.panel_power_savings),
-      radeon_powersave:    self
-        .radeon_powersave
-        .or_else(|| that.radeon_powersave.clone()),
+      panel_power_savings: fs::prefer(
+        self.panel_power_savings,
+        &that.panel_power_savings,
+      ),
+      radeon_powersave:    fs::prefer(
+        self.radeon_powersave,
+        &that.radeon_powersave,
+      ),
     }
   }
 
   pub fn apply(&self, gpu: &Gpu) -> anyhow::Result<()> {
-    if let Some(value) = self.panel_power_savings {
-      gpu.set_panel_power_savings(value)?;
+    if let Some(setting) = &self.panel_power_savings {
+      setting.apply(|&value| gpu.set_panel_power_savings(value))?;
     }
-    if let Some(value) = &self.radeon_powersave {
-      gpu.set_radeon_powersave(value)?;
+    if let Some(setting) = &self.radeon_powersave {
+      setting.apply(|value| gpu.set_radeon_powersave(value))?;
     }
 
     Ok(())

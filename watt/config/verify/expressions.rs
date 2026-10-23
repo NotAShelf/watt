@@ -7,6 +7,7 @@ use super::{
   Expression,
   Rule,
   Severity,
+  constant_duration,
   constants,
   expression_type,
 };
@@ -19,36 +20,60 @@ pub(super) fn verify_rule_expressions(
   rule: &Rule,
   diagnostics: &mut Vec<Diagnostic>,
 ) {
+  visit_rule_expressions(rule, true, |field, expression| {
+    let constant = constants::analyze(expression);
+    let visit_children = matches!(constant, Ok(constants::Constant::Unknown));
+    if let Some((severity, message)) = duration_diagnostic(expression)
+      .or_else(|| {
+        visit_children
+          .then(|| operator_error(expression))
+          .flatten()
+          .map(|message| (Severity::Error, message))
+      })
+      .or_else(|| {
+        constant
+          .err()
+          .map(|error| (Severity::Error, error.to_string()))
+      })
+      .or_else(|| empty_collection_diagnostic(expression))
+    {
+      diagnostics.push(Diagnostic {
+        severity,
+        rule: rule.name.clone(),
+        priority: rule.priority,
+        field: field.into(),
+        message,
+      });
+    }
+    visit_children
+  });
+}
+
+/// Visits each configured history window, with `None` for a window that
+/// cannot be resolved to a constant duration.
+pub fn visit_rule_duration_windows(
+  rule: &Rule,
+  mut visit: impl FnMut(&'static str, Option<Duration>),
+) {
+  visit_rule_expressions(rule, false, |_, expression| {
+    if let Some((metric, duration)) = duration_operand(expression) {
+      visit(metric, constant_duration(duration));
+    }
+    true
+  });
+}
+
+fn visit_rule_expressions(
+  rule: &Rule,
+  prune_constant_branches: bool,
+  mut visit: impl FnMut(&'static str, &Expression) -> bool,
+) {
   let mut pending = Vec::new();
   for (field, expression) in rule_expressions(rule) {
     pending.push(expression);
     while let Some(expression) = pending.pop() {
-      let constant = constants::analyze(expression);
-      let visit_children = matches!(constant, Ok(constants::Constant::Unknown));
-      if let Some((severity, message)) = duration_diagnostic(expression)
-        .or_else(|| {
-          visit_children
-            .then(|| operator_error(expression))
-            .flatten()
-            .map(|message| (Severity::Error, message))
-        })
-        .or_else(|| {
-          constant
-            .err()
-            .map(|error| (Severity::Error, error.to_string()))
-        })
-        .or_else(|| empty_collection_diagnostic(expression))
-      {
-        diagnostics.push(Diagnostic {
-          severity,
-          rule: rule.name.clone(),
-          priority: rule.priority,
-          field: field.into(),
-          message,
-        });
-      }
-      if visit_children {
-        push_children(expression, &mut pending);
+      if visit(field, expression) {
+        push_children(expression, &mut pending, prune_constant_branches);
       }
     }
   }
@@ -140,15 +165,23 @@ fn operand_type_error<'a>(
 }
 
 fn duration_diagnostic(expression: &Expression) -> Option<(Severity, String)> {
-  let (name, duration) = match expression {
-    Expression::CpuUsageSince { duration } => ("cpu-usage-since", duration),
-    Expression::LoadAverageSince { duration } => {
-      ("load-average-since", duration)
-    },
-    _ => return None,
-  };
+  let (name, duration) = duration_operand(expression)?;
   duration_value_diagnostic(duration)
     .map(|(severity, message)| (severity, format!("{name}: {message}")))
+}
+
+fn duration_operand(
+  expression: &Expression,
+) -> Option<(&'static str, &Expression)> {
+  match expression {
+    Expression::CpuUsageSince { duration } => {
+      Some(("cpu-usage-since", duration))
+    },
+    Expression::LoadAverageSince { duration } => {
+      Some(("load-average-since", duration))
+    },
+    _ => None,
+  }
 }
 
 fn duration_value_diagnostic(
@@ -298,6 +331,7 @@ pub(super) fn rule_expressions(
 fn push_children<'a>(
   expression: &'a Expression,
   pending: &mut Vec<&'a Expression>,
+  prune_constant_branches: bool,
 ) {
   use Expression::*;
   match expression {
@@ -342,6 +376,7 @@ fn push_children<'a>(
         condition,
         consequence,
         alternative.as_deref(),
+        prune_constant_branches,
         pending,
       );
     },
@@ -377,10 +412,14 @@ fn push_conditional_children<'a>(
   condition: &'a Expression,
   consequence: &'a Expression,
   alternative: Option<&'a Expression>,
+  prune_constant_branches: bool,
   pending: &mut Vec<&'a Expression>,
 ) {
   pending.push(condition);
-  match constants::boolean(condition) {
+  let selected = prune_constant_branches
+    .then(|| constants::boolean(condition))
+    .flatten();
+  match selected {
     Some(true) => pending.push(consequence),
     Some(false) => pending.extend(alternative),
     None => {

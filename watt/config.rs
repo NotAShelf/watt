@@ -32,6 +32,7 @@ use serde::{
 use verify::Severity;
 
 use crate::{
+  fs as settings,
   audio,
   cpu,
   disk,
@@ -233,28 +234,28 @@ impl CpusDelta {
         &self.governor,
         state,
         "cpu.governor",
-      )?,
+      )?.map(|value| state.setting(value)),
       energy_performance_preference: eval_epp(
         &self.energy_performance_preference,
         state,
         "cpu.energy-performance-preference",
-      )?,
+      )?.map(|value| state.setting(value)),
       energy_perf_bias:              eval_string(
         &self.energy_perf_bias,
         state,
         "cpu.energy-perf-bias",
-      )?,
+      )?.map(|value| state.setting(value)),
       frequency_minimum:             eval_frequency(
         &self.frequency_mhz_minimum,
         state,
         "cpu.frequency-mhz-minimum",
-      )?,
+      )?.map(|value| state.setting(value)),
       frequency_maximum:             eval_frequency(
         &self.frequency_mhz_maximum,
         state,
         "cpu.frequency-mhz-maximum",
-      )?,
-      pm_qos_resume_latency_us:      self.eval_resume_latency(state)?,
+      )?.map(|value| state.setting(value)),
+      pm_qos_resume_latency_us:      self.eval_resume_latency(state)?.map(|value| state.setting(value)),
     })
   }
 
@@ -290,17 +291,17 @@ impl CpusDelta {
         &self.turbo,
         state,
         "cpu.turbo",
-      )?,
+      )?.map(|value| state.setting(value)),
       pstate_min_performance_percent: eval_percent(
         &self.pstate_min_performance_percent,
         state,
         "cpu.pstate-min-performance-percent",
-      )?,
+      )?.map(|value| state.setting(value)),
       pstate_max_performance_percent: eval_percent(
         &self.pstate_max_performance_percent,
         state,
         "cpu.pstate-max-performance-percent",
-      )?,
+      )?.map(|value| state.setting(value)),
       dma_latency_us:                 eval_i32(
         &self.dma_latency_us,
         state,
@@ -379,12 +380,12 @@ impl UncoresDelta {
           &self.frequency_khz_minimum,
           state,
           "uncore.frequency-khz-minimum",
-        )?,
+        )?.map(|value| state.setting(value)),
         frequency_khz_maximum: eval_u64(
           &self.frequency_khz_maximum,
           state,
           "uncore.frequency-khz-maximum",
-        )?,
+        )?.map(|value| state.setting(value)),
       };
 
       deltas.insert(Arc::clone(&uncore), delta);
@@ -420,32 +421,32 @@ impl VmDelta {
         &self.dirty_bytes,
         state,
         "vm.dirty-bytes",
-      )?,
+      )?.map(|value| state.setting(value)),
       dirty_ratio:                 eval_percent(
         &self.dirty_ratio,
         state,
         "vm.dirty-ratio",
-      )?,
+      )?.map(|value| state.setting(value)),
       dirty_background_bytes:      eval_u64(
         &self.dirty_background_bytes,
         state,
         "vm.dirty-background-bytes",
-      )?,
+      )?.map(|value| state.setting(value)),
       dirty_background_ratio:      eval_percent(
         &self.dirty_background_ratio,
         state,
         "vm.dirty-background-ratio",
-      )?,
+      )?.map(|value| state.setting(value)),
       transparent_hugepages:       eval_string(
         &self.transparent_hugepages,
         state,
         "vm.transparent-hugepages",
-      )?,
+      )?.map(|value| state.setting(value)),
       transparent_hugepage_defrag: eval_string(
         &self.transparent_hugepage_defrag,
         state,
         "vm.transparent-hugepage-defrag",
-      )?,
+      )?.map(|value| state.setting(value)),
     };
 
     delta.validate()?;
@@ -506,19 +507,19 @@ impl DisksDelta {
 
     for disk in disks {
       deltas.insert(Arc::clone(&disk), disk::Delta {
-        scheduler: eval_string(&self.scheduler, state, "disk.scheduler")?,
+        scheduler: eval_string(&self.scheduler, state, "disk.scheduler")?.map(|value| state.setting(value)),
         readahead_kib: eval_u64(
           &self.readahead_kib,
           state,
           "disk.readahead-kib",
-        )?,
-        apm,
-        spindown,
+        )?.map(|value| state.setting(value)),
+        apm: apm.map(|value| state.setting(value)),
+        spindown: spindown.map(|value| state.setting(value)),
       });
     }
 
     Ok((deltas, disk::GlobalDelta {
-      alpm: eval_string(&self.alpm, state, "disk.alpm")?,
+      alpm: eval_string(&self.alpm, state, "disk.alpm")?.map(|value| state.setting(value)),
     }))
   }
 }
@@ -580,8 +581,8 @@ impl UsbsDelta {
           &self.autosuspend,
           state,
           "usb.autosuspend",
-        )?,
-        autosuspend_delay_ms: delay_ms,
+        )?.map(|value| state.setting(value)),
+        autosuspend_delay_ms: delay_ms.map(|value| state.setting(value)),
       });
     }
 
@@ -610,12 +611,12 @@ impl AudioDelta {
         &self.timeout_seconds,
         state,
         "audio.timeout-seconds",
-      )?,
+      )?.map(|value| state.setting(value)),
       reset_controller: eval_bool(
         &self.reset_controller,
         state,
         "audio.reset-controller",
-      )?,
+      )?.map(|value| state.setting(value)),
     })
   }
 }
@@ -672,12 +673,12 @@ impl GpusDelta {
 
     for gpu in gpus {
       deltas.insert(Arc::clone(&gpu), gpu::Delta {
-        panel_power_savings,
+        panel_power_savings: panel_power_savings.map(|value| state.setting(value)),
         radeon_powersave: eval_string(
           &self.radeon_powersave,
           state,
           "gpu.radeon-powersave",
-        )?,
+        )?.map(|value| state.setting(value)),
       });
     }
 
@@ -928,7 +929,7 @@ impl PowersDelta {
           .try_into_number()
           .context("`power.charge-threshold-start` was not a number")?;
 
-        delta.charge_threshold_start = Some(threshold_start / 100.0);
+        delta.charge_threshold_start = Some(state.setting(threshold_start / 100.0));
       }
 
       if let Some(threshold_end) = &self.charge_threshold_end
@@ -938,7 +939,7 @@ impl PowersDelta {
           .try_into_number()
           .context("`power.charge-threshold-end` was not a number")?;
 
-        delta.charge_threshold_end = Some(threshold_end / 100.0);
+        delta.charge_threshold_end = Some(state.setting(threshold_end / 100.0));
       }
 
       deltas.insert(Arc::clone(&power_supply), delta);
@@ -1366,6 +1367,7 @@ pub struct EvalState<'peripherals, 'context> {
   pub power_profile_preference: PowerProfile,
 
   pub context: EvalContext<'context>,
+  pub rule:    Option<&'context Arc<settings::RuleOrigin>>,
 
   pub cpus:           &'peripherals HashSet<Arc<cpu::Cpu>>,
   pub uncores:        &'peripherals HashSet<Arc<uncore::Uncore>>,
@@ -1383,7 +1385,15 @@ pub enum EvalContext<'a> {
   WidestPossible,
 }
 
-impl<'peripherals> EvalState<'peripherals, '_> {
+impl<'peripherals, 'context> EvalState<'peripherals, 'context> {
+  fn setting<T>(&self, value: T) -> settings::Setting<T> {
+    let mut setting = settings::Setting::from(value);
+    if let Some(rule) = self.rule {
+      setting.set_rule(rule);
+    }
+    setting
+  }
+
   fn cpu_value_available(
     &self,
     value: &str,
@@ -1402,10 +1412,13 @@ impl<'peripherals> EvalState<'peripherals, '_> {
     }
   }
 
-  pub fn in_context<'context>(
+  pub fn in_context<'narrow>(
     &self,
-    context: EvalContext<'context>,
-  ) -> EvalState<'peripherals, 'context> {
+    context: EvalContext<'narrow>,
+  ) -> EvalState<'peripherals, 'narrow>
+  where
+    'context: 'narrow,
+  {
     EvalState { context, ..*self }
   }
 }
@@ -1670,6 +1683,7 @@ mod tests {
       // Create an eval state with the base frequency
       let state = EvalState {
         now: Instant::now(),
+        rule: None,
         frequency_available: true,
         turbo_available: false,
         cpu_usage: 0.5,
@@ -1778,6 +1792,7 @@ mod tests {
 
     let state = EvalState {
       now: Instant::now(),
+      rule: None,
       frequency_available:         true,
       turbo_available:             false,
       cpu_usage:                   0.5,
@@ -1836,8 +1851,8 @@ mod tests {
     if let Ok((deltas, _)) = result {
       let delta = deltas.get(&cpu).unwrap();
       assert!(delta.frequency_maximum.is_some());
-      let frequency = delta.frequency_maximum.unwrap();
-      assert_eq!(frequency.as_khz(), 2_166_450);
+      let frequency = delta.frequency_maximum.as_ref().unwrap().value;
+      assert_eq!(frequency.value.as_khz(), 2_166_450);
     }
   }
 
@@ -1874,6 +1889,7 @@ mod tests {
 
     let state = EvalState {
       now: Instant::now(),
+      rule: None,
       frequency_available:         true,
       turbo_available:             false,
       cpu_usage:                   0.0,
@@ -1960,6 +1976,7 @@ mod tests {
 
     let state = EvalState {
       now: Instant::now(),
+      rule: None,
       frequency_available:         true,
       turbo_available:             false,
       cpu_usage:                   0.0,

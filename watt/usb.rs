@@ -119,8 +119,8 @@ mod tests {
 #[derive(Default, Debug, Clone, PartialEq)]
 #[must_use]
 pub struct Delta {
-  pub autosuspend:          Option<bool>,
-  pub autosuspend_delay_ms: Option<u64>,
+  pub autosuspend:          Option<fs::Setting<bool>>,
+  pub autosuspend_delay_ms: Option<fs::Setting<u64>>,
 }
 
 impl Delta {
@@ -130,19 +130,20 @@ impl Delta {
 
   pub fn or(self, that: &Self) -> Self {
     Self {
-      autosuspend:          self.autosuspend.or(that.autosuspend),
-      autosuspend_delay_ms: self
-        .autosuspend_delay_ms
-        .or(that.autosuspend_delay_ms),
+      autosuspend:          fs::prefer(self.autosuspend, &that.autosuspend),
+      autosuspend_delay_ms: fs::prefer(
+        self.autosuspend_delay_ms,
+        &that.autosuspend_delay_ms,
+      ),
     }
   }
 
   pub fn apply(&self, device: &UsbDevice) -> anyhow::Result<()> {
-    if let Some(enabled) = self.autosuspend {
-      device.set_autosuspend(enabled)?;
+    if let Some(setting) = &self.autosuspend {
+      setting.apply(|&enabled| device.set_autosuspend(enabled))?;
     }
-    if let Some(delay_ms) = self.autosuspend_delay_ms {
-      device.set_autosuspend_delay_ms(delay_ms)?;
+    if let Some(setting) = &self.autosuspend_delay_ms {
+      setting.apply(|&delay_ms| device.set_autosuspend_delay_ms(delay_ms))?;
     }
 
     Ok(())

@@ -28,6 +28,7 @@ pub(super) fn with_cpu_state(
   let cpu_log = VecDeque::new();
   let state = EvalState {
     now: Instant::now(),
+    rule: None,
     frequency_available: true,
     turbo_available: false,
     cpu_usage: 0.0,

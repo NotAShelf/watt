@@ -6,6 +6,7 @@ use std::fs::{
 };
 #[cfg(not(test))] use std::sync::Mutex;
 use std::{
+  cell::Cell,
   collections::{
     BTreeMap,
     BTreeSet,
@@ -20,7 +21,7 @@ use std::{
     PathBuf,
   },
   str,
-  sync::OnceLock,
+  sync::{Arc, OnceLock},
 };
 
 use anyhow::{
@@ -35,6 +36,9 @@ use crate::test_support::{
 };
 
 static SYSTEM_ROOT: OnceLock<Option<PathBuf>> = OnceLock::new();
+thread_local! {
+  static WRITING_RULE: Cell<Option<Arc<RuleOrigin>>> = const { Cell::new(None) };
+}
 #[cfg(not(test))]
 static MANAGED_SETTINGS: OnceLock<Mutex<ManagedSettings>> = OnceLock::new();
 #[cfg(test)]
@@ -50,6 +54,76 @@ enum ReadbackKind {
   DriverTranslated,
 }
 
+/// The rule whose action successfully requested a managed value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuleOrigin {
+  pub name:     String,
+  pub priority: u16,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Setting<T> {
+  pub value: T,
+  rule:      Option<Arc<RuleOrigin>>,
+}
+
+impl<T> From<T> for Setting<T> {
+  fn from(value: T) -> Self {
+    Self { value, rule: None }
+  }
+}
+
+impl From<&str> for Setting<String> {
+  fn from(value: &str) -> Self {
+    Self::from(value.to_owned())
+  }
+}
+
+impl<T> Setting<T> {
+  pub fn set_rule(&mut self, rule: &Arc<RuleOrigin>) {
+    self.rule = Some(Arc::clone(rule));
+  }
+
+  /// Attribute only the writes performed by this synchronous operation.
+  pub fn apply<R>(&self, write: impl FnOnce(&T) -> R) -> R {
+    struct RestoreRule(Option<Arc<RuleOrigin>>);
+    impl Drop for RestoreRule {
+      fn drop(&mut self) {
+        WRITING_RULE.set(self.0.take());
+      }
+    }
+
+    let _restore = RestoreRule(WRITING_RULE.replace(self.rule.clone()));
+    write(&self.value)
+  }
+}
+
+/// Keep the higher-priority value, preferring the first on a tie.
+pub fn prefer<T: Clone>(
+  first: Option<Setting<T>>,
+  second: &Option<Setting<T>>,
+) -> Option<Setting<T>> {
+  match (&first, second) {
+    (None, _) => second.clone(),
+    (Some(first), Some(second))
+      if first.rule.as_ref().map(|rule| rule.priority)
+        < second.rule.as_ref().map(|rule| rule.priority) =>
+    {
+      Some(second.clone())
+    },
+    _ => first,
+  }
+}
+
+fn writing_rule() -> Option<RuleOrigin> {
+  WRITING_RULE.with(|slot| {
+    let rule = slot.take();
+    let owned = rule.as_deref().cloned();
+    slot.set(rule);
+    owned
+  })
+}
+
 #[derive(Debug)]
 struct ManagedSetting {
   original:      String,
@@ -57,6 +131,7 @@ struct ManagedSetting {
   observed:      Option<String>,
   readback_kind: ReadbackKind,
   generation:    u64,
+  rule:          Option<RuleOrigin>,
 }
 
 impl ManagedSetting {
@@ -72,6 +147,7 @@ pub struct AppliedSetting {
   pub path:      PathBuf,
   pub requested: String,
   pub observed:  Option<String>,
+  pub rule:      Option<RuleOrigin>,
   readback_kind: ReadbackKind,
 }
 
@@ -348,9 +424,11 @@ pub fn write(input: impl AsRef<Path>, value: &str) -> anyhow::Result<()> {
   if track {
     with_managed_settings(|settings| {
       let generation = settings.generation;
+      let rule = writing_rule();
       if let Some(setting) = settings.settings.get_mut(&path) {
         setting.record_write(value);
         setting.generation = generation;
+        setting.rule = rule;
       } else if let Some(original) = original {
         settings.settings.insert(path, ManagedSetting {
           original,
@@ -358,6 +436,7 @@ pub fn write(input: impl AsRef<Path>, value: &str) -> anyhow::Result<()> {
           observed: None,
           readback_kind: ReadbackKind::Ordinary,
           generation,
+          rule,
         });
       }
     });
@@ -397,8 +476,10 @@ pub fn keep_setting(input: impl AsRef<Path>, observed: impl Into<String>) {
   let observed = observed.into();
   with_managed_settings(|settings| {
     let generation = settings.generation;
+    let rule = writing_rule();
     if let Some(setting) = settings.settings.get_mut(&path) {
       setting.generation = generation;
+      setting.rule = rule;
       setting.observed = Some(observed);
       setting.readback_kind = ReadbackKind::Ordinary;
     }
@@ -415,6 +496,7 @@ pub fn applied_settings() -> Vec<AppliedSetting> {
           path:          path.clone(),
           requested:     setting.last_written.clone(),
           observed:      setting.observed.clone(),
+          rule:          setting.rule.clone(),
           readback_kind: setting.readback_kind,
         }
       })
@@ -565,6 +647,7 @@ fn restore_setting(
   with_managed_settings(|managed| {
     if let Some(setting) = managed.settings.get_mut(path) {
       setting.record_write(original);
+      setting.rule = None;
     }
   });
   let observed = read_raw(path).context("failed to verify restored setting")?;
@@ -645,6 +728,33 @@ mod tests {
     begin_settings_iteration();
     assert!(restore_unmanaged_settings().is_empty());
     assert!(applied_settings().is_empty());
+  }
+
+  #[test]
+  fn restore_readback_failure_drops_stale_rule_origin() {
+    let fixture = SystemFixture::new();
+    let control = fixture.path("/sys/test/control");
+    fixture.write(&control, "original");
+    let _managed = manage_settings();
+    begin_settings_iteration();
+    let mut request = Setting::from("requested".to_owned());
+    request.set_rule(&Arc::new(RuleOrigin {
+      name:     "removed-rule".into(),
+      priority: 10,
+    }));
+    request.apply(|value| write(&control, value)).unwrap();
+    let written = applied_settings().remove(0);
+    assert_eq!(written.rule.unwrap().name, "removed-rule");
+    fixture.clear_io(&control);
+    fixture.fail_read_after_write(&control, io::ErrorKind::PermissionDenied);
+    begin_settings_iteration();
+    assert_eq!(restore_unmanaged_settings().len(), 1);
+    let setting = applied_settings().remove(0);
+    assert_eq!(setting.requested, "original");
+    assert_eq!(setting.rule, None);
+    fixture.clear_io(&control);
+    assert!(restore_unmanaged_settings().is_empty());
+    assert_eq!(read(&control).unwrap().as_deref(), Some("original"));
   }
 
   #[test]
@@ -760,6 +870,7 @@ mod tests {
       requested:     "1000".into(),
       observed:      Some("900".into()),
       readback_kind: ReadbackKind::Ordinary,
+      rule:          None,
     };
     assert_eq!(setting.verification(), "clamped");
 

@@ -137,8 +137,8 @@ fn read_required(path: &Path, file: &str) -> anyhow::Result<u64> {
 #[derive(Default, Debug, Clone, PartialEq)]
 #[must_use]
 pub struct Delta {
-  pub frequency_khz_minimum: Option<u64>,
-  pub frequency_khz_maximum: Option<u64>,
+  pub frequency_khz_minimum: Option<fs::Setting<u64>>,
+  pub frequency_khz_maximum: Option<fs::Setting<u64>>,
 }
 
 impl Delta {
@@ -148,18 +148,22 @@ impl Delta {
 
   pub fn or(self, that: &Self) -> Self {
     Self {
-      frequency_khz_minimum: self
-        .frequency_khz_minimum
-        .or(that.frequency_khz_minimum),
-      frequency_khz_maximum: self
-        .frequency_khz_maximum
-        .or(that.frequency_khz_maximum),
+      frequency_khz_minimum: fs::prefer(
+        self.frequency_khz_minimum,
+        &that.frequency_khz_minimum,
+      ),
+      frequency_khz_maximum: fs::prefer(
+        self.frequency_khz_maximum,
+        &that.frequency_khz_maximum,
+      ),
     }
   }
 
   pub fn apply(&self, uncore: &Uncore) -> anyhow::Result<()> {
-    let target_min = self.frequency_khz_minimum.unwrap_or(uncore.min_khz);
-    let target_max = self.frequency_khz_maximum.unwrap_or(uncore.max_khz);
+    let minimum = self.frequency_khz_minimum.as_ref();
+    let maximum = self.frequency_khz_maximum.as_ref();
+    let target_min = minimum.map_or(uncore.min_khz, |setting| setting.value);
+    let target_max = maximum.map_or(uncore.max_khz, |setting| setting.value);
 
     if target_min > target_max {
       bail!(
@@ -168,20 +172,22 @@ impl Delta {
       );
     }
 
+    let apply_min = || {
+      minimum.map_or(Ok(()), |setting| {
+        setting.apply(|&value| uncore.set_min_khz(value))
+      })
+    };
+    let apply_max = || {
+      maximum.map_or(Ok(()), |setting| {
+        setting.apply(|&value| uncore.set_max_khz(value))
+      })
+    };
     if target_min > uncore.max_khz {
-      if let Some(value) = self.frequency_khz_maximum {
-        uncore.set_max_khz(value)?;
-      }
-      if let Some(value) = self.frequency_khz_minimum {
-        uncore.set_min_khz(value)?;
-      }
+      apply_max()?;
+      apply_min()?;
     } else {
-      if let Some(value) = self.frequency_khz_minimum {
-        uncore.set_min_khz(value)?;
-      }
-      if let Some(value) = self.frequency_khz_maximum {
-        uncore.set_max_khz(value)?;
-      }
+      apply_min()?;
+      apply_max()?;
     }
 
     Ok(())

@@ -67,6 +67,7 @@ fn usage_windows_select_default_rules_with_sparse_samples() {
     });
     let state = EvalState {
       now,
+      rule: None,
       frequency_available:         false,
       turbo_available:             false,
       cpu_usage:                   0.0,

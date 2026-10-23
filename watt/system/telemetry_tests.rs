@@ -86,10 +86,11 @@ fn volatility_excludes_old_spikes() {
     (10, 0.01, Some(50.0)),
     (5, 0.01, Some(50.0)),
   ]);
-  let volatility = system.cpu_volatility(now).unwrap();
+  let history = system.cpu_history(now);
+  let volatility = history.volatility.unwrap();
   assert!(volatility.usage.abs() < f64::EPSILON);
   assert!(volatility.temperature.unwrap().abs() < f64::EPSILON);
-  assert!(system.is_cpu_idle(now));
+  assert!(history.idle);
 }
 
 #[test]
@@ -99,7 +100,7 @@ fn volatility_does_not_bridge_missing_temperature_readings() {
     (10, 0.4, None),
     (5, 0.7, Some(90.0)),
   ]);
-  let volatility = system.cpu_volatility(now).unwrap();
+  let volatility = system.cpu_history(now).volatility.unwrap();
   assert!((volatility.usage - 0.3).abs() < 1e-10);
   assert!(volatility.temperature.is_none());
 }
@@ -118,8 +119,9 @@ fn volatility_requires_two_increasing_samples_in_the_window() {
   ];
   for &(case, samples) in cases {
     let (system, now) = cpu_history(samples);
-    assert!(system.cpu_volatility(now).is_none(), "{case}");
-    assert!(!system.is_cpu_idle(now), "{case}");
+    let history = system.cpu_history(now);
+    assert!(history.volatility.is_none(), "{case}");
+    assert!(!history.idle, "{case}");
   }
 }
 
@@ -132,8 +134,9 @@ fn future_cpu_samples_do_not_affect_current_volatility() {
     temperature:  None,
     load_average: 0.0,
   });
-  assert!(system.cpu_volatility(now).unwrap().usage.abs() < f64::EPSILON);
-  assert!(system.is_cpu_idle(now));
+  let history = system.cpu_history(now);
+  assert!(history.volatility.unwrap().usage.abs() < f64::EPSILON);
+  assert!(history.idle);
 }
 
 #[test]

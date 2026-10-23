@@ -74,9 +74,9 @@ impl Range {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(super) struct Transition {
-  minimum: Option<Frequency>,
-  maximum: Option<Frequency>,
+pub(super) struct Transition<'a> {
+  minimum: Option<&'a fs::Setting<Frequency>>,
+  maximum: Option<&'a fs::Setting<Frequency>>,
   order:   WriteOrder,
 }
 
@@ -86,16 +86,16 @@ enum WriteOrder {
   MaximumFirst,
 }
 
-impl Transition {
+impl<'a> Transition<'a> {
   fn new(
     hardware: Range,
     current: Range,
-    minimum: Option<Frequency>,
-    maximum: Option<Frequency>,
+    minimum: Option<&'a fs::Setting<Frequency>>,
+    maximum: Option<&'a fs::Setting<Frequency>>,
   ) -> anyhow::Result<Self> {
     let target = Range::new(
-      minimum.unwrap_or(current.minimum),
-      maximum.unwrap_or(current.maximum),
+      minimum.map_or(current.minimum, |setting| setting.value),
+      maximum.map_or(current.maximum, |setting| setting.value),
     )?;
 
     if target.minimum < hardware.minimum {
@@ -149,11 +149,11 @@ impl Cpu {
       && self.frequency_maximum.is_some()
   }
 
-  pub(super) fn frequency_transition(
+  pub(super) fn frequency_transition<'a>(
     &self,
-    minimum: Option<Frequency>,
-    maximum: Option<Frequency>,
-  ) -> anyhow::Result<Option<Transition>> {
+    minimum: Option<&'a fs::Setting<Frequency>>,
+    maximum: Option<&'a fs::Setting<Frequency>>,
+  ) -> anyhow::Result<Option<Transition<'a>>> {
     if minimum.is_none() && maximum.is_none() {
       return Ok(None);
     }
@@ -180,7 +180,7 @@ impl Cpu {
 
   pub(super) fn apply_frequency_transition(
     &self,
-    transition: Transition,
+    transition: Transition<'_>,
   ) -> anyhow::Result<()> {
     let Transition {
       minimum,
@@ -206,7 +206,7 @@ impl Cpu {
       if let Some(frequency) = minimum.or(maximum) {
         // A clamped first write may invalidate the planned second bound.
         self.frequency_transition(minimum, maximum)?;
-        self.write_frequency(name, frequency)?;
+        frequency.apply(|&value| self.write_frequency(name, value))?;
       }
     }
 
