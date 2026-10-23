@@ -44,38 +44,32 @@ impl fmt::Display for Gpu {
   }
 }
 
+pub type GpuInventory = fs::Inventory<Gpu>;
+
+impl GpuInventory {
+  pub fn scan() -> anyhow::Result<Self> {
+    let entries = fs::read_dir("/sys/class/drm")?
+      .context("DRM inventory directory is unavailable")?;
+    Ok(Self::scan_entries(entries, "GPU", Gpu::scan))
+  }
+}
+
 impl Gpu {
   pub fn all() -> anyhow::Result<Vec<Self>> {
-    let Some(entries) = fs::read_dir("/sys/class/drm")? else {
-      return Ok(Vec::new());
-    };
-
-    let mut gpus = Vec::new();
-
-    for entry in entries {
-      let entry = entry.context("failed to read DRM device entry")?;
-      if let Some(gpu) = Self::scan(entry)? {
-        gpus.push(gpu);
-      }
-    }
-
-    Ok(gpus)
+    GpuInventory::scan()?.into_devices("GPU")
   }
 
   fn scan(entry: DirEntry) -> anyhow::Result<Option<Self>> {
     let name = entry.file_name().to_string_lossy().into_owned();
-    if !name.starts_with("card") {
+    if !name.strip_prefix("card").is_some_and(|index| {
+      !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit())
+    }) {
       return Ok(None);
     }
-    let Some(path) = fs::canonicalize(entry.path())? else {
-      return Ok(None);
-    };
+    let path = fs::canonicalize(entry.path())?
+      .with_context(|| format!("GPU {name:?} disappeared during discovery"))?;
     let radeon_path = fs::canonicalize(path.join("device"))?
       .filter(|device| device.join("power_method").exists());
-    if !Self::panel_power_savings_path(&path).exists() && radeon_path.is_none()
-    {
-      return Ok(None);
-    }
     Ok(Some(Self {
       name,
       path,

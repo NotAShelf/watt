@@ -126,15 +126,24 @@ impl fmt::Display for PowerSupply {
 
 const POWER_SUPPLY_PATH: &str = "/sys/class/power_supply";
 
-impl PowerSupply {
-  pub fn all() -> anyhow::Result<Vec<PowerSupply>> {
-    Self::all_in(Path::new(POWER_SUPPLY_PATH))
+/// Discovered power supplies and errors from incomplete discovery.
+#[derive(Debug)]
+pub struct PowerSupplyInventory {
+  pub power_supplies: Vec<PowerSupply>,
+  pub failures:       Vec<String>,
+}
+
+impl PowerSupplyInventory {
+  /// Reads power-supply capabilities and telemetry without changing settings.
+  pub fn scan() -> anyhow::Result<Self> {
+    Self::scan_in(Path::new(POWER_SUPPLY_PATH))
   }
 
-  fn all_in(root: &Path) -> anyhow::Result<Vec<PowerSupply>> {
-    log::info!("detecting power supplies...");
+  fn scan_in(root: &Path) -> anyhow::Result<Self> {
+    log::trace!("detecting power supplies...");
 
     let mut power_supplies = Vec::new();
+    let mut failures = Vec::new();
 
     log::debug!("scanning power supplies in {}", root.display());
 
@@ -148,7 +157,7 @@ impl PowerSupply {
         Ok(entry) => entry,
 
         Err(error) => {
-          log::warn!("failed to read power supply entry: {error}");
+          failures.push(format!("failed to read power supply entry: {error}"));
           continue;
         },
       };
@@ -179,16 +188,29 @@ impl PowerSupply {
       };
 
       if let Err(error) = power_supply.scan() {
-        log::warn!("failed to scan {power_supply}: {error:#}");
+        failures.push(format!("failed to scan {power_supply}: {error:#}"));
         continue;
       }
 
       power_supplies.push(power_supply);
     }
 
-    log::info!("detected {len} power supplies", len = power_supplies.len());
+    log::trace!("detected {len} power supplies", len = power_supplies.len());
 
-    Ok(power_supplies)
+    Ok(Self {
+      power_supplies,
+      failures,
+    })
+  }
+}
+
+impl PowerSupply {
+  pub fn all() -> anyhow::Result<Vec<PowerSupply>> {
+    let inventory = PowerSupplyInventory::scan()?;
+    for failure in &inventory.failures {
+      log::warn!("{failure}");
+    }
+    Ok(inventory.power_supplies)
   }
 
   /// Reads optional numeric telemetry.
@@ -571,7 +593,10 @@ mod tests {
     },
   };
 
-  use super::PowerSupply;
+  use super::{
+    PowerSupply,
+    PowerSupplyInventory,
+  };
 
   static NEXT_TEMP_DIR: AtomicU64 = AtomicU64::new(0);
 
@@ -701,8 +726,15 @@ mod tests {
     fs::write(battery.join("energy_full_design"), "100000000")
       .expect("write design energy");
 
-    let power_supplies =
-      PowerSupply::all_in(&fixture.path).expect("discover power supplies");
+    let inventory = PowerSupplyInventory::scan_in(&fixture.path)
+      .expect("discover power supplies");
+    assert!(
+      inventory
+        .failures
+        .iter()
+        .any(|failure| failure.contains("broken"))
+    );
+    let power_supplies = inventory.power_supplies;
 
     assert_eq!(power_supplies.len(), 1);
     assert_eq!(power_supplies[0].name, "BAT0");

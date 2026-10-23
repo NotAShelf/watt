@@ -176,33 +176,22 @@ fn write_verified(
   Ok(())
 }
 
-impl Cpu {
-  /// Returns current CPU usage based on delta from previous reading.
-  /// Returns 0.0 on first reading when no previous stat is available.
-  pub fn current_usage(&self) -> f64 {
-    match &self.previous_stat {
-      Some(prev) => self.stat.usage_delta(prev),
-      None => 0.0,
-    }
-  }
-  /// Get all CPUs.
-  pub fn all() -> anyhow::Result<Vec<Cpu>> {
-    fn from_number(number: u32, cache: &CpuScanCache) -> anyhow::Result<Cpu> {
-      let mut cpu = Cpu {
-        number,
-        ..Cpu::default()
-      };
-      cpu.scan(cache)?;
+/// Discovered CPUs and failures from CPUs that could not be scanned.
+#[derive(Debug)]
+pub struct CpuInventory {
+  pub cpus:     Vec<Cpu>,
+  pub failures: Vec<String>,
+}
 
-      Ok(cpu)
-    }
-
+impl CpuInventory {
+  /// Reads CPU capabilities and telemetry without changing hardware settings.
+  /// Returns an error if discovery fails or every CPU scan fails.
+  pub fn scan() -> anyhow::Result<Self> {
     const PATH: &str = "/sys/devices/system/cpu";
 
-    log::info!("detecting CPUs...");
+    log::trace!("detecting CPUs...");
 
-    let mut cpus = vec![];
-    let cache = CpuScanCache::default();
+    let mut numbers = Vec::new();
 
     log::debug!("scanning CPU entries in {PATH}");
 
@@ -214,33 +203,64 @@ impl Cpu {
 
         let entry_file_name = entry.file_name();
 
-        let Some(name) = entry_file_name.to_str() else {
+        let Some(number) = entry_file_name
+          .to_str()
+          .and_then(|name| name.strip_prefix("cpu"))
+          .and_then(|number| number.parse().ok())
+        else {
           continue;
         };
 
-        let Some(cpu_prefix_removed) = name.strip_prefix("cpu") else {
-          continue;
-        };
-
-        // Has to match "cpu{N}".
-        let Ok(number) = cpu_prefix_removed.parse() else {
-          continue;
-        };
-
-        cpus.push(from_number(number, &cache)?);
+        numbers.push(number);
       }
     } else {
       // Fall back only when sysfs is unavailable. An empty CPU directory can
       // legitimately occur while every CPU is offline during hotplug.
       log::warn!("no CPUs found in sysfs, using logical CPU count fallback");
-      for number in 0..num_cpus::get() as u32 {
-        cpus.push(from_number(number, &cache)?);
+      numbers.extend(0..num_cpus::get() as u32);
+    }
+
+    let cache = CpuScanCache::default();
+    let mut cpus = Vec::new();
+    let mut failures = Vec::new();
+    for number in numbers {
+      let mut cpu = Cpu {
+        number,
+        ..Cpu::default()
+      };
+      match cpu.scan(&cache) {
+        Ok(()) => cpus.push(cpu),
+        Err(error) => failures.push(format!("cpu{number}: {error:#}")),
       }
     }
 
-    log::info!("detected {len} CPUs", len = cpus.len());
+    if cpus.is_empty() && !failures.is_empty() {
+      bail!("all CPU scans failed: {}", failures.join("; "));
+    }
 
-    Ok(cpus)
+    log::trace!("detected {len} CPUs", len = cpus.len());
+
+    Ok(Self { cpus, failures })
+  }
+}
+
+impl Cpu {
+  /// Returns current CPU usage based on delta from previous reading.
+  /// Returns 0.0 on first reading when no previous stat is available.
+  pub fn current_usage(&self) -> f64 {
+    match &self.previous_stat {
+      Some(prev) => self.stat.usage_delta(prev),
+      None => 0.0,
+    }
+  }
+
+  /// Get all CPUs, logging failures from partial discovery.
+  pub fn all() -> anyhow::Result<Vec<Cpu>> {
+    let inventory = CpuInventory::scan()?;
+    for failure in &inventory.failures {
+      log::error!("CPU scan failed: {failure}");
+    }
+    Ok(inventory.cpus)
   }
 
   /// Scan CPU, tuning local copy of settings.
@@ -946,6 +966,7 @@ mod tests {
 
   use super::{
     Cpu,
+    CpuInventory,
     Delta,
     DmaLatency,
     Frequency,
@@ -1015,6 +1036,23 @@ mod tests {
         "1000000"
       );
     }
+  }
+
+  #[test]
+  fn inventory_keeps_valid_cpus_when_another_scan_fails() {
+    let fixture = SystemFixture::new();
+    let broken = fixture.policy(0, &[0], "acpi-cpufreq");
+    fixture.policy(1, &[1], "acpi-cpufreq");
+    fixture.cpu_telemetry(&[0, 1]);
+    fixture
+      .fail_read(broken.join("scaling_governor"), ErrorKind::PermissionDenied);
+    let inventory = CpuInventory::scan().unwrap();
+    assert_eq!(inventory.cpus.len(), 1);
+    assert_eq!(inventory.cpus[0].number, 1);
+    assert_eq!(inventory.failures.len(), 1);
+    assert!(inventory.failures[0].contains("cpu0"));
+    assert!(inventory.failures[0].contains("governor"));
+    assert_eq!(fixture.write_count(broken.join("scaling_governor")), 0);
   }
 
   #[test]

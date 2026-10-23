@@ -45,6 +45,10 @@ pub(crate) struct SystemFixture {
 impl SystemFixture {
   pub(crate) fn new() -> Self {
     let root = tempfile::tempdir().expect("create system fixture");
+    for directory in ["sys/block", "sys/bus/usb/devices", "sys/class/drm"] {
+      fs::create_dir_all(root.path().join(directory))
+        .expect("create empty hardware inventory");
+    }
     let guard = set_system_root_for_tests(root.path());
     Self {
       _guard: guard,
