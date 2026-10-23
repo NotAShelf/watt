@@ -55,6 +55,8 @@ in {
 
         RuntimeDirectory = "watt";
         RuntimeDirectoryMode = "0755";
+        StateDirectory = "watt";
+        Environment = "WATT_STATE_PATH=%S/watt/profile.toml";
       };
     };
 

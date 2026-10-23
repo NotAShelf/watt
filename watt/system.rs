@@ -6,6 +6,7 @@ use std::{
     HashSet,
     VecDeque,
   },
+  env,
   future::Future,
   iter::once,
   path::{
@@ -1323,6 +1324,7 @@ pub struct DaemonState {
   system:               System,
   rule_count:           usize,
   profile:              profile::ProfileState,
+  profile_state_path:   Option<PathBuf>,
   last_applied_rules:   Vec<String>,
   performance_degraded: Option<String>,
   error_count:          usize,
@@ -1334,11 +1336,23 @@ pub struct DaemonState {
 
 impl DaemonState {
   pub(crate) fn new(config: String, rule_count: usize) -> Self {
+    let profile_state_path = env::var_os("WATT_STATE_PATH").map(PathBuf::from);
+    let mut profile = profile::ProfileState::new();
+    if let Some(path) = &profile_state_path {
+      match profile::ProfileState::load_preference(path) {
+        Ok(Some(preference)) => {
+          profile.set_preference(preference);
+        },
+        Ok(None) => {},
+        Err(error) => log::warn!("failed to load active profile: {error:#}"),
+      }
+    }
     Self {
       config,
       system: System::default(),
       rule_count,
-      profile: profile::ProfileState::new(),
+      profile,
+      profile_state_path,
       last_applied_rules: Vec::new(),
       performance_degraded: None,
       error_count: 0,
@@ -1392,8 +1406,12 @@ impl DaemonState {
   pub fn set_active_profile(
     &mut self,
     profile: profile::PowerProfile,
-  ) -> Vec<u32> {
-    self.profile.set_preference(profile)
+  ) -> anyhow::Result<Vec<u32>> {
+    if let Some(path) = &self.profile_state_path {
+      profile::ProfileState::save_profile(path, profile)
+        .context("failed to persist active profile")?;
+    }
+    Ok(self.profile.set_preference(profile))
   }
 
   pub fn profile_holds(&self) -> Vec<profile::ProfileHold> {
@@ -2027,9 +2045,9 @@ mod tests {
           {
             let mut state = state.write().await;
             state.update_system(&system, Vec::new(), degraded, &failures);
-            state.set_active_profile(PowerProfile::PowerSaver);
+            state.set_active_profile(PowerProfile::PowerSaver).unwrap();
             assert!(state.performance_degraded().is_none());
-            state.set_active_profile(PowerProfile::Performance);
+            state.set_active_profile(PowerProfile::Performance).unwrap();
           }
           assert_eq!(
             counts.next().await.unwrap().get().await.unwrap(),
@@ -2085,6 +2103,27 @@ mod tests {
     {
       yield_now().await;
     }
+  }
+
+  #[test]
+  fn failed_profile_persistence_preserves_preference_and_holds() {
+    let directory = tempfile::tempdir().unwrap();
+    let parent = directory.path().join("not-a-directory");
+    stdfs::write(&parent, "occupied").unwrap();
+    let mut state = DaemonState::new(String::new(), 0);
+    state.profile_state_path = Some(parent.join("profile.toml"));
+    state.profile.set_preference(PowerProfile::Performance);
+    let cookie = state.add_profile_hold(
+      PowerProfile::PowerSaver,
+      "battery".into(),
+      "test".into(),
+    );
+
+    assert!(state.set_active_profile(PowerProfile::Balanced).is_err());
+    assert_eq!(state.active_profile(), PowerProfile::PowerSaver);
+    state.release_profile_hold(cookie).unwrap();
+    assert_eq!(state.active_profile(), PowerProfile::Performance);
+    assert_eq!(stdfs::read_to_string(parent).unwrap(), "occupied");
   }
 
   #[test]

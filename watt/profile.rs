@@ -2,6 +2,15 @@ use std::{
   collections::HashMap,
   error::Error,
   fmt,
+  fs::{
+    self,
+    File,
+  },
+  io::{
+    ErrorKind,
+    Write,
+  },
+  path::Path,
   str::FromStr,
   sync::{
     Arc,
@@ -10,10 +19,20 @@ use std::{
   time::Instant,
 };
 
+use anyhow::ensure;
 use serde::{
   Deserialize,
   Serialize,
 };
+use tempfile::NamedTempFile;
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct StoredProfile {
+  #[serde(default)]
+  version: u32,
+  profile: PowerProfile,
+}
 
 #[derive(
   Debug,
@@ -130,6 +149,51 @@ impl ProfileState {
       next_cookie:       1,
       owner_checks:      HashMap::new(),
     }
+  }
+
+  pub fn load_preference(path: &Path) -> anyhow::Result<Option<PowerProfile>> {
+    let contents = match fs::read_to_string(path) {
+      Ok(contents) => contents,
+      Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+      Err(error) => return Err(error.into()),
+    };
+    let stored: StoredProfile = toml::from_str(&contents)?;
+    ensure!(
+      stored.version <= 1,
+      "unsupported profile state version {}",
+      stored.version
+    );
+    Ok(Some(stored.profile))
+  }
+
+  /// Saves the preference with an atomic rename. Errors before the rename
+  /// leave the old file intact. A directory sync failure after the rename is
+  /// only logged, since readers can already see the new file.
+  pub fn save_profile(
+    path: &Path,
+    profile: PowerProfile,
+  ) -> anyhow::Result<()> {
+    let contents = toml::to_string(&StoredProfile {
+      version: 1,
+      profile,
+    })?;
+    let parent = path
+      .parent()
+      .filter(|parent| !parent.as_os_str().is_empty())
+      .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+    let mut temporary = NamedTempFile::new_in(parent)?;
+    temporary.write_all(contents.as_bytes())?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(path).map_err(|error| error.error)?;
+    if let Err(error) = File::open(parent).and_then(|dir| dir.sync_all()) {
+      log::warn!(
+        "saved profile state '{}', but directory sync failed; the new state \
+         may be lost after a crash: {error}",
+        path.display()
+      );
+    }
+    Ok(())
   }
 
   pub fn add_hold(
@@ -292,6 +356,11 @@ impl Default for ProfileState {
 
 #[cfg(test)]
 mod tests {
+  use std::{
+    fs,
+    os::unix::fs::PermissionsExt as _,
+  };
+
   use super::{
     PowerProfile,
     ProfileState,
@@ -407,5 +476,57 @@ mod tests {
         .is_some()
     );
     assert_eq!(state.get_holds().len(), 1);
+  }
+
+  #[test]
+  fn preference_state_round_trips_atomically() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("profile.toml");
+    ProfileState::save_profile(&path, PowerProfile::PowerSaver).unwrap();
+    assert_eq!(
+      ProfileState::load_preference(&path).unwrap(),
+      Some(PowerProfile::PowerSaver)
+    );
+    assert_eq!(
+      fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+      0o600
+    );
+    assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    assert!(
+      ProfileState::load_preference(&directory.path().join("missing.toml"))
+        .unwrap()
+        .is_none()
+    );
+    fs::write(&path, "profile = \"invalid\"\n").unwrap();
+    assert!(ProfileState::load_preference(&path).is_err());
+  }
+
+  #[test]
+  fn profile_state_migrates_legacy_files_and_rejects_future_versions() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("profile.toml");
+    fs::write(&path, "profile = 'performance'\n").unwrap();
+    let preference = ProfileState::load_preference(&path).unwrap().unwrap();
+    assert_eq!(preference, PowerProfile::Performance);
+    ProfileState::save_profile(&path, preference).unwrap();
+    let stored: super::StoredProfile =
+      toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(stored.version, 1);
+    fs::write(&path, "version = 2\nprofile = 'performance'\n").unwrap();
+    assert!(ProfileState::load_preference(&path).is_err());
+  }
+
+  #[test]
+  fn failed_rename_leaves_existing_state_untouched() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("profile.toml");
+    fs::create_dir(&path).unwrap();
+    let original = path.join("original");
+    fs::write(&original, "unchanged").unwrap();
+    assert!(
+      ProfileState::save_profile(&path, PowerProfile::PowerSaver).is_err()
+    );
+    assert_eq!(fs::read_to_string(original).unwrap(), "unchanged");
+    assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
   }
 }
