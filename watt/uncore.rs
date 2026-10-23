@@ -1,5 +1,6 @@
 use std::{
   fmt,
+  fs::DirEntry,
   hash,
   path::{
     Path,
@@ -47,37 +48,34 @@ impl fmt::Display for Uncore {
   }
 }
 
-impl Uncore {
-  pub fn all() -> anyhow::Result<Vec<Self>> {
-    log::info!("detecting Intel uncore frequency devices...");
+pub type UncoreInventory = fs::Inventory<Uncore>;
 
+impl UncoreInventory {
+  pub fn scan() -> anyhow::Result<Self> {
     let Some(entries) = fs::read_dir(UNCORE_PATH)
       .context("failed to read Intel uncore frequency devices")?
     else {
-      log::debug!("Intel uncore frequency control is not available");
-      return Ok(Vec::new());
+      return Ok(Self {
+        devices:  Vec::new(),
+        failures: Vec::new(),
+      });
     };
-
-    let mut uncores = Vec::new();
-
-    for entry in entries {
-      let entry = entry
-        .with_context(|| format!("failed to read entry of '{UNCORE_PATH}'"))?;
-      let Some(path) = fs::canonicalize(entry.path())? else {
-        continue;
-      };
-
-      if !path.is_dir() || !path.join("min_freq_khz").exists() {
-        continue;
+    Ok(Self::scan_entries(entries, "uncore", |entry: DirEntry| {
+      let name = entry.file_name().to_string_lossy().into_owned();
+      let path = fs::canonicalize(entry.path())?.with_context(|| {
+        format!("uncore {name:?} disappeared during discovery")
+      })?;
+      if !path.is_dir() {
+        return Ok(None);
       }
+      Uncore::scan(name, path).map(Some)
+    }))
+  }
+}
 
-      let name = entry.file_name().to_string_lossy().to_string();
-      let uncore = Self::scan(name, path)?;
-      uncores.push(uncore);
-    }
-
-    log::info!("detected {len} uncore devices", len = uncores.len());
-    Ok(uncores)
+impl Uncore {
+  pub fn all() -> anyhow::Result<Vec<Self>> {
+    UncoreInventory::scan()?.into_devices("uncore")
   }
 
   fn scan(name: String, path: PathBuf) -> anyhow::Result<Self> {

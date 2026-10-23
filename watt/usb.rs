@@ -1,5 +1,6 @@
 use std::{
   fmt,
+  fs::DirEntry,
   hash,
   path::PathBuf,
 };
@@ -35,30 +36,34 @@ impl fmt::Display for UsbDevice {
   }
 }
 
+pub type UsbInventory = fs::Inventory<UsbDevice>;
+
+impl UsbInventory {
+  pub fn scan() -> anyhow::Result<Self> {
+    let entries = fs::read_dir("/sys/bus/usb/devices")?
+      .context("USB inventory directory is unavailable")?;
+    Ok(Self::scan_entries(entries, "USB", UsbDevice::scan))
+  }
+}
+
 impl UsbDevice {
   pub fn all() -> anyhow::Result<Vec<Self>> {
-    let Some(entries) = fs::read_dir("/sys/bus/usb/devices")? else {
-      return Ok(Vec::new());
-    };
+    UsbInventory::scan()?.into_devices("USB")
+  }
 
-    let mut devices = Vec::new();
-
-    for entry in entries {
-      let entry = entry.context("failed to read USB device entry")?;
-      let Some(path) = fs::canonicalize(entry.path())? else {
-        continue;
-      };
-      if !path.join("power").exists() || !path.join("idVendor").exists() {
-        continue;
-      }
-
-      devices.push(Self {
-        name: entry.file_name().to_string_lossy().to_string(),
-        path,
-      });
+  fn scan(entry: DirEntry) -> anyhow::Result<Option<Self>> {
+    let name = entry.file_name().to_string_lossy().into_owned();
+    // Entries like "1-1:1.0" are interfaces, not devices.
+    if name.contains(':') {
+      return Ok(None);
     }
-
-    Ok(devices)
+    let path = fs::canonicalize(entry.path())?.with_context(|| {
+      format!("USB device {name:?} disappeared during discovery")
+    })?;
+    fs::read(path.join("idVendor"))?.with_context(|| {
+      format!("USB device {name:?} vendor capability is unavailable")
+    })?;
+    Ok(Some(Self { name, path }))
   }
 
   pub fn set_autosuspend(&self, enabled: bool) -> anyhow::Result<()> {
