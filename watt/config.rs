@@ -230,7 +230,7 @@ impl CpusDelta {
         state,
         "cpu.governor",
       )?,
-      energy_performance_preference: eval_string(
+      energy_performance_preference: eval_epp(
         &self.energy_performance_preference,
         state,
         "cpu.energy-performance-preference",
@@ -787,6 +787,29 @@ fn eval_string(
     .try_into_string()
     .with_context(|| format!("`{name}` was not a string"))
     .map(Some)
+}
+
+fn eval_epp(
+  expression: &Option<Expression>,
+  state: &EvalState<'_, '_>,
+  name: &str,
+) -> anyhow::Result<Option<String>> {
+  let Some(expression) = expression else {
+    return Ok(None);
+  };
+  let Some(value) = expression.eval(state)? else {
+    return Ok(None);
+  };
+  match value {
+    Expression::String(value) => Ok(Some(value)),
+    Expression::Number(value) => {
+      if value.fract() != 0.0 || !(0.0..=255.0).contains(&value) {
+        bail!("invalid `{name}`: numeric EPP must be an integer from 0 to 255");
+      }
+      Ok(Some((value as u8).to_string()))
+    },
+    _ => bail!("`{name}` was not a string or numeric EPP value"),
+  }
 }
 
 fn eval_bool(
