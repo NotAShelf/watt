@@ -29,6 +29,7 @@ use crate::{
     ppd::PowerProfilesInterface,
     watt::WattInterface,
   },
+  fs::AppliedSetting,
   system::{
     DaemonState,
     DegradedCondition,
@@ -155,6 +156,7 @@ struct StatusSnapshot {
   error_count:          usize,
   latest_error:         Option<String>,
   performance_degraded: Option<String>,
+  settings:             Vec<AppliedSetting>,
   conditions:           Vec<DegradedCondition>,
 }
 
@@ -164,6 +166,7 @@ impl StatusSnapshot {
       error_count:          state.error_count(),
       latest_error:         state.latest_error().map(str::to_owned),
       performance_degraded: state.performance_degraded().map(str::to_owned),
+      settings:             state.applied_settings(),
       conditions:           state.degraded_conditions().to_vec(),
     }
   }
@@ -191,6 +194,9 @@ impl StatusSnapshot {
     }
     if current.conditions != self.conditions {
       watt.degraded_conditions_changed(emitter).await?;
+    }
+    if current.settings != self.settings {
+      WattInterface::applied_settings_changed(emitter).await?;
     }
     *self = current;
     Ok(())

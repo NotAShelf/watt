@@ -67,7 +67,7 @@ impl ManagedSetting {
   }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppliedSetting {
   pub path:      PathBuf,
   pub requested: String,
