@@ -48,17 +48,23 @@ fn usage_windows_select_default_rules_with_sparse_samples() {
     (vec![(5, 0.9), (0, 0.0)], Some(0.0), "default-balanced"),
   ] {
     let now = Instant::now();
-    let cpu_log = samples
+    let mut cpu_log = samples
       .into_iter()
       .map(|(age, usage)| {
         CpuLog {
           at: now - Duration::from_secs(age),
           usage,
           temperature: Some(50.0),
-          load_average: 0.0,
+          load_average: usage * 2.0,
         }
       })
       .collect::<VecDeque<_>>();
+    cpu_log.push_back(CpuLog {
+      at:           now + Duration::from_secs(60),
+      usage:        1.0,
+      temperature:  Some(100.0),
+      load_average: 2.0,
+    });
     let state = EvalState {
       frequency_available:         false,
       turbo_available:             false,
@@ -87,16 +93,28 @@ fn usage_windows_select_default_rules_with_sparse_samples() {
       power_supplies:              &power_supplies,
       cpu_log:                     &cpu_log,
     };
-    let expression = Expression::CpuUsageSince {
-      duration: Box::new(Expression::String("1sec".into())),
-    };
-    let actual = expression
-      .eval(&state)
-      .expect("evaluate usage")
-      .map(|value| value.try_into_number().expect("numeric usage"));
-    assert_eq!(actual.is_some(), expected_usage.is_some());
-    if let Some((actual, expected)) = actual.zip(expected_usage) {
-      assert!((actual - expected).abs() < 1e-10);
+    for (expression, expected) in [
+      (
+        Expression::CpuUsageSince {
+          duration: Box::new(Expression::String("1sec".into())),
+        },
+        expected_usage,
+      ),
+      (
+        Expression::LoadAverageSince {
+          duration: Box::new(Expression::String("1sec".into())),
+        },
+        expected_usage.map(|usage| usage * 2.0),
+      ),
+    ] {
+      let actual = expression
+        .eval(&state)
+        .expect("evaluate telemetry")
+        .map(|value| value.try_into_number().expect("numeric telemetry"));
+      assert_eq!(actual.is_some(), expected.is_some());
+      if let Some((actual, expected)) = actual.zip(expected) {
+        assert!((actual - expected).abs() < 1e-10);
+      }
     }
     let selected = config
       .rules

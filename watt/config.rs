@@ -1,3 +1,10 @@
+mod eval;
+mod rule;
+pub use rule::EvaluatedRule;
+
+#[cfg(test)] mod eval_tests;
+#[cfg(test)] mod test_support;
+
 #[cfg(feature = "metrics")] use std::net::IpAddr;
 use std::{
   collections::{
@@ -26,7 +33,7 @@ use crate::{
   gpu,
   power_supply,
   profile::PowerProfile,
-  system,
+  system::CpuLog,
   uncore,
   usb,
   vm,
@@ -1337,7 +1344,7 @@ pub struct EvalState<'peripherals, 'context> {
   pub usb_devices:    &'peripherals HashSet<Arc<usb::UsbDevice>>,
   pub gpus:           &'peripherals HashSet<Arc<gpu::Gpu>>,
   pub power_supplies: &'peripherals HashSet<Arc<power_supply::PowerSupply>>,
-  pub cpu_log:        &'peripherals VecDeque<system::CpuLog>,
+  pub cpu_log:        &'peripherals VecDeque<CpuLog>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1348,478 +1355,28 @@ pub enum EvalContext<'a> {
 }
 
 impl<'peripherals> EvalState<'peripherals, '_> {
+  fn cpu_value_available(
+    &self,
+    value: &str,
+    available: impl Fn(&cpu::Cpu) -> &[String],
+  ) -> bool {
+    let supports = |cpu: &cpu::Cpu| {
+      available(cpu).iter().any(|candidate| candidate == value)
+    };
+
+    match self.context {
+      EvalContext::Cpu(cpu) => supports(cpu),
+      EvalContext::PowerSupply(_) => false,
+      EvalContext::WidestPossible => self.cpus.iter().any(|cpu| supports(cpu)),
+    }
+  }
+
   pub fn in_context<'context>(
     &self,
     context: EvalContext<'context>,
   ) -> EvalState<'peripherals, 'context> {
     EvalState { context, ..*self }
   }
-}
-
-impl Expression {
-  pub fn eval(
-    &self,
-    state: &EvalState<'_, '_>,
-  ) -> anyhow::Result<Option<Expression>> {
-    use Expression::*;
-
-    use crate::fs;
-
-    log::trace!("evaluating expression: {self:?}");
-
-    macro_rules! try_ok {
-      ($expression:expr) => {
-        match $expression {
-          Some(value) => value,
-          None => return Ok(None),
-        }
-      };
-    }
-
-    macro_rules! eval {
-      ($expression:expr) => {
-        try_ok!($expression.eval(state)?)
-      };
-    }
-
-    Ok(Some(match self {
-      IsGovernorAvailable { value } => {
-        let value = eval!(value);
-        let value = value.try_into_string()?;
-
-        let available = match state.context {
-          EvalContext::Cpu(cpu) => cpu.available_governors.contains(&value),
-          EvalContext::PowerSupply(_) => false,
-          EvalContext::WidestPossible => {
-            state
-              .cpus
-              .iter()
-              .any(|cpu| cpu.available_governors.contains(&value))
-          },
-        };
-
-        Boolean(available)
-      },
-      IsEnergyPerformancePreferenceAvailable { value } => {
-        let value = eval!(value);
-        let value = value.try_into_string()?;
-
-        let available = match state.context {
-          EvalContext::Cpu(cpu) => cpu.available_epps.contains(&value),
-          EvalContext::PowerSupply(_) => false,
-          EvalContext::WidestPossible => {
-            state
-              .cpus
-              .iter()
-              .any(|cpu| cpu.available_epps.contains(&value))
-          },
-        };
-
-        Boolean(available)
-      },
-      IsEnergyPerfBiasAvailable { value } => {
-        let value = eval!(value);
-        let value = value.try_into_string()?;
-
-        let available = match state.context {
-          EvalContext::Cpu(cpu) => cpu.available_epbs.contains(&value),
-          EvalContext::PowerSupply(_) => false,
-          EvalContext::WidestPossible => {
-            state
-              .cpus
-              .iter()
-              .any(|cpu| cpu.available_epbs.contains(&value))
-          },
-        };
-
-        Boolean(available)
-      },
-      IsPlatformProfileAvailable { value } => {
-        let value = eval!(value);
-        let value = value.try_into_string()?;
-
-        let available =
-          power_supply::PowerSupply::get_available_platform_profiles()
-            .context(
-              "failed to get available platform profiles for \
-               `is-platform-profile-available`",
-            )?
-            .contains(&value);
-
-        Boolean(available)
-      },
-      IsChassisType { value } => {
-        let value = eval!(value).try_into_string()?;
-
-        Boolean(state.chassis_type == Some(value.as_str()))
-      },
-      FirstAvailableGovernor { values } => {
-        let Some(values) =
-          eval_string_list(values, state, "first-available-governor")?
-        else {
-          return Ok(None);
-        };
-
-        let Some(governor) = first_available_cpu_value(state, &values, |cpu| {
-          &cpu.available_governors
-        }) else {
-          log::debug!(
-            "none of the requested governors are available: {governors}",
-            governors = values.join(", "),
-          );
-          return Ok(None);
-        };
-
-        String(governor)
-      },
-      FirstAvailableEnergyPerformancePreference { values } => {
-        let Some(values) = eval_string_list(
-          values,
-          state,
-          "first-available-energy-performance-preference",
-        )?
-        else {
-          return Ok(None);
-        };
-
-        String(try_ok!(first_available_cpu_value(state, &values, |cpu| {
-          &cpu.available_epps
-        },)))
-      },
-      FirstAvailableEnergyPerfBias { values } => {
-        let Some(values) =
-          eval_string_list(values, state, "first-available-energy-perf-bias")?
-        else {
-          return Ok(None);
-        };
-
-        String(try_ok!(first_available_cpu_value(state, &values, |cpu| {
-          &cpu.available_epbs
-        },)))
-      },
-      FirstAvailablePlatformProfile { values } => {
-        let Some(values) =
-          eval_string_list(values, state, "first-available-platform-profile")?
-        else {
-          return Ok(None);
-        };
-
-        let available =
-          power_supply::PowerSupply::get_available_platform_profiles()
-            .context(
-              "failed to get available platform profiles for \
-               `first-available-platform-profile`",
-            )?;
-
-        String(try_ok!(
-          values.into_iter().find(|value| available.contains(value))
-        ))
-      },
-      IsDriverLoaded { value } => {
-        let value = eval!(value).try_into_string()?;
-
-        Boolean(fs::exists(format!("/sys/module/{value}")))
-      },
-      IsBatteryAvailable { value } => {
-        let value = eval!(value).try_into_string()?;
-
-        Boolean(find_battery(state.power_supplies, &value).is_some())
-      },
-      FrequencyAvailable => {
-        Boolean(match state.context {
-          EvalContext::Cpu(cpu) => cpu.frequency_available(),
-          EvalContext::PowerSupply(_) => false,
-          EvalContext::WidestPossible => state.frequency_available,
-        })
-      },
-      TurboAvailable => Boolean(state.turbo_available),
-
-      CpuUsage => {
-        bail!(
-          "`%cpu-usage` is deprecated and has been removed. Use \
-           `cpu-usage-since = \"<duration>\"` instead. For example, \
-           `cpu-usage-since = \"1sec\"` for CPU usage over the last second."
-        )
-      },
-      CpuUsageSince { duration } => {
-        let duration = eval!(duration).try_into_string()?;
-        let duration = humantime::parse_duration(&duration)
-          .with_context(|| format!("failed to parse duration '{duration}'"))?;
-        let (total_usage, count) = state
-          .cpu_log
-          .iter()
-          .rev()
-          .take_while(|log| log.at.elapsed() < duration)
-          .fold((0.0, 0usize), |(total, count), log| {
-            (total + log.usage, count + 1)
-          });
-
-        // Each sample already measures usage between polls. Short windows
-        // can contain only one sample when adaptive polling takes longer.
-        return Ok((count > 0).then(|| Number(total_usage / count as f64)));
-      },
-      CpuUsageVolatility => Number(try_ok!(state.cpu_usage_volatility)),
-      CpuTemperature => Number(try_ok!(state.cpu_temperature)),
-      CpuTemperatureVolatility => {
-        Number(try_ok!(state.cpu_temperature_volatility))
-      },
-      CpuIdleSeconds => Number(state.cpu_idle_seconds),
-      CpuFrequencyMaximum => {
-        Number(try_ok!(match state.context {
-          EvalContext::Cpu(cpu) => cpu.frequency_maximum.map(|f| f.as_mhz()),
-          EvalContext::PowerSupply(_) => None,
-          EvalContext::WidestPossible => state.cpu_frequency_maximum,
-        }))
-      },
-      CpuFrequencyMinimum => {
-        Number(try_ok!(match state.context {
-          EvalContext::Cpu(cpu) => cpu.frequency_minimum.map(|f| f.as_mhz()),
-          EvalContext::PowerSupply(_) => None,
-          EvalContext::WidestPossible => state.cpu_frequency_minimum,
-        }))
-      },
-
-      CpuScalingMaximum => {
-        let max = state
-          .cpus
-          .iter()
-          .filter_map(|cpu| cpu.frequency_maximum)
-          .max()
-          .map(|frequency| frequency.as_mhz());
-        Number(try_ok!(max))
-      },
-
-      CpuCoreCount => Number(state.cpus.len() as f64),
-
-      LoadAverageSince { duration } => {
-        let duration = eval!(duration).try_into_string()?;
-        let duration = humantime::parse_duration(&duration)
-          .with_context(|| format!("failed to parse duration '{duration}'"))?;
-        let recent_logs: Vec<&system::CpuLog> = state
-          .cpu_log
-          .iter()
-          .rev()
-          .take_while(|log| log.at.elapsed() < duration)
-          .collect();
-
-        if recent_logs.len() < 2 {
-          return Ok(None);
-        }
-
-        Number(
-          recent_logs.iter().map(|log| log.load_average).sum::<f64>()
-            / recent_logs.len() as f64,
-        )
-      },
-
-      LidClosed => Boolean(state.lid_closed),
-      VirtualMachine => Boolean(state.virtual_machine),
-
-      HourOfDay => {
-        let ts = jiff::Timestamp::now()
-          .in_tz("local")
-          .context("failed to get local timezone for `$hour-of-day`")?;
-        Number(ts.hour() as f64)
-      },
-
-      PowerSupplyCharge => Number(try_ok!(state.power_supply_charge)),
-      PowerSupplyDischargeRate => {
-        Number(try_ok!(state.power_supply_discharge_rate))
-      },
-
-      BatteryCycles => Number(try_ok!(state.battery_cycles)),
-      BatteryHealth => Number(try_ok!(state.battery_health)),
-
-      BatteryCyclesFor { name } => {
-        let battery = find_battery(state.power_supplies, name);
-        Number(try_ok!(battery.and_then(|ps| ps.cycles).map(|c| c as f64)))
-      },
-
-      BatteryHealthFor { name } => {
-        let battery = find_battery(state.power_supplies, name);
-        Number(try_ok!(battery.and_then(|ps| ps.health)))
-      },
-
-      Discharging => Boolean(state.discharging),
-
-      PowerProfilePreference => {
-        String(state.power_profile_preference.as_str().to_owned())
-      },
-
-      literal @ (Boolean(_) | Number(_) | String(_)) => literal.clone(),
-
-      List(items) => {
-        let mut result = Vec::with_capacity(items.len());
-
-        for item in items {
-          result.push(eval!(item));
-        }
-
-        List(result)
-      },
-
-      Plus { a, b } => {
-        Number(eval!(a).try_into_number()? + eval!(b).try_into_number()?)
-      },
-      Minus { a, b } => {
-        Number(eval!(a).try_into_number()? - eval!(b).try_into_number()?)
-      },
-      Multiply { a, b } => {
-        Number(eval!(a).try_into_number()? * eval!(b).try_into_number()?)
-      },
-      Power { a, b } => {
-        Number(
-          eval!(a)
-            .try_into_number()?
-            .powf(eval!(b).try_into_number()?),
-        )
-      },
-      Divide { a, b } => {
-        Number(eval!(a).try_into_number()? / eval!(b).try_into_number()?)
-      },
-
-      LessThan { a, b } => {
-        Boolean(eval!(a).try_into_number()? < eval!(b).try_into_number()?)
-      },
-      MoreThan { a, b } => {
-        Boolean(eval!(a).try_into_number()? > eval!(b).try_into_number()?)
-      },
-
-      Minimum { numbers } => {
-        let mut evaled = Vec::with_capacity(numbers.len());
-
-        for number in numbers {
-          let number = eval!(number).try_into_number()?;
-          evaled.push(number);
-        }
-
-        Number(
-          evaled
-            .into_iter()
-            .min_by(f64::total_cmp)
-            .context("minimum must be given at least 1 expression")?,
-        )
-      },
-      Maximum { numbers } => {
-        let mut evaled = Vec::with_capacity(numbers.len());
-
-        for number in numbers {
-          let number = eval!(number).try_into_number()?;
-          evaled.push(number);
-        }
-
-        Number(
-          evaled
-            .into_iter()
-            .max_by(f64::total_cmp)
-            .context("maximum must be given at least 1 expression")?,
-        )
-      },
-
-      IsUnset { a } => Boolean(a.eval(state)?.is_none()),
-
-      IfElse {
-        condition,
-        consequence,
-        alternative,
-      } => {
-        if eval!(condition).try_into_boolean()? {
-          eval!(consequence)
-        } else if let Some(alternative) = alternative {
-          eval!(alternative)
-        } else {
-          return Ok(None);
-        }
-      },
-
-      And { a, b } => {
-        Boolean(eval!(a).try_into_boolean()? && eval!(b).try_into_boolean()?)
-      },
-      Or { a, b } => {
-        Boolean(eval!(a).try_into_boolean()? || eval!(b).try_into_boolean()?)
-      },
-
-      All { all } => {
-        let mut all = all.iter();
-
-        loop {
-          let Some(value) = all.next() else {
-            break Boolean(true);
-          };
-
-          if !eval!(value).try_into_boolean()? {
-            break Boolean(false);
-          }
-        }
-      },
-      Any { any } => {
-        let mut any = any.iter();
-
-        loop {
-          let Some(value) = any.next() else {
-            break Boolean(false);
-          };
-
-          if eval!(value).try_into_boolean()? {
-            break Boolean(true);
-          }
-        }
-      },
-
-      Not { not } => Boolean(!eval!(not).try_into_boolean()?),
-
-      Equal { a, b, leeway } => {
-        let a = eval!(a).try_into_number()?;
-        let b = eval!(b).try_into_number()?;
-        let leeway = eval!(leeway).try_into_number()?;
-
-        let minimum = a - leeway;
-        let maximum = a + leeway;
-
-        Boolean(minimum < b && b < maximum)
-      },
-    }))
-  }
-}
-
-fn eval_string_list(
-  values: &[Expression],
-  state: &EvalState<'_, '_>,
-  name: &str,
-) -> anyhow::Result<Option<Vec<String>>> {
-  let mut strings = Vec::with_capacity(values.len());
-
-  for value in values {
-    let Some(value) = value.eval(state)? else {
-      return Ok(None);
-    };
-
-    strings.push(
-      value
-        .try_into_string()
-        .with_context(|| format!("`{name}` item was not a string"))?,
-    );
-  }
-
-  Ok(Some(strings))
-}
-
-fn first_available_cpu_value(
-  state: &EvalState<'_, '_>,
-  values: &[String],
-  available: impl Fn(&cpu::Cpu) -> &[String],
-) -> Option<String> {
-  values.iter().find_map(|value| {
-    let is_available = match state.context {
-      EvalContext::Cpu(cpu) => available(cpu).contains(value),
-      EvalContext::PowerSupply(_) => false,
-      EvalContext::WidestPossible => {
-        state.cpus.iter().any(|cpu| available(cpu).contains(value))
-      },
-    };
-
-    is_available.then(|| value.clone())
-  })
 }
 
 fn literal_true() -> Expression {
