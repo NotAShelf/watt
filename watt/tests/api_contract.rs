@@ -224,14 +224,12 @@ async fn denied_mutations_leave_live_state_unchanged() {
   )
   .await
   .unwrap();
+  let other = support::ppd(&other).await;
+  daemon.allowed.store(false, Ordering::SeqCst);
   assert_denied(
-    bounded(
-      support::ppd(&other)
-        .await
-        .call::<_, _, ()>("ReleaseProfile", &(cookie,)),
-    )
-    .await
-    .unwrap_err(),
+    bounded(other.call::<_, _, ()>("ReleaseProfile", &(cookie,)))
+      .await
+      .unwrap_err(),
   );
   assert_eq!(profile(&native).await, "power-saver");
   bounded(ppd.call::<_, _, ()>("ReleaseProfile", &(cookie,)))
@@ -239,7 +237,16 @@ async fn denied_mutations_leave_live_state_unchanged() {
     .unwrap();
   assert_eq!(profile(&native).await, "performance");
   // The owner releasing its own hold must not consult polkit.
-  assert_eq!(daemon.actions.load(Ordering::SeqCst), 6);
+  assert_eq!(daemon.actions.load(Ordering::SeqCst), 7);
+
+  daemon.allowed.store(true, Ordering::SeqCst);
+  let cookie: u32 = bounded(ppd.call("HoldProfile", &hold)).await.unwrap();
+  assert_eq!(profile(&native).await, "power-saver");
+  bounded(other.call::<_, _, ()>("ReleaseProfile", &(cookie,)))
+    .await
+    .unwrap();
+  assert_eq!(profile(&native).await, "performance");
+  assert_eq!(daemon.actions.load(Ordering::SeqCst), 9);
   daemon.shutdown("-TERM").await;
 }
 
