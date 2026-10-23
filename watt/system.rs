@@ -1372,6 +1372,25 @@ impl DaemonState {
       .add_hold_for(profile, reason, application_id, owner)
   }
 
+  pub(crate) fn begin_profile_owner_check(
+    &mut self,
+    owner: &str,
+  ) -> profile::OwnerCheck {
+    self.profile.begin_owner_check(owner)
+  }
+
+  pub(crate) fn add_checked_profile_hold(
+    &mut self,
+    check: profile::OwnerCheck,
+    profile: profile::PowerProfile,
+    reason: String,
+    application_id: String,
+  ) -> Option<u32> {
+    self
+      .profile
+      .add_checked_hold(check, profile, reason, application_id)
+  }
+
   pub fn release_profile_hold(&mut self, cookie: u32) -> anyhow::Result<()> {
     self.profile.release_hold(cookie)
   }
