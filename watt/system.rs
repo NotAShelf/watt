@@ -1526,7 +1526,7 @@ impl DaemonState {
   pub fn release_profile_hold_for(
     &mut self,
     cookie: u32,
-    owner: &str,
+    owner: Option<&str>,
   ) -> Result<(), profile::ReleaseHoldError> {
     self.profile.release_hold_for(cookie, owner)
   }
