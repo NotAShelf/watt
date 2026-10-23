@@ -173,4 +173,26 @@ mod tests {
     Cpu::set_turbo(true, cpus.iter()).unwrap();
     assert_eq!(Cpu::turbo(cpus.iter()).unwrap(), Some(true));
   }
+
+  #[test]
+  fn policy_boost_reports_failure_when_every_target_fails() {
+    let fixture = SystemFixture::new();
+    let boost_paths = [
+      fixture.policy(0, &[0], "amd-pstate-epp").join("boost"),
+      fixture.policy(1, &[1], "amd-pstate-epp").join("boost"),
+    ];
+    fixture.cpu_telemetry(&[0, 1]);
+    for path in &boost_paths {
+      fixture.write(path, "0");
+      fixture.write_result(path, Err(ErrorKind::PermissionDenied));
+    }
+
+    let cpus = Cpu::all().unwrap();
+    let message =
+      format!("{:#}", Cpu::set_turbo(true, cpus.iter()).unwrap_err());
+    for path in &boost_paths {
+      assert!(message.contains(&path.display().to_string()));
+    }
+    assert_eq!(Cpu::turbo(cpus.iter()).unwrap(), Some(false));
+  }
 }
