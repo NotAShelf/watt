@@ -98,13 +98,20 @@ sudo watt -vv  # Log level: TRACE (will log everything)
 
 # Run with a custom configuration file
 sudo watt --config /path/to/config.toml
+
+# Verify configuration without changing hardware
+watt --config /path/to/config.toml --verify-config=hardware
+
+# Explain managed settings and adaptive polling through the running daemon
+watt config --json settings
+watt config --json polling
 ```
 
 ## Configuration
 
 Watt uses a rule-based TOML configuration system that allows you to define power
-management policies. Each `[[rule]]` has an optional condition, a unique
-priority and one or more action sections. Watt evaluates matching rules from
+management policies. Each `[[rule]]` has an optional condition, a unique name and
+priority, and one or more action sections. Watt evaluates matching rules from
 highest to lowest priority; higher-priority values fill each setting first, and
 lower-priority rules only fill settings that remain unset.
 
@@ -206,6 +213,15 @@ $ nix develop
 
 Non-Nix users may get the appropriate Cargo and Rust versions from their package
 manager, or using something like Rustup.
+
+### Tests
+
+Run `cargo test --workspace --all-features` as an unprivileged user. Tests that
+touch sysfs or procfs go through `crate::fs`, which `SystemFixture` (in
+`watt/test_support.rs`) redirects into a temporary root for the current test
+thread. The fixture can also inject read and write failures. Process tests under
+`watt/tests` run the real binary against a private D-Bus and `WATT_SYSTEM_ROOT`,
+and need `dbus-daemon` in `PATH`.
 
 ### Formatting & Lints
 
