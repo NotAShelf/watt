@@ -126,8 +126,12 @@ impl Uncore {
 }
 
 fn read_required(path: &Path, file: &str) -> anyhow::Result<u64> {
-  fs::read_n::<u64>(path.join(file))?
-    .with_context(|| format!("missing uncore frequency file '{file}'"))
+  fs::read_n::<u64>(path.join(file))?.with_context(|| {
+    format!(
+      "missing uncore frequency file '{}'",
+      path.join(file).display()
+    )
+  })
 }
 
 #[derive(Default, Debug, Clone, PartialEq)]
