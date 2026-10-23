@@ -179,4 +179,9 @@ impl WattInterface {
   pub async fn applied_rules_changed(
     emitter: &SignalEmitter<'_>,
   ) -> zbus::Result<()>;
+
+  #[zbus(signal)]
+  pub async fn applied_settings_changed(
+    emitter: &SignalEmitter<'_>,
+  ) -> zbus::Result<()>;
 }
