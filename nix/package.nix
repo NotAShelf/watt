@@ -54,6 +54,8 @@ rustPlatform.buildRustPackage (finalAttrs: {
       # Install Watt's dbus
       install -Dm644 dbus/net.hadess.PowerProfiles.conf \
         $out/share/dbus-1/system.d/net.hadess.PowerProfiles.conf
+      install -Dm644 dbus/dev.notashelf.watt.policy \
+        $out/share/polkit-1/actions/dev.notashelf.watt.policy
     '';
 
   meta = {

@@ -4,7 +4,7 @@ inputs: {
   lib,
   ...
 }: let
-  inherit (lib.modules) mkIf;
+  inherit (lib.modules) mkIf mkDefault;
   inherit (lib.options) mkOption mkEnableOption mkPackageOption;
   inherit (lib.types) submodule;
   inherit (lib.meta) getExe;
@@ -39,6 +39,7 @@ in {
   config = mkIf cfg.enable {
     environment.systemPackages = [cfg.package];
     services.dbus.packages = [cfg.package];
+    security.polkit.enable = mkDefault true;
 
     # This is necessary for the Watt CLI. The environment variable
     # passed to the systemd service will take priority in read order.

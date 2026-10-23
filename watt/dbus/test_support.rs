@@ -1,4 +1,5 @@
 use std::{
+  collections::HashMap,
   io::{
     BufRead as _,
     BufReader,
@@ -9,6 +10,16 @@ use std::{
     Stdio,
   },
 };
+
+use serde::Serialize;
+use zbus::zvariant::Type;
+
+#[derive(Serialize, Type)]
+pub(super) struct AuthorizationResult {
+  pub authorized: bool,
+  pub challenge:  bool,
+  pub details:    HashMap<String, String>,
+}
 
 pub(super) struct TestBus {
   child:       Child,
