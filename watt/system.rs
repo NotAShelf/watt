@@ -7,6 +7,7 @@ use std::{
     VecDeque,
   },
   future::Future,
+  iter::once,
   path::{
     Path,
     PathBuf,
@@ -254,15 +255,50 @@ struct System {
 }
 
 fn retire_missing_devices<T>(
+  subsystem: &'static str,
   previous: Vec<PathBuf>,
   current: &HashSet<Arc<T>>,
   path: impl Fn(&T) -> &Path,
 ) {
+  fs::protect_scan_failures(
+    subsystem,
+    &previous,
+    current.iter().map(|device| path(device).to_owned()),
+  );
   for previous_path in previous {
-    if !current.iter().any(|device| path(device) == previous_path) {
+    if fs::known_missing(&previous_path)
+      && !current.iter().any(|device| path(device) == previous_path)
+    {
       fs::retire_settings_under(previous_path);
     }
   }
+}
+
+fn reject_partial_inventory(
+  subsystem: &str,
+  failures: Vec<String>,
+) -> anyhow::Result<()> {
+  if !failures.is_empty() {
+    bail!("partial {subsystem} scan failed: {}", failures.join("; "));
+  }
+  Ok(())
+}
+
+fn protect_cpu_scan_failures(
+  previous: &HashSet<Arc<cpu::Cpu>>,
+  current: &HashSet<Arc<cpu::Cpu>>,
+) {
+  let roots = |cpus: &HashSet<Arc<cpu::Cpu>>| -> Vec<PathBuf> {
+    cpus
+      .iter()
+      .flat_map(|cpu| {
+        let local =
+          PathBuf::from(format!("/sys/devices/system/cpu/cpu{}", cpu.number));
+        once(local).chain(cpu.policy.as_ref().map(|policy| policy.path.clone()))
+      })
+      .collect()
+  };
+  fs::protect_scan_failures("CPU", &roots(previous), roots(current));
 }
 
 impl System {
@@ -369,13 +405,16 @@ impl System {
       .iter()
       .map(|cpu| (cpu.number, cpu.stat.clone()))
       .collect();
-    let cpus = cpu::Cpu::all()?
+    let inventory = cpu::CpuInventory::scan()?;
+    let cpus = inventory
+      .cpus
       .into_iter()
       .map(|mut cpu| {
         cpu.previous_stat = previous_stats.get(&cpu.number).cloned();
         Arc::from(cpu)
       })
       .collect::<HashSet<_>>();
+    protect_cpu_scan_failures(&self.cpus, &cpus);
     let current_policies: HashSet<_> = cpus
       .iter()
       .filter_map(|cpu| cpu.policy.as_ref().map(|policy| &policy.path))
@@ -391,20 +430,25 @@ impl System {
           .policy
           .as_ref()
           .is_some_and(|policy| &policy.path == *path)
-          && fs::exists(format!("/sys/devices/system/cpu/cpu{}", cpu.number))
+          && !fs::known_missing(format!(
+            "/sys/devices/system/cpu/cpu{}",
+            cpu.number
+          ))
       });
-      if !present || !fs::exists(path) {
+      if !present || fs::known_missing(path) {
         fs::retire_settings_under(path);
       }
     }
     for number in previous_stats.keys() {
       let path = format!("/sys/devices/system/cpu/cpu{number}");
-      if !cpus.iter().any(|cpu| cpu.number == *number) && !fs::exists(&path) {
+      if !cpus.iter().any(|cpu| cpu.number == *number)
+        && fs::known_missing(&path)
+      {
         fs::retire_settings_under(path);
       }
     }
     self.cpus = cpus;
-    Ok(())
+    reject_partial_inventory("CPU", inventory.failures)
   }
 
   fn scan_power_supplies(&mut self) -> anyhow::Result<()> {
@@ -413,15 +457,20 @@ impl System {
       .iter()
       .map(|power_supply| power_supply.path.clone())
       .collect::<Vec<_>>();
-    let power_supplies = power_supply::PowerSupply::all()?
+    let inventory = power_supply::PowerSupplyInventory::scan()?;
+    let power_supplies = inventory
+      .power_supplies
       .into_iter()
       .map(Arc::from)
       .collect::<HashSet<_>>();
-    retire_missing_devices(previous, &power_supplies, |power_supply| {
-      &power_supply.path
-    });
+    retire_missing_devices(
+      "power-supply",
+      previous,
+      &power_supplies,
+      |supply| &supply.path,
+    );
     self.power_supplies = power_supplies;
-    Ok(())
+    reject_partial_inventory("power-supply", inventory.failures)
   }
 
   fn scan_uncores(&mut self) -> anyhow::Result<()> {
@@ -430,13 +479,15 @@ impl System {
       .iter()
       .map(|uncore| uncore.path.clone())
       .collect::<Vec<_>>();
-    let uncores = uncore::Uncore::all()?
+    let inventory = uncore::UncoreInventory::scan()?;
+    let uncores = inventory
+      .devices
       .into_iter()
       .map(Arc::from)
       .collect::<HashSet<_>>();
-    retire_missing_devices(previous, &uncores, |uncore| &uncore.path);
+    retire_missing_devices("uncore", previous, &uncores, |uncore| &uncore.path);
     self.uncores = uncores;
-    Ok(())
+    reject_partial_inventory("uncore", inventory.failures)
   }
 
   fn scan_disks(&mut self) -> anyhow::Result<()> {
@@ -445,13 +496,15 @@ impl System {
       .iter()
       .map(|disk| disk.path.clone())
       .collect::<Vec<_>>();
-    let disks = disk::Disk::all()?
+    let inventory = disk::DiskInventory::scan()?;
+    let disks = inventory
+      .devices
       .into_iter()
       .map(Arc::from)
       .collect::<HashSet<_>>();
-    retire_missing_devices(previous, &disks, |disk| &disk.path);
+    retire_missing_devices("disk", previous, &disks, |disk| &disk.path);
     self.disks = disks;
-    Ok(())
+    reject_partial_inventory("disk", inventory.failures)
   }
 
   fn scan_usb_devices(&mut self) -> anyhow::Result<()> {
@@ -460,13 +513,17 @@ impl System {
       .iter()
       .map(|device| device.path.clone())
       .collect::<Vec<_>>();
-    let usb_devices = usb::UsbDevice::all()?
+    let inventory = usb::UsbInventory::scan()?;
+    let usb_devices = inventory
+      .devices
       .into_iter()
       .map(Arc::from)
       .collect::<HashSet<_>>();
-    retire_missing_devices(previous, &usb_devices, |device| &device.path);
+    retire_missing_devices("USB", previous, &usb_devices, |device| {
+      &device.path
+    });
     self.usb_devices = usb_devices;
-    Ok(())
+    reject_partial_inventory("USB", inventory.failures)
   }
 
   fn scan_gpus(&mut self) -> anyhow::Result<()> {
@@ -475,7 +532,9 @@ impl System {
       .iter()
       .flat_map(|gpu| gpu.control_roots().map(Path::to_owned))
       .collect::<Vec<_>>();
-    let gpus = gpu::Gpu::all()?
+    let inventory = gpu::GpuInventory::scan()?;
+    let gpus = inventory
+      .devices
       .into_iter()
       .map(Arc::from)
       .collect::<HashSet<_>>();
@@ -483,13 +542,18 @@ impl System {
       .iter()
       .flat_map(|gpu| gpu.control_roots())
       .collect::<HashSet<_>>();
+    fs::protect_scan_failures(
+      "GPU",
+      &previous,
+      roots.iter().map(|path| path.to_path_buf()),
+    );
     for path in previous {
-      if !roots.contains(path.as_path()) {
+      if fs::known_missing(&path) && !roots.contains(path.as_path()) {
         fs::retire_settings_under(path);
       }
     }
     self.gpus = gpus;
-    Ok(())
+    reject_partial_inventory("GPU", inventory.failures)
   }
 
   fn scan_ac_state(&mut self) -> anyhow::Result<()> {
@@ -1359,6 +1423,10 @@ fn reload_config(
   active: &mut config::DaemonConfig,
 ) -> anyhow::Result<String> {
   let (config, serialized) = load_config(path)?;
+  #[cfg(feature = "metrics")]
+  if config.metrics != active.metrics {
+    bail!("changing metrics configuration requires restarting watt");
+  }
   *active = config;
   Ok(serialized)
 }
@@ -1807,6 +1875,41 @@ mod tests {
   }
 
   #[test]
+  fn partial_battery_scan_preserves_restoration_and_recovers() {
+    let fixture = SystemFixture::new();
+    let battery = fixture.path("/sys/class/power_supply/BAT0");
+    fixture.write(battery.join("type"), "Battery");
+    fixture.write(battery.join("charge_control_start_threshold"), "40");
+    let threshold = battery.join("charge_control_end_threshold");
+    fixture.write(&threshold, "80");
+    fixture.write("/sys/class/power_supply/AC/type", "Mains");
+    let mut system = System::default();
+    system.scan_power_supplies().unwrap();
+    let mut supply = system
+      .power_supplies
+      .iter()
+      .find(|supply| supply.name == "BAT0")
+      .unwrap()
+      .as_ref()
+      .clone();
+    let _managed = fs::manage_settings();
+    fs::begin_settings_iteration();
+    supply.set_charge_threshold_end(0.6).unwrap();
+    fixture.fail_read(battery.join("type"), ErrorKind::PermissionDenied);
+    let error = system.scan_power_supplies().unwrap_err();
+    assert!(error.to_string().contains("BAT0"));
+    assert_eq!(system.power_supplies.len(), 1);
+    assert_eq!(system.power_supplies.iter().next().unwrap().name, "AC");
+    assert_eq!(fs::applied_settings().len(), 1);
+    fixture.clear_io(battery.join("type"));
+    system.scan_power_supplies().unwrap();
+    assert_eq!(system.power_supplies.len(), 2);
+    fs::begin_settings_iteration();
+    assert!(fs::restore_unmanaged_settings().is_empty());
+    assert_eq!(stdfs::read_to_string(threshold).unwrap(), "80");
+  }
+
+  #[test]
   fn shared_radeon_device_retains_ownership_after_one_card_disappears() {
     let fixture = SystemFixture::new();
     let device = fixture.path("/sys/devices/radeon");
@@ -1934,6 +2037,84 @@ mod tests {
       let message = failures.latest_message().unwrap();
       assert!(message.contains("non-finite"), "{expression}: {message}");
     }
+  }
+
+  #[test]
+  fn reload_keeps_active_rules_until_the_candidate_is_valid() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("config.toml");
+    let mut active = config::DaemonConfig::load_from(None).unwrap();
+    let original = active.clone();
+    for contents in [
+      "invalid",
+      "[[rule]]\nname='bad'\npriority=1\ncpu.frequency-mhz-minimum=-1\n",
+    ] {
+      stdfs::write(&path, contents).unwrap();
+      assert!(reload_config(&path, &mut active).is_err());
+      assert_eq!(active, original);
+    }
+    stdfs::write(&path, "[[rule]]\nname='replacement'\npriority=1\n").unwrap();
+    let serialized = reload_config(&path, &mut active).unwrap();
+    assert_eq!(active.rules.len(), 1);
+    assert_eq!(active.rules[0].name, "replacement");
+    assert_eq!(
+      toml::from_str::<config::DaemonConfig>(&serialized).unwrap(),
+      active
+    );
+  }
+
+  #[tokio::test]
+  async fn reload_restores_a_cpu_control_removed_from_the_rules() {
+    let fixture = SystemFixture::new();
+    let policy = fixture.policy(0, &[0], "acpi-cpufreq");
+    fixture.cpu_telemetry(&[0]);
+    let governor = policy.join("scaling_governor");
+    let path = fixture.path("config.toml");
+    let _managed = fs::manage_settings();
+    let mut active = config::DaemonConfig::load_from(None).unwrap();
+    let state = RwLock::new(DaemonState::new(String::new(), 0));
+    let mut polling = PollingState::new();
+    let (applied_rules, _receiver) = watch::channel(Vec::new());
+
+    for (action, expected) in [
+      ("cpu.governor = 'performance'", "performance"),
+      ("", "powersave"),
+    ] {
+      fixture.write(
+        &path,
+        format!("[[rule]]\nname='test'\npriority=1\n{action}\n"),
+      );
+      reload_daemon_config(Some(&path), &mut active, &state).await;
+      polling.poll(&active.rules, &state, &applied_rules).await;
+      assert_eq!(state.read().await.rule_count(), 1);
+      assert_eq!(stdfs::read_to_string(&governor).unwrap(), expected);
+    }
+    assert_eq!(fixture.write_count(&governor), 2);
+    assert!(fs::applied_settings().is_empty());
+  }
+
+  #[cfg(feature = "metrics")]
+  #[test]
+  fn reload_rejects_metrics_listener_changes_without_replacing_rules() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("config.toml");
+    let mut active = config::DaemonConfig::load_from(None).unwrap();
+    let original = active.clone();
+    stdfs::write(
+      &path,
+      r#"
+[metrics]
+listen-addr = "127.0.0.1"
+port = 9999
+[[rule]]
+name = "replacement"
+priority = 1
+"#,
+    )
+    .unwrap();
+    let error = reload_config(&path, &mut active).unwrap_err();
+    assert!(error.to_string().contains("requires restarting"));
+    assert_eq!(active, original);
   }
 
   #[test]
@@ -2124,9 +2305,20 @@ mod tests {
     fs::observe(latency, "100");
 
     fixture.fail_read(&governor, ErrorKind::PermissionDenied);
-    assert!(system.scan_cpus().is_err());
-    assert_eq!(system.cpus.len(), 2);
+    let mut failures = RuntimeFailures::default();
+    system.scan_component(&mut failures, "CPU scan", System::scan_cpus);
+    let mut state = DaemonState::new(String::new(), 0);
+    state.update_system(&system, Vec::new(), None, &failures);
+    assert_eq!(state.error_count(), 1);
+    assert!(state.latest_error().unwrap().contains("cpu0"));
+    assert_eq!(system.cpus.len(), 1);
     fixture.clear_io(&governor);
+    failures.begin_iteration();
+    system.scan_component(&mut failures, "CPU scan", System::scan_cpus);
+    failures.finish_iteration();
+    state.update_system(&system, Vec::new(), None, &failures);
+    assert_eq!(state.error_count(), 0);
+    assert_eq!(state.cpu_count(), 2);
     fs::begin_settings_iteration();
     assert!(fs::restore_unmanaged_settings().is_empty());
     assert_eq!(stdfs::read_to_string(governor).unwrap(), "powersave");
@@ -2147,6 +2339,48 @@ mod tests {
     assert_eq!(policies[0].related_cpus, [0, 1]);
     assert_eq!(policies[1].name, "policy2");
     assert_eq!(policies[1].related_cpus, [2]);
+  }
+
+  fn apply_rules(system: &System, rules: &[config::Rule]) {
+    let now = Instant::now();
+    let eval = system.eval_state(now, now, PowerProfile::Balanced, false);
+    let mut failures = RuntimeFailures::default();
+    failures.begin_iteration();
+    let (actions, _) = evaluate_rules(rules, &eval, &mut failures);
+    apply_actions(actions, &mut failures, &mut cpu::DmaLatency::default());
+    failures.finish_iteration();
+  }
+
+  #[test]
+  fn repeated_partial_inventory_keeps_original_until_rediscovery() {
+    let fixture = SystemFixture::new();
+    let root = fixture.path("/sys/block/sda");
+    fixture.write(root.join("queue/scheduler"), "mq-deadline");
+    fixture.write(root.join("removable"), "0");
+    let mut system = System::default();
+    system.scan_disks().unwrap();
+    let _managed = fs::manage_settings();
+    let rule: config::Rule =
+      toml::from_str("name='disk-owner'\npriority=5\ndisk.scheduler='none'")
+        .unwrap();
+    apply_rules(&system, &[rule]);
+    fixture.fail_read(root.join("removable"), ErrorKind::PermissionDenied);
+    for _ in 0..2 {
+      assert!(system.scan_disks().is_err());
+      apply_rules(&system, &[]);
+      assert_eq!(
+        stdfs::read_to_string(root.join("queue/scheduler")).unwrap(),
+        "none"
+      );
+    }
+    fixture.clear_io(root.join("removable"));
+    system.scan_disks().unwrap();
+    apply_rules(&system, &[]);
+    assert_eq!(
+      stdfs::read_to_string(root.join("queue/scheduler")).unwrap(),
+      "mq-deadline"
+    );
+    assert!(fs::applied_settings().is_empty());
   }
 
   #[test]

@@ -45,33 +45,33 @@ impl fmt::Display for Disk {
   }
 }
 
+pub type DiskInventory = fs::Inventory<Disk>;
+
+impl DiskInventory {
+  pub fn scan() -> anyhow::Result<Self> {
+    let entries = fs::read_dir(BLOCK_PATH)?
+      .context("block-device inventory directory is unavailable")?;
+    Ok(Self::scan_entries(entries, "disk", Disk::scan))
+  }
+}
+
 impl Disk {
   pub fn all() -> anyhow::Result<Vec<Self>> {
-    let Some(entries) = fs::read_dir(BLOCK_PATH)? else {
-      return Ok(Vec::new());
-    };
-
-    let mut disks = Vec::new();
-
-    for entry in entries {
-      let entry = entry.context("failed to read block device entry")?;
-      if let Some(disk) = Self::scan(entry)? {
-        disks.push(disk);
-      }
-    }
-
-    Ok(disks)
+    DiskInventory::scan()?.into_devices("disk")
   }
 
   fn scan(entry: DirEntry) -> anyhow::Result<Option<Self>> {
     let name = entry.file_name().to_string_lossy().into_owned();
-    let Some(path) = fs::canonicalize(entry.path())? else {
-      return Ok(None);
-    };
-    if !path.join("queue").exists() || name.starts_with("loop") {
+    if name.starts_with("loop") {
       return Ok(None);
     }
-    if fs::read_n::<u64>(path.join("removable"))?.unwrap_or(0) == 1 {
+    let path = fs::canonicalize(entry.path())?
+      .with_context(|| format!("disk {name:?} disappeared during discovery"))?;
+    let removable =
+      fs::read_n::<u64>(path.join("removable"))?.with_context(|| {
+        format!("disk {name:?} removable capability is unavailable")
+      })?;
+    if removable == 1 {
       return Ok(None);
     }
     Ok(Some(Self { name, path }))

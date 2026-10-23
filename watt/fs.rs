@@ -6,7 +6,10 @@ use std::fs::{
 };
 #[cfg(not(test))] use std::sync::Mutex;
 use std::{
-  collections::BTreeMap,
+  collections::{
+    BTreeMap,
+    BTreeSet,
+  },
   env,
   error,
   fs,
@@ -105,9 +108,48 @@ impl AppliedSetting {
 
 #[derive(Default, Debug)]
 struct ManagedSettings {
-  active:     bool,
-  generation: u64,
-  settings:   BTreeMap<PathBuf, ManagedSetting>,
+  active:          bool,
+  generation:      u64,
+  settings:        BTreeMap<PathBuf, ManagedSetting>,
+  scan_protection: BTreeMap<&'static str, BTreeSet<PathBuf>>,
+}
+
+/// Keep originals for previously discovered roots that still exist but could
+/// not be scanned. Successful rediscovery or physical removal clears them.
+pub(crate) fn protect_scan_failures(
+  subsystem: &'static str,
+  previous: &[PathBuf],
+  current: impl IntoIterator<Item = PathBuf>,
+) {
+  let current: BTreeSet<_> = current.into_iter().map(path).collect();
+  with_managed_settings(|settings| {
+    let protected = settings.scan_protection.entry(subsystem).or_default();
+    protected.extend(previous.iter().map(path));
+    protected.retain(|root| {
+      if current.contains(root) {
+        return false;
+      }
+      if root.try_exists().unwrap_or(true) {
+        return true;
+      }
+      settings.settings.retain(|path, _| !path.starts_with(root));
+      false
+    });
+  });
+}
+
+fn retain_unavailable_settings(settings: &mut ManagedSettings) {
+  for (path, setting) in &mut settings.settings {
+    let protected = path.ancestors().any(|ancestor| {
+      settings
+        .scan_protection
+        .values()
+        .any(|roots| roots.contains(ancestor))
+    });
+    if protected {
+      setting.generation = settings.generation;
+    }
+  }
 }
 
 #[derive(Debug, Clone)]
@@ -176,6 +218,10 @@ pub fn exists(input: impl AsRef<Path>) -> bool {
   path(input).exists()
 }
 
+pub(crate) fn known_missing(input: impl AsRef<Path>) -> bool {
+  matches!(path(input).try_exists(), Ok(false))
+}
+
 pub fn read_dir(
   input: impl AsRef<Path>,
 ) -> anyhow::Result<Option<fs::ReadDir>> {
@@ -192,6 +238,54 @@ pub fn read_dir(
         path = path.display(),
       ))
     },
+  }
+}
+
+/// Devices discovered in a sysfs directory and per-device scan failures.
+#[derive(Debug)]
+pub struct Inventory<T> {
+  pub devices:  Vec<T>,
+  pub failures: Vec<String>,
+}
+
+impl<T> Inventory<T> {
+  /// Scans entries in name order. `scan` returns `None` for entries that are
+  /// not devices of this kind.
+  pub(crate) fn scan_entries(
+    entries: fs::ReadDir,
+    kind: &str,
+    scan: impl Fn(fs::DirEntry) -> anyhow::Result<Option<T>>,
+  ) -> Self {
+    let mut entries: Vec<_> = entries.collect();
+    entries
+      .sort_by_key(|entry| entry.as_ref().ok().map(fs::DirEntry::file_name));
+
+    let mut inventory = Self {
+      devices:  Vec::new(),
+      failures: Vec::new(),
+    };
+    for entry in entries {
+      match entry
+        .with_context(|| format!("failed to read {kind} entry"))
+        .and_then(&scan)
+      {
+        Ok(Some(device)) => inventory.devices.push(device),
+        Ok(None) => {},
+        Err(error) => inventory.failures.push(format!("{error:#}")),
+      }
+    }
+    inventory
+  }
+
+  /// Logs partial failures and fails only if every scan failed.
+  pub(crate) fn into_devices(self, kind: &str) -> anyhow::Result<Vec<T>> {
+    if self.devices.is_empty() && !self.failures.is_empty() {
+      bail!("all {kind} scans failed: {}", self.failures.join("; "));
+    }
+    for failure in self.failures {
+      log::warn!("{kind} discovery failed: {failure}");
+    }
+    Ok(self.devices)
   }
 }
 
@@ -336,6 +430,7 @@ pub fn begin_settings_iteration() {
   with_managed_settings(|settings| {
     settings.active = true;
     settings.generation = settings.generation.wrapping_add(1);
+    retain_unavailable_settings(settings);
   });
 }
 
@@ -525,10 +620,33 @@ mod tests {
     env,
     fs as stdfs,
     process,
+    slice,
   };
 
   use super::*;
   use crate::test_support::SystemFixture;
+
+  #[test]
+  fn protected_device_disappearance_retires_originals_without_restore_failures()
+  {
+    let fixture = SystemFixture::new();
+    let root = fixture.path("/sys/block/test");
+    let control = root.join("queue/read_ahead_kb");
+    fixture.write(&control, "128");
+    let _managed = manage_settings();
+    begin_settings_iteration();
+    write(&control, "256").unwrap();
+    protect_scan_failures("disk", slice::from_ref(&root), []);
+    begin_settings_iteration();
+    assert!(restore_unmanaged_settings().is_empty());
+    assert_eq!(read(&control).unwrap().as_deref(), Some("256"));
+
+    stdfs::remove_dir_all(&root).unwrap();
+    protect_scan_failures("disk", &[], []);
+    begin_settings_iteration();
+    assert!(restore_unmanaged_settings().is_empty());
+    assert!(applied_settings().is_empty());
+  }
 
   #[test]
   fn unreadable_original_prevents_mutation_and_recovers_on_retry() {
