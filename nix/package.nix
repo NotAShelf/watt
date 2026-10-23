@@ -21,6 +21,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
         ../watt
         ../xtask
         ../dbus
+        ../docs/configuration/administration.md
         ../Cargo.lock
         ../Cargo.toml
       ];
