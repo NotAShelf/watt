@@ -19,6 +19,16 @@ pub(super) enum Constant<'a> {
 }
 
 impl Constant<'_> {
+  pub(super) fn kind(&self) -> Option<&'static str> {
+    match self {
+      Self::Boolean(_) => Some("boolean"),
+      Self::Number(_) => Some("number"),
+      Self::String(_) => Some("string"),
+      Self::List(_) => Some("list"),
+      Self::Unknown | Self::Unset => None,
+    }
+  }
+
   fn number(self) -> anyhow::Result<Option<f64>> {
     match self {
       Self::Number(value) => Ok(Some(value)),
@@ -38,6 +48,10 @@ impl Constant<'_> {
 
 pub(super) fn analyze(expression: &Expression) -> anyhow::Result<Constant<'_>> {
   analyze_bounded(expression, &mut 256, 0)
+}
+
+pub(super) fn number(expression: &Expression) -> anyhow::Result<Option<f64>> {
+  analyze(expression)?.number()
 }
 
 pub(super) fn boolean(expression: &Expression) -> Option<bool> {
@@ -402,7 +416,7 @@ mod tests {
       "if = false\nthen = { value = 1, divide = 0 }\nelse = { maximum = [2, \
        4] }",
     );
-    assert_eq!(analyze(&value).unwrap(), Constant::Number(4.0));
+    assert_eq!(number(&value).unwrap(), Some(4.0));
   }
 
   #[test]

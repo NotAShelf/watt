@@ -28,6 +28,7 @@ use serde::{
   Deserialize,
   Serialize,
 };
+use verify::Severity;
 
 use crate::{
   audio,
@@ -1558,11 +1559,19 @@ impl DaemonConfig {
       )
     })?;
 
-    let diagnostics = config.verify_static();
-    if !diagnostics.is_empty() {
+    let (errors, warnings): (Vec<_>, Vec<_>) = config
+      .verify_static()
+      .into_iter()
+      .partition(|diagnostic| matches!(diagnostic.severity, Severity::Error));
+
+    for warning in warnings {
+      log::warn!("{warning}");
+    }
+
+    if !errors.is_empty() {
       bail!(
         "{}",
-        diagnostics
+        errors
           .iter()
           .map(ToString::to_string)
           .collect::<Vec<_>>()
