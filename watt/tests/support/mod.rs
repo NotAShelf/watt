@@ -188,6 +188,22 @@ impl MockAuthority {
   }
 }
 
+fn bus_config(address: &str) -> String {
+  format!(
+    r#"<busconfig>
+  <type>session</type>
+  <listen>{address}</listen>
+  <auth>EXTERNAL</auth>
+  <policy context="default">
+    <allow send_destination="*" eavesdrop="true"/>
+    <allow eavesdrop="true"/>
+    <allow own="*"/>
+  </policy>
+</busconfig>
+"#
+  )
+}
+
 /// Daemon and bus processes with temporary sysfs, procfs and runtime files.
 /// Drop the child guards before deleting their files.
 pub struct Harness {
@@ -332,12 +348,13 @@ impl Harness {
   /// Start a private bus with a mock polkit authority on it.
   pub async fn start_bus(&mut self) {
     let address = self.address.clone();
+    self.write("/bus.conf", bus_config(&address));
     let bus = self.bus.insert(
       Process::logged(
-        self
-          .command("dbus-daemon")
-          .args(["--session", "--nofork"])
-          .arg(format!("--address={address}")),
+        self.command("dbus-daemon").arg("--nofork").arg(format!(
+          "--config-file={}",
+          self.path("/bus.conf").display()
+        )),
         &self.path("/bus.stdout"),
         &self.path("/bus.log"),
       )
