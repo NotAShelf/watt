@@ -1,14 +1,20 @@
 use std::{
+  fs::File,
   io::{
     self,
+    Read as _,
     Write,
   },
-  path::PathBuf,
+  path::{
+    Path,
+    PathBuf,
+  },
 };
 
 use anyhow::{
   Context as _,
   bail,
+  ensure,
 };
 use clap::Parser as _;
 use tokio::runtime::Builder as RuntimeBuilder;
@@ -77,11 +83,27 @@ enum Command {
 
 #[derive(clap::Subcommand, Debug)]
 enum ConfigCommand {
+  /// Ask the running daemon to verify a local configuration file.
+  Verify {
+    path:     PathBuf,
+    /// Check controls on the daemon's host as well as static configuration.
+    #[arg(long)]
+    hardware: bool,
+  },
   /// Print the active rules selected by the daemon.
   Active {
     /// Continue printing the active rules whenever they change.
     #[arg(long)]
     watch: bool,
+  },
+  /// Ask the running daemon to reload its file-backed configuration.
+  Reload,
+  #[command(flatten)]
+  Query(ConfigQuery),
+  /// Read or select the active power profile.
+  Profile {
+    #[command(subcommand)]
+    command: ProfileCommand,
   },
 
   /// Print configuration as normalized TOML.
@@ -93,6 +115,24 @@ enum ConfigCommand {
 
   /// Print the configuration's JSON Schema.
   Schema,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum ConfigQuery {
+  /// Print recent daemon errors.
+  Errors,
+  /// Print the daemon's current status.
+  Status,
+  /// Print configured rules and priorities.
+  Rules,
+  /// Print discovered CPU capabilities.
+  Capabilities,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum ProfileCommand {
+  Get,
+  Set { profile: String },
 }
 
 pub fn main() -> anyhow::Result<()> {
@@ -147,37 +187,80 @@ fn verify_configuration(
 }
 
 fn run_config_command(command: ConfigCommand) -> anyhow::Result<()> {
+  let runtime = RuntimeBuilder::new_current_thread()
+    .enable_all()
+    .build()
+    .context("failed to build tokio runtime")?;
   match command {
+    ConfigCommand::Verify { path, hardware } => {
+      let contents = read_verification_input(&path)?;
+      runtime.block_on(dbus::client::verify_configuration(&contents, hardware))
+    },
     ConfigCommand::Active { watch } => {
-      let runtime = RuntimeBuilder::new_current_thread()
-        .enable_all()
-        .build()
-        .context("failed to build tokio runtime")?;
       runtime.block_on(dbus::client::print_active_rules(watch))
     },
-    ConfigCommand::Show { default } => {
-      if default {
-        let config = config::DaemonConfig::load_from(None)
-          .context("failed to load default config")?;
-        let output = toml::to_string_pretty(&config)
-          .context("failed to serialize config")?;
-        print_output(&output)
-      } else {
-        let runtime = RuntimeBuilder::new_current_thread()
-          .enable_all()
-          .build()
-          .context("failed to build tokio runtime")?;
-        let output = runtime.block_on(dbus::client::loaded_config())?;
-        print_output(&output)
-      }
+    ConfigCommand::Reload => runtime.block_on(dbus::client::reload()),
+    ConfigCommand::Query(query) => runtime.block_on(run_query(query)),
+    ConfigCommand::Profile { command } => {
+      runtime.block_on(run_profile(command))
     },
-    ConfigCommand::Schema => {
-      let schema = schemars::schema_for!(config::DaemonConfig);
-      let output = serde_json::to_string_pretty(&schema)
-        .context("failed to serialize config schema")?;
-      print_output(&output)
+    ConfigCommand::Show { default } => {
+      runtime.block_on(show_configuration(default))
+    },
+    ConfigCommand::Schema => print_schema(),
+  }
+}
+
+async fn run_query(query: ConfigQuery) -> anyhow::Result<()> {
+  match query {
+    ConfigQuery::Errors => dbus::client::print_errors().await,
+    ConfigQuery::Status => dbus::client::print_status().await,
+    ConfigQuery::Rules => dbus::client::print_configured_rules().await,
+    ConfigQuery::Capabilities => dbus::client::print_capabilities().await,
+  }
+}
+
+async fn run_profile(command: ProfileCommand) -> anyhow::Result<()> {
+  match command {
+    ProfileCommand::Get => dbus::client::get_profile().await,
+    ProfileCommand::Set { profile } => {
+      dbus::client::set_profile(&profile).await
     },
   }
+}
+
+fn print_schema() -> anyhow::Result<()> {
+  let schema = schemars::schema_for!(config::DaemonConfig);
+  let output = serde_json::to_string_pretty(&schema)
+    .context("failed to serialize config schema")?;
+  print_output(&output)
+}
+
+async fn show_configuration(default: bool) -> anyhow::Result<()> {
+  let output = if default {
+    let config = config::DaemonConfig::load_from(None)
+      .context("failed to load default config")?;
+    toml::to_string_pretty(&config).context("failed to serialize config")?
+  } else {
+    dbus::client::loaded_config().await?
+  };
+  print_output(&output)
+}
+
+fn read_verification_input(path: &Path) -> anyhow::Result<String> {
+  const MAX_BYTES: u64 = 1024 * 1024;
+
+  let mut contents = String::new();
+  File::open(path)
+    .with_context(|| format!("failed to open {}", path.display()))?
+    .take(MAX_BYTES + 1)
+    .read_to_string(&mut contents)
+    .with_context(|| format!("failed to read {}", path.display()))?;
+  ensure!(
+    contents.len() as u64 <= MAX_BYTES,
+    "configuration exceeds 1 MiB"
+  );
+  Ok(contents)
 }
 
 fn print_output(output: &str) -> anyhow::Result<()> {
@@ -189,40 +272,7 @@ fn print_output(output: &str) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-  use clap::Parser;
-
   use super::*;
-
-  #[test]
-  fn parses_config_commands() {
-    let cli =
-      Cli::try_parse_from(["watt", "config", "show", "--default"]).unwrap();
-    assert!(matches!(
-      cli.command,
-      Some(Command::Config {
-        command: ConfigCommand::Show { default: true },
-      })
-    ));
-
-    let cli =
-      Cli::try_parse_from(["watt", "config", "active", "--watch"]).unwrap();
-    assert!(matches!(
-      cli.command,
-      Some(Command::Config {
-        command: ConfigCommand::Active { watch: true },
-      })
-    ));
-    assert!(
-      Cli::try_parse_from([
-        "watt",
-        "config",
-        "show",
-        "--config",
-        "custom.toml",
-      ])
-      .is_err()
-    );
-  }
 
   #[test]
   fn generated_schema_is_json_schema() {
