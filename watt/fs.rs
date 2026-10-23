@@ -447,6 +447,14 @@ pub fn applied_settings() -> Vec<AppliedSetting> {
   })
 }
 
+/// Whether Watt manages the path or a rule requested it this iteration.
+pub(crate) fn is_managed(input: impl AsRef<Path>) -> bool {
+  let path = path(input);
+  with_managed_settings(|settings| {
+    settings.settings.contains_key(&path) || settings.rules.contains_key(&path)
+  })
+}
+
 pub fn manage_settings() -> SettingsGuard {
   SettingsGuard
 }

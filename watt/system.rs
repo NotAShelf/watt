@@ -1224,16 +1224,26 @@ fn detect_performance_degradation(
   if !failures.errors.is_empty() {
     return Some("policy-error".to_owned());
   }
-  thermal_threshold
-    .filter(|threshold| {
-      system
-        .cpu_temperatures
-        .values()
-        .copied()
-        .max_by(f64::total_cmp)
-        .is_some_and(|temperature| temperature >= f64::from(*threshold))
+  let hot = thermal_threshold.is_some_and(|threshold| {
+    system
+      .cpu_temperatures
+      .values()
+      .copied()
+      .max_by(f64::total_cmp)
+      .is_some_and(|temperature| temperature >= f64::from(threshold))
+  });
+  if hot {
+    return Some("high-operating-temperature".to_owned());
+  }
+  turbo_restricted_externally(system).then(|| "turbo-disabled".to_owned())
+}
+
+fn turbo_restricted_externally(system: &System) -> bool {
+  cpu::Cpu::boost_capabilities(system.cpus.iter().map(AsRef::as_ref))
+    .is_some_and(|boost| {
+      !boost.paths.iter().all(fs::is_managed)
+        && boost.read().is_ok_and(|enabled| !enabled)
     })
-    .map(|_| "high-operating-temperature".to_owned())
 }
 
 async fn wait_for_shutdown() -> anyhow::Result<()> {
@@ -2132,6 +2142,7 @@ mod tests {
 
   #[test]
   fn thermal_threshold_reports_only_hot_systems() {
+    let _fixture = SystemFixture::new();
     let mut system = System::default();
     let failures = RuntimeFailures::default();
     assert_eq!(
@@ -2143,6 +2154,43 @@ mod tests {
       detect_performance_degradation(&system, &failures, Some(90)).as_deref(),
       Some("high-operating-temperature")
     );
+  }
+
+  #[test]
+  fn only_external_turbo_restriction_degrades_performance() {
+    let fixture = SystemFixture::new();
+    let no_turbo = "/sys/devices/system/cpu/intel_pstate/no_turbo";
+    fixture.write(no_turbo, "0");
+    let system = System::default();
+    let _settings = fs::manage_settings();
+    let mut failures = RuntimeFailures::default();
+    let mut dma_latency = cpu::DmaLatency::default();
+    for (turbo, external, value, expected) in [
+      (Some(false), None, "1", None),
+      (None, None, "0", None),
+      (None, Some("1"), "1", Some("turbo-disabled")),
+      (None, Some("0"), "0", None),
+    ] {
+      if let Some(external) = external {
+        fixture.write(no_turbo, external);
+      }
+      failures.begin_iteration();
+      let now = Instant::now();
+      let eval = system.eval_state(now, now, PowerProfile::Performance, true);
+      let mut actions = config::EvaluatedRule::empty(&eval);
+      actions.cpu_global.turbo = turbo;
+      apply_actions(actions, &mut failures, &mut dma_latency);
+      failures.finish_iteration();
+      assert!(failures.errors.is_empty());
+      assert_eq!(
+        stdfs::read_to_string(fixture.path(no_turbo)).unwrap(),
+        value
+      );
+      assert_eq!(
+        detect_performance_degradation(&system, &failures, None).as_deref(),
+        expected,
+      );
+    }
   }
 
   #[tokio::test]
