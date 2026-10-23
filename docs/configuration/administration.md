@@ -168,7 +168,9 @@ one request at a time. Oversized or concurrent requests fail with
 queue is full.
 
 `PerformanceDegraded` reports `policy-error` while the performance profile is
-active and runtime operations are failing. The `DegradedConditions` property
+active and runtime operations are failing. It reports `turbo-disabled` when CPU
+boost is disabled by something other than Watt, such as firmware or another
+tool; boost disabled by Watt's own rules is not reported. The `DegradedConditions` property
 lists current failures in any profile, as dictionaries with `context` and
 `message`. Entries disappear once the operation succeeds or is no longer
 requested.

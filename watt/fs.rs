@@ -504,6 +504,12 @@ pub fn applied_settings() -> Vec<AppliedSetting> {
   })
 }
 
+/// Whether Watt owns a previously applied setting at this path.
+pub(crate) fn is_managed(input: impl AsRef<Path>) -> bool {
+  let path = path(input);
+  with_managed_settings(|settings| settings.settings.contains_key(&path))
+}
+
 pub fn manage_settings() -> SettingsGuard {
   SettingsGuard
 }
