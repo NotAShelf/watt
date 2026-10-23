@@ -266,18 +266,20 @@ impl ProfileState {
   }
 
   pub fn release_hold(&mut self, cookie: u32) -> anyhow::Result<()> {
-    self.release_hold_for(cookie, "").map_err(Into::into)
+    self.release_hold_for(cookie, Some("")).map_err(Into::into)
   }
 
+  /// Releases the hold if it belongs to `owner`, or regardless of its owner
+  /// when `owner` is `None`.
   pub fn release_hold_for(
     &mut self,
     cookie: u32,
-    owner: &str,
+    owner: Option<&str>,
   ) -> Result<(), ReleaseHoldError> {
     if self
       .holds
       .get(&cookie)
-      .is_some_and(|hold| hold.owner != owner)
+      .is_some_and(|hold| owner.is_some_and(|owner| hold.owner != owner))
     {
       return Err(ReleaseHoldError::NotOwner);
     }
@@ -408,11 +410,11 @@ mod tests {
       "app".into(),
       ":1.10".into(),
     );
-    assert!(state.release_hold_for(cookie, ":1.11").is_err());
-    assert!(state.release_hold_for(cookie, "").is_err());
+    assert!(state.release_hold_for(cookie, Some(":1.11")).is_err());
+    assert!(state.release_hold_for(cookie, Some("")).is_err());
     assert!(state.release_hold(cookie).is_err());
     assert_eq!(state.get_holds().len(), 1);
-    state.release_hold_for(cookie, ":1.10").unwrap();
+    state.release_hold_for(cookie, Some(":1.10")).unwrap();
     assert!(state.get_holds().is_empty());
 
     state.add_hold_for(

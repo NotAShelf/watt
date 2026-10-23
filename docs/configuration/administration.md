@@ -95,9 +95,12 @@ feature is enabled.
 
 Reloading and changing or holding a profile are authorized through the polkit
 actions `dev.notashelf.watt.reload`, `dev.notashelf.watt.set-profile` and
-`dev.notashelf.watt.hold-profile`. If polkit is unavailable or denies the
-request, the operation fails with an access-denied error. Authentication prompts
-are only shown when the caller sets the D-Bus `AllowInteractiveAuth` flag.
+`dev.notashelf.watt.hold-profile`. A client can always release its own profile
+hold. Releasing a hold that belongs to another client requires
+`dev.notashelf.watt.release-any-profile-hold`, which defaults to administrator
+authentication. If polkit is unavailable or denies the request, the operation
+fails with an access-denied error. Authentication prompts are only shown when
+the caller sets the D-Bus `AllowInteractiveAuth` flag.
 
 ## Scripting Output
 

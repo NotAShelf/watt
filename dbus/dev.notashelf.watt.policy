@@ -21,6 +21,15 @@
       <allow_active>yes</allow_active>
     </defaults>
   </action>
+  <action id="dev.notashelf.watt.release-any-profile-hold">
+    <description>Release another client's power profile hold</description>
+    <message>Authentication is required to release another client's power profile hold</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+  </action>
   <action id="dev.notashelf.watt.reload">
     <description>Reload the Watt configuration</description>
     <message>Authentication is required to reload the Watt configuration</message>

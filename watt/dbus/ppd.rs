@@ -237,21 +237,38 @@ impl PowerProfilesInterface {
     let owner = header
       .sender()
       .ok_or_else(|| fdo::Error::AccessDenied("missing D-Bus sender".into()))?;
-    self
+    let released = self
       .state
       .write()
       .await
-      .release_profile_hold_for(cookie, owner.as_str())
-      .map_err(|error| {
-        match error {
-          ReleaseHoldError::NotOwner => {
-            fdo::Error::AccessDenied(error.to_string())
-          },
-          ReleaseHoldError::NotFound(_) => {
-            fdo::Error::InvalidArgs(error.to_string())
-          },
-        }
-      })?;
+      .release_profile_hold_for(cookie, Some(owner.as_str()));
+    match released {
+      Err(ReleaseHoldError::NotOwner) => {
+        authorize(
+          signal_emitter.connection(),
+          &header,
+          "dev.notashelf.watt.release-any-profile-hold",
+        )
+        .await
+        .map_err(|error| fdo::Error::AccessDenied(error.to_string()))?;
+        self
+          .state
+          .write()
+          .await
+          .release_profile_hold_for(cookie, None)
+      },
+      released => released,
+    }
+    .map_err(|error| {
+      match error {
+        ReleaseHoldError::NotOwner => {
+          fdo::Error::AccessDenied(error.to_string())
+        },
+        ReleaseHoldError::NotFound(_) => {
+          fdo::Error::InvalidArgs(error.to_string())
+        },
+      }
+    })?;
 
     log::info!("D-Bus profile hold released, cookie={cookie}");
 
@@ -335,11 +352,16 @@ mod tests {
     fn check_authorization(
       &self,
       _subject: (String, HashMap<String, OwnedValue>),
-      _action: &str,
+      action: &str,
       _details: HashMap<String, String>,
       _flags: u32,
       _cancellation_id: &str,
     ) -> AuthorizationResult {
+      assert!(
+        include_str!("../../dbus/dev.notashelf.watt.policy")
+          .contains(&format!("\"{action}\"")),
+        "{action} is not declared in the polkit policy"
+      );
       AuthorizationResult {
         authorized: self.0.load(Ordering::SeqCst),
         challenge:  false,
@@ -438,6 +460,7 @@ mod tests {
         state.read().await.active_profile(),
         PowerProfile::PowerSaver
       );
+      allowed.store(false, Ordering::SeqCst);
       let denied = other_proxy
         .call::<_, _, ()>("ReleaseProfile", &(cookie,))
         .await
@@ -464,12 +487,28 @@ mod tests {
         fdo::Error::from(missing).name().as_str(),
         "org.freedesktop.DBus.Error.InvalidArgs"
       );
+      allowed.store(true, Ordering::SeqCst);
+      let mut released =
+        owner_proxy.receive_signal("ProfileReleased").await.unwrap();
       let cookie: u32 = owner_proxy
         .call("HoldProfile", &("power-saver", "battery", "test"))
         .await
         .unwrap();
-      let mut released =
-        owner_proxy.receive_signal("ProfileReleased").await.unwrap();
+      other_proxy
+        .call::<_, _, ()>("ReleaseProfile", &(cookie,))
+        .await
+        .unwrap();
+      let message = released.next().await.unwrap();
+      assert_eq!(message.body().deserialize::<(u32,)>().unwrap(), (cookie,));
+      assert!(state.read().await.profile_holds().is_empty());
+      assert_eq!(
+        state.read().await.active_profile(),
+        PowerProfile::Performance
+      );
+      let cookie: u32 = owner_proxy
+        .call("HoldProfile", &("power-saver", "battery", "test"))
+        .await
+        .unwrap();
       owner_proxy
         .set_property("ActiveProfile", "balanced")
         .await
