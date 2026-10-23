@@ -1298,7 +1298,7 @@ pub struct DaemonState {
 }
 
 impl DaemonState {
-  fn new(config: String, rule_count: usize) -> Self {
+  pub(crate) fn new(config: String, rule_count: usize) -> Self {
     Self {
       config,
       system: System::default(),
@@ -1340,8 +1340,11 @@ impl DaemonState {
     self.profile.get_effective_profile()
   }
 
-  pub fn set_active_profile(&mut self, profile: profile::PowerProfile) {
-    self.profile.set_preference(profile);
+  pub fn set_active_profile(
+    &mut self,
+    profile: profile::PowerProfile,
+  ) -> Vec<u32> {
+    self.profile.set_preference(profile)
   }
 
   pub fn profile_holds(&self) -> Vec<profile::ProfileHold> {
@@ -1357,8 +1360,36 @@ impl DaemonState {
     self.profile.add_hold(profile, reason, application_id)
   }
 
+  pub fn add_profile_hold_for(
+    &mut self,
+    profile: profile::PowerProfile,
+    reason: String,
+    application_id: String,
+    owner: String,
+  ) -> u32 {
+    self
+      .profile
+      .add_hold_for(profile, reason, application_id, owner)
+  }
+
   pub fn release_profile_hold(&mut self, cookie: u32) -> anyhow::Result<()> {
     self.profile.release_hold(cookie)
+  }
+
+  pub fn release_profile_hold_for(
+    &mut self,
+    cookie: u32,
+    owner: &str,
+  ) -> Result<(), profile::ReleaseHoldError> {
+    self.profile.release_hold_for(cookie, owner)
+  }
+
+  pub fn release_profile_owner(&mut self, owner: &str) -> Vec<u32> {
+    self.profile.release_owner(owner)
+  }
+
+  pub fn release_bus_holds(&mut self) {
+    self.profile.release_bus_holds();
   }
 
   pub fn rule_count(&self) -> usize {
