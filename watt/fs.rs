@@ -423,6 +423,17 @@ fn record_observation(
   });
 }
 
+/// The value last written to a managed path and the readback it produced.
+pub(crate) fn last_readback(
+  input: impl AsRef<Path>,
+) -> Option<(String, String)> {
+  let path = path(input);
+  with_managed_settings(|settings| {
+    let setting = settings.settings.get(&path)?;
+    Some((setting.last_written.clone(), setting.observed.clone()?))
+  })
+}
+
 pub fn keep_setting(input: impl AsRef<Path>, observed: impl Into<String>) {
   let path = path(input);
   let observed = observed.into();

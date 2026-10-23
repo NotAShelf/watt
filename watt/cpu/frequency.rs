@@ -7,6 +7,7 @@ use anyhow::{
   Context,
   bail,
 };
+use log::Level;
 
 use super::Cpu;
 use crate::fs;
@@ -231,17 +232,26 @@ impl Cpu {
       return Ok(());
     }
 
-    fs::write(&path, &frequency.as_khz().to_string())
+    let requested = frequency.as_khz().to_string();
+    let previous = fs::last_readback(&path);
+    fs::write(&path, &requested)
       .with_context(|| format!("failed to set {name} for {self}"))?;
     let observed = self.read_frequency(name)?;
-    fs::observe(path, observed.as_khz().to_string());
-    if observed != frequency {
-      log::warn!(
+    let readback = observed.as_khz().to_string();
+    if observed == frequency {
+      log::info!("{self} {name} set to {frequency}");
+    } else {
+      let level = if previous == Some((requested, readback.clone())) {
+        Level::Debug
+      } else {
+        Level::Warn
+      };
+      log::log!(
+        level,
         "{self} {name} requested {frequency}, kernel applied {observed}",
       );
-    } else {
-      log::info!("{self} {name} set to {frequency}");
     }
+    fs::observe(path, readback);
 
     Ok(())
   }
