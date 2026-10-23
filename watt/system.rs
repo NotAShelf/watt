@@ -110,8 +110,7 @@ impl RuntimeFailures {
     const MAX_FAILURES: usize = 32;
 
     let context = context.into();
-    let message = error.to_string();
-    let key = format!("{context}: {message}");
+    let key = format!("{context}: {error:#}");
     self.seen.insert(key.clone());
 
     if let Some(failure) = self.errors.get_mut(&key) {
