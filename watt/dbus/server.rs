@@ -9,7 +9,10 @@ use tokio::{
     RwLock,
     watch,
   },
-  time::sleep,
+  time::{
+    interval,
+    sleep,
+  },
 };
 use zbus::{
   Connection,
@@ -26,7 +29,10 @@ use crate::{
     ppd::PowerProfilesInterface,
     watt::WattInterface,
   },
-  system::DaemonState,
+  system::{
+    DaemonState,
+    DegradedCondition,
+  },
 };
 
 pub async fn start(
@@ -67,7 +73,7 @@ async fn try_start(
   run_connection(connection, state, applied_rules).await
 }
 
-async fn run_connection(
+pub(crate) async fn run_connection(
   connection: Connection,
   state: Arc<RwLock<DaemonState>>,
   applied_rules: watch::Receiver<Vec<String>>,
@@ -75,7 +81,8 @@ async fn run_connection(
   let result = async {
     let owner_changes = serve(&connection, state.clone()).await?;
     log::info!("D-Bus server started");
-    monitor(&connection, state.clone(), applied_rules, owner_changes).await
+    let emitter = SignalEmitter::new(&connection, "/dev/notashelf/Watt")?;
+    monitor(emitter, state.clone(), applied_rules, owner_changes).await
   }
   .await;
   // Close before clearing holds so pending requests fail their liveness check.
@@ -144,15 +151,63 @@ async fn owner_changed(
   Ok(())
 }
 
+struct StatusSnapshot {
+  error_count:          usize,
+  latest_error:         Option<String>,
+  performance_degraded: Option<String>,
+  conditions:           Vec<DegradedCondition>,
+}
+
+impl StatusSnapshot {
+  fn new(state: &DaemonState) -> Self {
+    Self {
+      error_count:          state.error_count(),
+      latest_error:         state.latest_error().map(str::to_owned),
+      performance_degraded: state.performance_degraded().map(str::to_owned),
+      conditions:           state.degraded_conditions().to_vec(),
+    }
+  }
+
+  async fn notify_changes(
+    &mut self,
+    state: &Arc<RwLock<DaemonState>>,
+    emitter: &SignalEmitter<'_>,
+  ) -> zbus::Result<()> {
+    let current = Self::new(&*state.read().await);
+    let watt = WattInterface::new(state.clone());
+    if current.error_count != self.error_count {
+      watt.error_count_changed(emitter).await?;
+    }
+    if current.latest_error != self.latest_error {
+      watt.latest_error_changed(emitter).await?;
+    }
+    if current.performance_degraded != self.performance_degraded {
+      watt.performance_degraded_changed(emitter).await?;
+      let ppd_emitter =
+        SignalEmitter::new(emitter.connection(), "/net/hadess/PowerProfiles")?;
+      PowerProfilesInterface::new(state.clone())
+        .performance_degraded_changed(&ppd_emitter)
+        .await?;
+    }
+    if current.conditions != self.conditions {
+      watt.degraded_conditions_changed(emitter).await?;
+    }
+    *self = current;
+    Ok(())
+  }
+}
+
 async fn monitor(
-  connection: &Connection,
+  emitter: SignalEmitter<'_>,
   state: Arc<RwLock<DaemonState>>,
   mut applied_rules: watch::Receiver<Vec<String>>,
   mut owner_changes: MessageStream,
 ) -> zbus::Result<()> {
-  let emitter = SignalEmitter::new(connection, "/dev/notashelf/Watt")?;
+  let mut ticker = interval(Duration::from_secs(1));
+  let mut previous = StatusSnapshot::new(&*state.read().await);
   loop {
     tokio::select! {
+      _ = ticker.tick() => previous.notify_changes(&state, &emitter).await?,
       changed = applied_rules.changed() => {
         changed.map_err(|_| {
           zbus::Error::Failure("applied rules notification channel closed".into())
@@ -164,7 +219,7 @@ async fn monitor(
         let message = message.ok_or_else(|| {
           zbus::Error::Failure("D-Bus owner notification stream closed".into())
         })??;
-        owner_changed(connection, &state, message).await?;
+        owner_changed(emitter.connection(), &state, message).await?;
       },
     }
   }
@@ -300,7 +355,9 @@ mod tests {
       let (_updates, applied_rules) = watch::channel(Vec::new());
       let monitor_state = state.clone();
       let task = tokio::spawn(async move {
-        monitor(&connection, monitor_state, applied_rules, owner_changes).await
+        let emitter =
+          SignalEmitter::new(&connection, "/dev/notashelf/Watt").unwrap();
+        monitor(emitter, monitor_state, applied_rules, owner_changes).await
       });
       owner.close().await.unwrap();
       let mut notified = HashSet::new();

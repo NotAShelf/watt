@@ -4,4 +4,4 @@ pub mod ppd;
 pub mod server;
 pub mod watt;
 
-#[cfg(test)] mod test_support;
+#[cfg(test)] pub(crate) mod test_support;

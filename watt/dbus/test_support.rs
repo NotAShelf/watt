@@ -21,7 +21,7 @@ pub(super) struct AuthorizationResult {
   pub details:    HashMap<String, String>,
 }
 
-pub(super) struct TestBus {
+pub(crate) struct TestBus {
   child:       Child,
   pub address: String,
   _runtime:    tempfile::TempDir,
