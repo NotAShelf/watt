@@ -38,6 +38,9 @@ toml                  = "1.1.3"
 yansi                 = { features = [ "detect-env", "detect-tty" ], version = "1.0.1" }
 zbus                  = { default-features = false, features = [ "tokio" ], version = "5.18.0" }
 
+[workspace.lints.clippy]
+absolute_paths = "deny"
+
 [profile.release]
 codegen-units = 1
 lto           = true

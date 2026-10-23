@@ -1,4 +1,7 @@
-use std::fmt;
+use std::{
+  fmt,
+  path::Path,
+};
 
 use anyhow::{
   Context,
@@ -242,9 +245,7 @@ impl Cpu {
   }
 }
 
-fn read(
-  path: impl AsRef<std::path::Path>,
-) -> anyhow::Result<Option<Frequency>> {
+fn read(path: impl AsRef<Path>) -> anyhow::Result<Option<Frequency>> {
   fs::read_n::<u64>(path)?
     .map(Frequency::from_khz)
     .transpose()

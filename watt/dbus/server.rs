@@ -3,16 +3,25 @@ use std::{
   time::Duration,
 };
 
-use tokio::sync::{
-  RwLock,
-  watch,
+use tokio::{
+  sync::{
+    RwLock,
+    watch,
+  },
+  time::sleep,
 };
 use zbus::{
   connection,
   object_server::SignalEmitter,
 };
 
-use crate::system::DaemonState;
+use crate::{
+  dbus::{
+    ppd::PowerProfilesInterface,
+    watt::WattInterface,
+  },
+  system::DaemonState,
+};
 
 pub async fn start(
   state: Arc<RwLock<DaemonState>>,
@@ -38,7 +47,7 @@ pub async fn start(
           "retrying D-Bus in {delay_secs}s",
           delay_secs = delay.as_secs()
         );
-        tokio::time::sleep(delay).await;
+        sleep(delay).await;
       },
     }
   }
@@ -48,8 +57,8 @@ async fn try_start(
   state: Arc<RwLock<DaemonState>>,
   mut applied_rules: watch::Receiver<Vec<String>>,
 ) -> zbus::Result<()> {
-  let ppd = crate::dbus::ppd::PowerProfilesInterface::new(state.clone());
-  let watt = crate::dbus::watt::WattInterface::new(state);
+  let ppd = PowerProfilesInterface::new(state.clone());
+  let watt = WattInterface::new(state);
 
   let connection = connection::Builder::system()?
     .name("net.hadess.PowerProfiles")?
@@ -68,6 +77,6 @@ async fn try_start(
       zbus::Error::Failure("applied rules notification channel closed".into())
     })?;
     applied_rules.borrow_and_update();
-    crate::dbus::watt::WattInterface::applied_rules_changed(&emitter).await?;
+    WattInterface::applied_rules_changed(&emitter).await?;
   }
 }

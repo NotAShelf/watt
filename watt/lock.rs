@@ -19,6 +19,7 @@ use std::{
   process,
 };
 
+use nix::errno::Errno;
 #[cfg(unix)] use nix::fcntl::{
   Flock,
   FlockArg,
@@ -135,7 +136,7 @@ impl LockFile {
 
     let mut lock = Flock::lock(file, FlockArg::LockExclusiveNonblock).map_err(
       |(_, error)| {
-        let message = if error == nix::errno::Errno::EWOULDBLOCK {
+        let message = if error == Errno::EWOULDBLOCK {
           Some(lock_contention_message(lock_path))
         } else {
           log::error!("failed to acquire lock: {error}");

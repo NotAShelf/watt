@@ -1,7 +1,10 @@
 use std::{
   fmt,
   hash,
-  path::PathBuf,
+  path::{
+    Path,
+    PathBuf,
+  },
   process::Command,
 };
 
@@ -132,7 +135,7 @@ pub fn set_alpm(policy: &str) -> anyhow::Result<()> {
   Ok(())
 }
 
-fn is_external_sata_port(host_path: &std::path::Path) -> anyhow::Result<bool> {
+fn is_external_sata_port(host_path: &Path) -> anyhow::Result<bool> {
   let Some(value) = fs::read(host_path.join("ahci_port_cmd"))? else {
     return Ok(false);
   };

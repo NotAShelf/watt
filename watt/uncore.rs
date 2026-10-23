@@ -1,7 +1,10 @@
 use std::{
   fmt,
   hash,
-  path::PathBuf,
+  path::{
+    Path,
+    PathBuf,
+  },
 };
 
 use anyhow::{
@@ -122,7 +125,7 @@ impl Uncore {
   }
 }
 
-fn read_required(path: &std::path::Path, file: &str) -> anyhow::Result<u64> {
+fn read_required(path: &Path, file: &str) -> anyhow::Result<u64> {
   fs::read_n::<u64>(path.join(file))?
     .with_context(|| format!("missing uncore frequency file '{file}'"))
 }

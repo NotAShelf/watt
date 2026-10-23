@@ -52,7 +52,7 @@ fn default_frequency_rule_uses_each_cpu_hardware_range() {
     battery_cycles:              None,
     battery_health:              None,
     discharging:                 false,
-    power_profile_preference:    crate::profile::PowerProfile::Balanced,
+    power_profile_preference:    PowerProfile::Balanced,
     context:                     EvalContext::WidestPossible,
     cpus:                        &cpus,
     uncores:                     &uncores,
