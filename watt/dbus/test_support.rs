@@ -1,9 +1,11 @@
 use std::{
   collections::HashMap,
+  fs,
   io::{
     BufRead as _,
     BufReader,
   },
+  path::Path,
   process::{
     Child,
     Command,
@@ -21,6 +23,23 @@ pub(super) struct AuthorizationResult {
   pub details:    HashMap<String, String>,
 }
 
+fn bus_config(runtime: &Path) -> String {
+  format!(
+    r#"<busconfig>
+  <type>session</type>
+  <listen>unix:dir={}</listen>
+  <auth>EXTERNAL</auth>
+  <policy context="default">
+    <allow send_destination="*" eavesdrop="true"/>
+    <allow eavesdrop="true"/>
+    <allow own="*"/>
+  </policy>
+</busconfig>
+"#,
+    runtime.display()
+  )
+}
+
 pub(crate) struct TestBus {
   child:       Child,
   pub address: String,
@@ -30,9 +49,11 @@ pub(crate) struct TestBus {
 impl TestBus {
   pub fn new() -> Self {
     let runtime = tempfile::tempdir().unwrap();
+    let config = runtime.path().join("bus.conf");
+    fs::write(&config, bus_config(runtime.path())).unwrap();
     let child = Command::new("dbus-daemon")
-      .args(["--session", "--nofork", "--print-address=1"])
-      .env("XDG_RUNTIME_DIR", runtime.path())
+      .args(["--nofork", "--print-address=1"])
+      .arg(format!("--config-file={}", config.display()))
       .stdout(Stdio::piped())
       .spawn()
       .expect("dbus-daemon is required for D-Bus tests");
