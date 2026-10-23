@@ -63,19 +63,12 @@ impl Delta {
       );
     }
 
-    if let Some(value) = &self.transparent_hugepages
-      && !matches!(&**value, "always" | "madvise" | "never")
-    {
-      bail!("invalid `vm.transparent-hugepages`: {value}");
+    if let Some(value) = &self.transparent_hugepages {
+      validate_hugepage_mode(value)?;
     }
 
-    if let Some(value) = &self.transparent_hugepage_defrag
-      && !matches!(
-        &**value,
-        "always" | "defer" | "defer+madvise" | "madvise" | "never"
-      )
-    {
-      bail!("invalid `vm.transparent-hugepage-defrag`: {value}");
+    if let Some(value) = &self.transparent_hugepage_defrag {
+      validate_hugepage_defrag(value)?;
     }
 
     Ok(())
@@ -106,6 +99,23 @@ impl Delta {
 
     Ok(())
   }
+}
+
+pub(crate) fn validate_hugepage_mode(value: &str) -> anyhow::Result<()> {
+  if !matches!(value, "always" | "madvise" | "never") {
+    bail!("invalid `vm.transparent-hugepages`: {value}");
+  }
+  Ok(())
+}
+
+pub(crate) fn validate_hugepage_defrag(value: &str) -> anyhow::Result<()> {
+  if !matches!(
+    value,
+    "always" | "defer" | "defer+madvise" | "madvise" | "never"
+  ) {
+    bail!("invalid `vm.transparent-hugepage-defrag`: {value}");
+  }
+  Ok(())
 }
 
 fn write_proc_sys_vm(name: &str, value: impl Display) -> anyhow::Result<()> {

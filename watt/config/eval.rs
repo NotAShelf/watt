@@ -1,5 +1,3 @@
-use std::cmp::Ordering;
-
 use anyhow::{
   Context as _,
   bail,
@@ -19,14 +17,207 @@ use crate::{
   system::CpuLog,
 };
 
+pub(super) enum Evaluated<T> {
+  Value(T),
+  Unset,
+  Unknown,
+}
+
+pub(super) type Evaluation<T> = anyhow::Result<Evaluated<T>>;
+
+// Runtime evaluation builds the returned Expression directly; constant
+// analysis borrows strings and stops at host-dependent leaves.
+pub(super) trait Evaluator<'a> {
+  type Value;
+
+  fn eval(&mut self, expression: &'a Expression) -> Evaluation<Self::Value>;
+  fn leaf(&mut self, expression: &'a Expression) -> Evaluation<Self::Value>;
+  fn boolean(value: bool) -> Self::Value;
+  fn number(value: f64) -> Self::Value;
+  fn list(values: Vec<Self::Value>) -> Self::Value;
+  fn into_boolean(value: Self::Value) -> anyhow::Result<bool>;
+  fn into_number(value: Self::Value) -> anyhow::Result<f64>;
+  fn empty_extrema(name: &str) -> Evaluation<Self::Value>;
+
+  fn list_fits(&self, _len: usize) -> bool {
+    true
+  }
+}
+
+macro_rules! value {
+  ($evaluation:expr) => {
+    match $evaluation? {
+      Evaluated::Value(value) => value,
+      Evaluated::Unset => return Ok(Evaluated::Unset),
+      Evaluated::Unknown => return Ok(Evaluated::Unknown),
+    }
+  };
+}
+
+pub(super) fn evaluate<'a, E: Evaluator<'a>>(
+  expression: &'a Expression,
+  evaluator: &mut E,
+) -> Evaluation<E::Value> {
+  use Expression::*;
+
+  macro_rules! number {
+    ($operand:expr) => {
+      E::into_number(value!(evaluator.eval($operand)))?
+    };
+  }
+
+  let result = match expression {
+    List(items) => {
+      if !evaluator.list_fits(items.len()) {
+        return Ok(Evaluated::Unknown);
+      }
+      let mut result = Vec::with_capacity(items.len());
+      for item in items {
+        result.push(value!(evaluator.eval(item)));
+      }
+      E::list(result)
+    },
+    Plus { a, b } => E::number(finite(number!(a) + number!(b))?),
+    Minus { a, b } => E::number(finite(number!(a) - number!(b))?),
+    Multiply { a, b } => E::number(finite(number!(a) * number!(b))?),
+    Divide { a, b } => E::number(finite(number!(a) / number!(b))?),
+    Power { a, b } => E::number(finite(number!(a).powf(number!(b)))?),
+    LessThan { a, b } => E::boolean(number!(a) < number!(b)),
+    MoreThan { a, b } => E::boolean(number!(a) > number!(b)),
+    Equal { a, b, leeway } => {
+      let a = number!(a);
+      let b = number!(b);
+      let leeway = number!(leeway);
+      E::boolean(a - leeway < b && b < a + leeway)
+    },
+    Minimum { numbers } | Maximum { numbers } => {
+      let minimum = matches!(expression, Minimum { .. });
+      let Some((first, rest)) = numbers.split_first() else {
+        return E::empty_extrema(if minimum { "minimum" } else { "maximum" });
+      };
+      let mut extreme = number!(first);
+      for operand in rest {
+        let number = number!(operand);
+        let order = number.total_cmp(&extreme);
+        let replaces_extreme = if minimum {
+          order.is_lt()
+        } else {
+          order.is_gt()
+        };
+        if replaces_extreme {
+          extreme = number;
+        }
+      }
+      E::number(extreme)
+    },
+    IsUnset { a } => {
+      match evaluator.eval(a)? {
+        Evaluated::Value(_) => E::boolean(false),
+        Evaluated::Unset => E::boolean(true),
+        Evaluated::Unknown => return Ok(Evaluated::Unknown),
+      }
+    },
+    IfElse {
+      condition,
+      consequence,
+      alternative,
+    } => {
+      return if E::into_boolean(value!(evaluator.eval(condition)))? {
+        evaluator.eval(consequence)
+      } else if let Some(alternative) = alternative {
+        evaluator.eval(alternative)
+      } else {
+        Ok(Evaluated::Unset)
+      };
+    },
+    And { a, b } => return logic(evaluator, [a.as_ref(), b.as_ref()], false),
+    Or { a, b } => return logic(evaluator, [a.as_ref(), b.as_ref()], true),
+    All { all } => return logic(evaluator, all, false),
+    Any { any } => return logic(evaluator, any, true),
+    Not { not } => E::boolean(!E::into_boolean(value!(evaluator.eval(not)))?),
+    _ => return evaluator.leaf(expression),
+  };
+  Ok(Evaluated::Value(result))
+}
+
+fn finite(result: f64) -> anyhow::Result<f64> {
+  if !result.is_finite() {
+    bail!("arithmetic expression produced a non-finite number");
+  }
+  Ok(result)
+}
+
+fn logic<'a, E: Evaluator<'a>>(
+  evaluator: &mut E,
+  operands: impl IntoIterator<Item = &'a Expression>,
+  decisive: bool,
+) -> Evaluation<E::Value> {
+  for operand in operands {
+    if E::into_boolean(value!(evaluator.eval(operand)))? == decisive {
+      return Ok(Evaluated::Value(E::boolean(decisive)));
+    }
+  }
+  Ok(Evaluated::Value(E::boolean(!decisive)))
+}
+
+impl<'a> Evaluator<'a> for &EvalState<'_, '_> {
+  type Value = Expression;
+
+  fn eval(&mut self, expression: &'a Expression) -> Evaluation<Expression> {
+    log::trace!("evaluating expression: {expression:?}");
+    evaluate(expression, self)
+  }
+
+  fn leaf(&mut self, expression: &'a Expression) -> Evaluation<Expression> {
+    Ok(match expression.eval_leaf(self)? {
+      Some(value) => Evaluated::Value(value),
+      None => Evaluated::Unset,
+    })
+  }
+
+  fn boolean(value: bool) -> Expression {
+    Expression::Boolean(value)
+  }
+
+  fn number(value: f64) -> Expression {
+    Expression::Number(value)
+  }
+
+  fn list(values: Vec<Expression>) -> Expression {
+    Expression::List(values)
+  }
+
+  fn into_boolean(value: Expression) -> anyhow::Result<bool> {
+    value.try_into_boolean()
+  }
+
+  fn into_number(value: Expression) -> anyhow::Result<f64> {
+    value.try_into_number()
+  }
+
+  fn empty_extrema(name: &str) -> Evaluation<Expression> {
+    bail!("{name} must be given at least 1 expression");
+  }
+}
+
 impl Expression {
   pub fn eval(
     &self,
     state: &EvalState<'_, '_>,
   ) -> anyhow::Result<Option<Self>> {
-    use Expression::*;
+    let mut evaluator = state;
+    match Evaluator::eval(&mut evaluator, self)? {
+      Evaluated::Value(value) => Ok(Some(value)),
+      Evaluated::Unset => Ok(None),
+      Evaluated::Unknown => unreachable!("runtime evaluation is concrete"),
+    }
+  }
 
-    log::trace!("evaluating expression: {self:?}");
+  fn eval_leaf(
+    &self,
+    state: &EvalState<'_, '_>,
+  ) -> anyhow::Result<Option<Self>> {
+    use Expression::*;
 
     macro_rules! try_ok {
       ($expression:expr) => {
@@ -236,149 +427,8 @@ impl Expression {
 
       literal @ (Boolean(_) | Number(_) | String(_)) => literal.clone(),
 
-      List(items) => {
-        let mut result = Vec::with_capacity(items.len());
-
-        for item in items {
-          result.push(eval!(item));
-        }
-
-        List(result)
-      },
-
-      Plus { a, b }
-      | Minus { a, b }
-      | Multiply { a, b }
-      | Power { a, b }
-      | Divide { a, b } => {
-        let a = eval!(a).try_into_number()?;
-        let b = eval!(b).try_into_number()?;
-        Number(self.calculate_arithmetic(a, b)?)
-      },
-
-      LessThan { a, b } | MoreThan { a, b } => {
-        let a = eval!(a).try_into_number()?;
-        let b = eval!(b).try_into_number()?;
-        Boolean(self.calculate_comparison(a, b, 0.0))
-      },
-      Equal { a, b, leeway } => {
-        let a = eval!(a).try_into_number()?;
-        let b = eval!(b).try_into_number()?;
-        let leeway = eval!(leeway).try_into_number()?;
-        Boolean(self.calculate_comparison(a, b, leeway))
-      },
-
-      Minimum { numbers } | Maximum { numbers } => {
-        let (name, compare) = self.extrema_order();
-
-        let mut result = None;
-        for number in numbers {
-          let number = eval!(number).try_into_number()?;
-          result = Some(Self::select_extreme(number, result, compare));
-        }
-
-        Number(result.with_context(|| {
-          format!("{name} must be given at least 1 expression")
-        })?)
-      },
-
-      IsUnset { a } => Boolean(a.eval(state)?.is_none()),
-
-      IfElse {
-        condition,
-        consequence,
-        alternative,
-      } => {
-        if eval!(condition).try_into_boolean()? {
-          eval!(consequence)
-        } else if let Some(alternative) = alternative {
-          eval!(alternative)
-        } else {
-          return Ok(None);
-        }
-      },
-
-      And { a, b } => {
-        Boolean(eval!(a).try_into_boolean()? && eval!(b).try_into_boolean()?)
-      },
-      Or { a, b } => {
-        Boolean(eval!(a).try_into_boolean()? || eval!(b).try_into_boolean()?)
-      },
-
-      All { all } => {
-        let mut all = all.iter();
-
-        loop {
-          let Some(value) = all.next() else {
-            break Boolean(true);
-          };
-
-          if !eval!(value).try_into_boolean()? {
-            break Boolean(false);
-          }
-        }
-      },
-      Any { any } => {
-        let mut any = any.iter();
-
-        loop {
-          let Some(value) = any.next() else {
-            break Boolean(false);
-          };
-
-          if eval!(value).try_into_boolean()? {
-            break Boolean(true);
-          }
-        }
-      },
-
-      Not { not } => Boolean(!eval!(not).try_into_boolean()?),
+      _ => unreachable!("pure operators are evaluated separately"),
     }))
-  }
-
-  fn calculate_arithmetic(&self, a: f64, b: f64) -> anyhow::Result<f64> {
-    let result = match self {
-      Self::Plus { .. } => a + b,
-      Self::Minus { .. } => a - b,
-      Self::Multiply { .. } => a * b,
-      Self::Power { .. } => a.powf(b),
-      Self::Divide { .. } => a / b,
-      _ => unreachable!("not an arithmetic expression"),
-    };
-    if !result.is_finite() {
-      bail!("arithmetic expression produced a non-finite number");
-    }
-    Ok(result)
-  }
-
-  fn calculate_comparison(&self, a: f64, b: f64, leeway: f64) -> bool {
-    match self {
-      Self::LessThan { .. } => a < b,
-      Self::MoreThan { .. } => a > b,
-      Self::Equal { .. } => a - leeway < b && b < a + leeway,
-      _ => unreachable!("not a comparison expression"),
-    }
-  }
-
-  pub(super) fn extrema_order(
-    &self,
-  ) -> (&'static str, fn(&f64, &f64) -> Ordering) {
-    match self {
-      Self::Minimum { .. } => ("minimum", f64::total_cmp),
-      Self::Maximum { .. } => ("maximum", |a, b| b.total_cmp(a)),
-      _ => unreachable!("not an extrema expression"),
-    }
-  }
-
-  fn select_extreme(
-    number: f64,
-    previous: Option<f64>,
-    compare: impl Fn(&f64, &f64) -> Ordering,
-  ) -> f64 {
-    match previous {
-      Some(previous) if compare(&number, &previous).is_ge() => previous,
-      _ => number,
-    }
   }
 }
 

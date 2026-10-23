@@ -852,6 +852,9 @@ fn platform_alternatives_warning(
   values: &[Expression],
 ) -> Option<String> {
   let candidates = literal_strings(values)?;
+  if candidates.is_empty() {
+    return None;
+  }
   match (current, available) {
     (Ok(None), _) => Some("control is unavailable; setting is skipped".into()),
     (Err(error), _) => {
@@ -1068,11 +1071,10 @@ fn unavailable_alternatives_warning(
   current: Option<&str>,
   available: &[String],
 ) -> Option<String> {
-  if candidates.is_empty() {
-    Some("ordered alternatives are empty; setting is skipped".into())
-  } else if candidates
-    .iter()
-    .any(|value| available.iter().any(|item| item == value))
+  if candidates.is_empty()
+    || candidates
+      .iter()
+      .any(|value| available.iter().any(|item| item == value))
   {
     None
   } else if current.is_none() {
@@ -1255,7 +1257,7 @@ power.charge-threshold-end = 60
     for (values, expected) in [
       ("['missing', 'performance']", None),
       ("['missing']", Some("none of the ordered alternatives")),
-      ("[]", Some("empty")),
+      ("[]", None),
       ("['missing', '$power-profile-preference']", None),
     ] {
       let config: DaemonConfig = toml::from_str(&format!(
@@ -1381,19 +1383,17 @@ cpu.governor.first-available-governor = [
     .unwrap();
     let inventory = CpuInventory::scan().unwrap();
     let diagnostics = config.verify_cpu_hardware(&inventory.cpus);
-    assert_eq!(diagnostics.len(), 4);
+    assert_eq!(diagnostics.len(), 3);
     assert_eq!(diagnostics[0].rule, "numeric-is-not-advertised");
     assert!(
       diagnostics[0]
         .message
         .contains("none of the ordered alternatives")
     );
-    assert_eq!(diagnostics[1].rule, "empty");
-    assert!(diagnostics[1].message.contains("alternatives are empty"));
-    assert_eq!(diagnostics[2].rule, "heterogeneous");
-    assert!(diagnostics[2].message.starts_with("CPU 1:"));
-    assert_eq!(diagnostics[3].rule, "unavailable");
-    assert!(diagnostics[3].message.contains("control is unavailable"));
+    assert_eq!(diagnostics[1].rule, "heterogeneous");
+    assert!(diagnostics[1].message.starts_with("CPU 1:"));
+    assert_eq!(diagnostics[2].rule, "unavailable");
+    assert!(diagnostics[2].message.contains("control is unavailable"));
     assert_eq!(fixture.write_count(first.join("scaling_governor")), 0);
     assert_eq!(fixture.write_count(second.join("scaling_governor")), 0);
 
@@ -1401,7 +1401,7 @@ cpu.governor.first-available-governor = [
     let inventory = CpuInventory::scan().unwrap();
     let diagnostics = config.verify_cpu_hardware(&inventory.cpus);
     assert!(
-      diagnostics[2]
+      diagnostics[1]
         .message
         .contains("supported values are unknown")
     );
@@ -1934,12 +1934,13 @@ uncore.frequency-khz-maximum = 2000"#,
   }
 
   #[test]
-  fn usb_gpu_and_uncore_check_only_requested_real_controls() {
+  fn checks_requested_usb_gpu_and_uncore_controls() {
     let fixture = SystemFixture::new();
     fixture.write("/sys/bus/usb/devices/1-1/idVendor", "1234");
     fixture.write("/sys/bus/usb/devices/1-1/power/control", "on");
     fixture.write("/sys/class/drm/card0/device/power_method", "profile");
     uncore(&fixture, "package_00_die_00");
+
     assert!(
       rule_config("usb.autosuspend=true")
         .verify_usb_hardware()
@@ -1951,6 +1952,7 @@ uncore.frequency-khz-maximum = 2000"#,
       .unwrap();
     assert_eq!(diagnostics.len(), 1);
     assert_eq!(diagnostics[0].field, "usb.autosuspend-delay-seconds");
+
     let diagnostics = rule_config("gpu.radeon-powersave='dpm-battery'")
       .verify_gpu_hardware()
       .unwrap();
@@ -1967,9 +1969,11 @@ uncore.frequency-khz-maximum = 2000"#,
         .unwrap()
         .is_empty()
     );
-    let diagnostics = rule_config("uncore.frequency-khz-minimum=4000")
-      .verify_uncore_hardware()
-      .unwrap();
+
+    let diagnostics =
+      rule_config("uncore.frequency-khz-minimum={maximum=[1000,4000]}")
+        .verify_uncore_hardware()
+        .unwrap();
     assert_eq!(diagnostics.len(), 1);
     assert_eq!(diagnostics[0].field, "uncore.frequency-khz-minimum");
     assert_eq!(
