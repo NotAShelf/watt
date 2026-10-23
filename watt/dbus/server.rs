@@ -7,6 +7,11 @@ use futures_util::StreamExt as _;
 use tokio::{
   sync::{
     RwLock,
+    broadcast::{
+      self,
+      error::RecvError,
+    },
+    mpsc,
     watch,
   },
   time::{
@@ -27,24 +32,37 @@ use zbus::{
 use crate::{
   dbus::{
     ppd::PowerProfilesInterface,
-    watt::WattInterface,
+    watt::{
+      ReloadRequest,
+      WattInterface,
+    },
   },
   fs::AppliedSetting,
   system::{
     DaemonState,
     DegradedCondition,
+    ReloadResult,
   },
 };
 
 pub async fn start(
   state: Arc<RwLock<DaemonState>>,
   applied_rules: watch::Receiver<Vec<String>>,
+  reload: mpsc::Sender<ReloadRequest>,
+  reload_results: broadcast::Receiver<ReloadResult>,
 ) -> zbus::Result<()> {
   log::info!("starting D-Bus server...");
 
   let mut attempt: u32 = 0;
   loop {
-    match try_start(state.clone(), applied_rules.clone()).await {
+    match try_start(
+      state.clone(),
+      applied_rules.clone(),
+      reload.clone(),
+      reload_results.resubscribe(),
+    )
+    .await
+    {
       Ok(()) => return Ok(()),
       Err(e) => {
         attempt += 1;
@@ -69,21 +87,32 @@ pub async fn start(
 async fn try_start(
   state: Arc<RwLock<DaemonState>>,
   applied_rules: watch::Receiver<Vec<String>>,
+  reload: mpsc::Sender<ReloadRequest>,
+  reload_results: broadcast::Receiver<ReloadResult>,
 ) -> zbus::Result<()> {
   let connection = connection::Builder::system()?.build().await?;
-  run_connection(connection, state, applied_rules).await
+  run_connection(connection, state, applied_rules, reload, reload_results).await
 }
 
 pub(crate) async fn run_connection(
   connection: Connection,
   state: Arc<RwLock<DaemonState>>,
   applied_rules: watch::Receiver<Vec<String>>,
+  reload: mpsc::Sender<ReloadRequest>,
+  reload_results: broadcast::Receiver<ReloadResult>,
 ) -> zbus::Result<()> {
   let result = async {
-    let owner_changes = serve(&connection, state.clone()).await?;
+    let owner_changes = serve(&connection, state.clone(), reload).await?;
     log::info!("D-Bus server started");
     let emitter = SignalEmitter::new(&connection, "/dev/notashelf/Watt")?;
-    monitor(emitter, state.clone(), applied_rules, owner_changes).await
+    monitor(
+      emitter,
+      state.clone(),
+      applied_rules,
+      owner_changes,
+      reload_results,
+    )
+    .await
   }
   .await;
   // Close before clearing holds so pending requests fail their liveness check.
@@ -108,6 +137,7 @@ async fn subscribe_owners(
 async fn serve(
   connection: &Connection,
   state: Arc<RwLock<DaemonState>>,
+  reload: mpsc::Sender<ReloadRequest>,
 ) -> zbus::Result<MessageStream> {
   // Subscribe before exposing methods that can create owner-bound holds.
   let owner_changes = subscribe_owners(connection).await?;
@@ -120,7 +150,10 @@ async fn serve(
     .await?;
   connection
     .object_server()
-    .at("/dev/notashelf/Watt", WattInterface::new(state))
+    .at(
+      "/dev/notashelf/Watt",
+      WattInterface::with_reload(state, reload),
+    )
     .await?;
   connection.request_name("net.hadess.PowerProfiles").await?;
   connection.request_name("dev.notashelf.Watt").await?;
@@ -208,6 +241,7 @@ async fn monitor(
   state: Arc<RwLock<DaemonState>>,
   mut applied_rules: watch::Receiver<Vec<String>>,
   mut owner_changes: MessageStream,
+  mut reload_results: broadcast::Receiver<ReloadResult>,
 ) -> zbus::Result<()> {
   let mut ticker = interval(Duration::from_secs(1));
   let mut previous = StatusSnapshot::new(&*state.read().await);
@@ -221,6 +255,9 @@ async fn monitor(
         applied_rules.borrow_and_update();
         WattInterface::applied_rules_changed(&emitter).await?;
       },
+      result = reload_results.recv() => {
+        notify_reload_result(&emitter, result).await?;
+      },
       message = owner_changes.next() => {
         let message = message.ok_or_else(|| {
           zbus::Error::Failure("D-Bus owner notification stream closed".into())
@@ -228,6 +265,29 @@ async fn monitor(
         owner_changed(emitter.connection(), &state, message).await?;
       },
     }
+  }
+}
+
+async fn notify_reload_result(
+  emitter: &SignalEmitter<'_>,
+  result: Result<ReloadResult, RecvError>,
+) -> zbus::Result<()> {
+  match result {
+    Ok((success, message)) => {
+      WattInterface::configuration_reloaded(emitter, success, &message).await
+    },
+    Err(RecvError::Lagged(count)) => {
+      log::warn!(
+        "D-Bus reload notification consumer fell behind; {count} outcomes \
+         were lost"
+      );
+      Ok(())
+    },
+    Err(RecvError::Closed) => {
+      Err(zbus::Error::Failure(
+        "reload notification channel closed".into(),
+      ))
+    },
   }
 }
 
@@ -284,6 +344,7 @@ mod tests {
         );
       }
       let (_updates, applied_rules) = watch::channel(Vec::new());
+      let (_results, reload_results) = broadcast::channel(64);
       let closing = connection.clone();
       let disconnect = async {
         let proxy = zbus::fdo::DBusProxy::new(&client).await.unwrap();
@@ -297,7 +358,13 @@ mod tests {
         closing.close().await.unwrap();
       };
       let (result, ()) = tokio::join!(
-        run_connection(connection, state.clone(), applied_rules),
+        run_connection(
+          connection,
+          state.clone(),
+          applied_rules,
+          mpsc::channel(1).0,
+          reload_results,
+        ),
         disconnect
       );
       assert!(result.is_err());
@@ -347,7 +414,9 @@ mod tests {
           observer.unique_name().unwrap().to_string(),
         );
       }
-      let owner_changes = serve(&connection, state.clone()).await.unwrap();
+      let owner_changes = serve(&connection, state.clone(), mpsc::channel(1).0)
+        .await
+        .unwrap();
       let proxy = Proxy::new(
         &observer,
         "net.hadess.PowerProfiles",
@@ -359,11 +428,19 @@ mod tests {
       let mut changes =
         proxy.receive_signal("PropertiesChanged").await.unwrap();
       let (_updates, applied_rules) = watch::channel(Vec::new());
+      let (_results, reload_results) = broadcast::channel(64);
       let monitor_state = state.clone();
       let task = tokio::spawn(async move {
         let emitter =
           SignalEmitter::new(&connection, "/dev/notashelf/Watt").unwrap();
-        monitor(emitter, monitor_state, applied_rules, owner_changes).await
+        monitor(
+          emitter,
+          monitor_state,
+          applied_rules,
+          owner_changes,
+          reload_results,
+        )
+        .await
       });
       owner.close().await.unwrap();
       let mut notified = HashSet::new();

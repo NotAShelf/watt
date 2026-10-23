@@ -3,30 +3,175 @@ use std::{
   sync::Arc,
 };
 
-use tokio::sync::RwLock;
+use tokio::{
+  sync::{
+    RwLock,
+    Semaphore,
+    mpsc,
+    oneshot,
+  },
+  task::spawn_blocking,
+};
 use zbus::{
+  fdo,
   interface,
+  message::Header,
   object_server::SignalEmitter,
   zvariant::Value,
 };
 
-use crate::system::DaemonState;
+use super::auth::authorize;
+use crate::{
+  config::{
+    DaemonConfig,
+    verify::{
+      Diagnostic,
+      Severity,
+    },
+  },
+  system::DaemonState,
+};
+
+static VERIFICATION_SLOT: Semaphore = Semaphore::const_new(1);
+const MAX_CONFIG_BYTES: usize = 1024 * 1024;
+const MAX_DIAGNOSTICS: usize = 4096;
+const MAX_SNAPSHOT_ROWS: usize = 4096;
+
+fn verify_contents(
+  contents: &str,
+  hardware: bool,
+) -> fdo::Result<Vec<Diagnostic>> {
+  let config: DaemonConfig = toml::from_str(contents).map_err(|error| {
+    fdo::Error::InvalidArgs(format!("invalid configuration: {error}"))
+  })?;
+  let mut diagnostics = config.verify_static();
+  if hardware
+    && !diagnostics
+      .iter()
+      .any(|diagnostic| diagnostic.severity == Severity::Error)
+  {
+    diagnostics.extend(config.verify_hardware().map_err(|error| {
+      fdo::Error::Failed(format!("hardware verification failed: {error:#}"))
+    })?);
+  }
+  if diagnostics.len() > MAX_DIAGNOSTICS {
+    return Err(fdo::Error::LimitsExceeded(format!(
+      "verification produced more than {MAX_DIAGNOSTICS} diagnostics"
+    )));
+  }
+  Ok(diagnostics)
+}
 
 pub struct WattInterface {
-  state: Arc<RwLock<DaemonState>>,
+  state:  Arc<RwLock<DaemonState>>,
+  reload: Option<mpsc::Sender<ReloadRequest>>,
+}
+
+pub struct ReloadRequest {
+  pub response: oneshot::Sender<anyhow::Result<()>>,
 }
 
 impl WattInterface {
   pub fn new(state: Arc<RwLock<DaemonState>>) -> Self {
-    Self { state }
+    Self {
+      state,
+      reload: None,
+    }
   }
+
+  pub fn with_reload(
+    state: Arc<RwLock<DaemonState>>,
+    reload: mpsc::Sender<ReloadRequest>,
+  ) -> Self {
+    Self {
+      state,
+      reload: Some(reload),
+    }
+  }
+}
+
+fn check_snapshot_bound(rows: usize) -> fdo::Result<()> {
+  if rows > MAX_SNAPSHOT_ROWS {
+    return Err(fdo::Error::LimitsExceeded(format!(
+      "snapshot exceeds {MAX_SNAPSHOT_ROWS} rows"
+    )));
+  }
+  Ok(())
 }
 
 #[interface(name = "dev.notashelf.Watt")]
 impl WattInterface {
+  async fn reload(
+    &self,
+    #[zbus(connection)] connection: &zbus::Connection,
+    #[zbus(header)] header: Header<'_>,
+  ) -> fdo::Result<()> {
+    let Some(reload) = &self.reload else {
+      return Err(fdo::Error::NotSupported("reload is unavailable".into()));
+    };
+    authorize(connection, &header, "dev.notashelf.watt.reload")
+      .await
+      .map_err(|error| fdo::Error::AccessDenied(error.to_string()))?;
+    let (response, result) = oneshot::channel();
+    reload
+      .try_send(ReloadRequest { response })
+      .map_err(|_| fdo::Error::LimitsExceeded("reload is busy".into()))?;
+    result
+      .await
+      .map_err(|_| fdo::Error::Failed("reload request was cancelled".into()))?
+      .map_err(|error| fdo::Error::Failed(format!("reload failed: {error:#}")))
+  }
+
+  async fn verify_configuration(
+    &self,
+    contents: String,
+    hardware: bool,
+  ) -> fdo::Result<Vec<(String, String, u16, String, String)>> {
+    if contents.len() > MAX_CONFIG_BYTES {
+      return Err(fdo::Error::LimitsExceeded(
+        "configuration exceeds 1 MiB".into(),
+      ));
+    }
+    let permit = VERIFICATION_SLOT.try_acquire().map_err(|_| {
+      fdo::Error::LimitsExceeded("configuration verification is busy".into())
+    })?;
+    let diagnostics = spawn_blocking(move || {
+      // Keep the slot until the work ends, even if the caller disconnects.
+      let _permit = permit;
+      verify_contents(&contents, hardware)
+    })
+    .await
+    .map_err(|error| {
+      fdo::Error::Failed(format!("verification worker failed: {error}"))
+    })??;
+    Ok(
+      diagnostics
+        .into_iter()
+        .map(|diagnostic| {
+          let severity = match diagnostic.severity {
+            Severity::Error => "error",
+            Severity::Warning => "warning",
+          };
+          (
+            severity.into(),
+            diagnostic.rule,
+            diagnostic.priority,
+            diagnostic.field,
+            diagnostic.message,
+          )
+        })
+        .collect(),
+    )
+  }
+
   #[zbus(property)]
   async fn version(&self) -> String {
     env!("CARGO_PKG_VERSION").to_owned()
+  }
+
+  #[zbus(property)]
+  fn interface_version(&self) -> u32 {
+    1
   }
 
   #[zbus(property)]
@@ -117,6 +262,13 @@ impl WattInterface {
       Value::from(state.performance_degraded().unwrap_or_default().to_owned()),
     );
 
+    if let Some(delay) = state.polling_delay() {
+      status.insert(
+        "polling-delay-ms".to_owned(),
+        Value::from(delay.as_millis() as u64),
+      );
+    }
+
     if let Some(error) = state.latest_error() {
       status.insert("latest-error".to_owned(), Value::from(error.to_owned()));
     }
@@ -124,47 +276,61 @@ impl WattInterface {
     status
   }
 
-  async fn get_cpu_policies(&self) -> Vec<(String, String, Vec<u32>, String)> {
-    self
-      .state
-      .read()
-      .await
-      .cpu_policies()
-      .into_iter()
-      .map(|policy| {
-        (
-          policy.name.clone(),
-          policy.path.display().to_string(),
-          policy.related_cpus.clone(),
-          policy.driver.clone().unwrap_or_default(),
-        )
-      })
-      .collect()
-  }
-
-  async fn get_applied_rules(&self) -> Vec<String> {
-    let state = self.state.read().await;
-    state.last_applied_rules()
-  }
-
-  async fn get_cpu_capabilities(&self) -> Vec<HashMap<String, Value<'_>>> {
-    let cpus = self.state.read().await.cpu_capabilities();
-    cpus
-      .into_iter()
-      .map(|cpu| {
-        HashMap::from([
-          ("cpu".into(), Value::from(cpu.number)),
-          ("policy".into(), Value::from(cpu.policy.unwrap_or_default())),
+  async fn get_cpu_policies(
+    &self,
+  ) -> fdo::Result<Vec<(String, String, Vec<u32>, String)>> {
+    let policies = self.state.read().await.cpu_policies();
+    check_snapshot_bound(policies.len())?;
+    Ok(
+      policies
+        .into_iter()
+        .map(|policy| {
           (
-            "frequency-control".into(),
-            Value::from(cpu.frequency_control),
-          ),
-          ("governors".into(), Value::from(cpu.governors)),
-          ("epp-values".into(), Value::from(cpu.epps)),
-          ("epb-values".into(), Value::from(cpu.epbs)),
-        ])
-      })
-      .collect()
+            policy.name.clone(),
+            policy.path.display().to_string(),
+            policy.related_cpus.clone(),
+            policy.driver.clone().unwrap_or_default(),
+          )
+        })
+        .collect(),
+    )
+  }
+
+  async fn get_applied_rules(&self) -> fdo::Result<Vec<String>> {
+    let rules = self.state.read().await.last_applied_rules();
+    check_snapshot_bound(rules.len())?;
+    Ok(rules)
+  }
+
+  async fn get_rules(&self) -> fdo::Result<Vec<(String, u16)>> {
+    let state = self.state.read().await;
+    check_snapshot_bound(state.rule_metadata().len())?;
+    Ok(state.rule_metadata().to_vec())
+  }
+
+  async fn get_cpu_capabilities(
+    &self,
+  ) -> fdo::Result<Vec<HashMap<String, Value<'_>>>> {
+    let cpus = self.state.read().await.cpu_capabilities();
+    check_snapshot_bound(cpus.len())?;
+    Ok(
+      cpus
+        .into_iter()
+        .map(|cpu| {
+          HashMap::from([
+            ("cpu".into(), Value::from(cpu.number)),
+            ("policy".into(), Value::from(cpu.policy.unwrap_or_default())),
+            (
+              "frequency-control".into(),
+              Value::from(cpu.frequency_control),
+            ),
+            ("governors".into(), Value::from(cpu.governors)),
+            ("epp-values".into(), Value::from(cpu.epps)),
+            ("epb-values".into(), Value::from(cpu.epbs)),
+          ])
+        })
+        .collect(),
+    )
   }
 
   async fn get_boost_capabilities(&self) -> HashMap<String, Value<'_>> {
@@ -192,26 +358,34 @@ impl WattInterface {
 
   async fn get_applied_settings(
     &self,
-  ) -> Vec<(String, String, String, String)> {
+  ) -> fdo::Result<Vec<(String, String, String, String)>> {
     let state = self.state.read().await;
-    state
-      .applied_settings()
-      .into_iter()
-      .map(|setting| {
-        let verification = setting.verification().to_owned();
-        (
-          setting.path.display().to_string(),
-          setting.requested,
-          setting.observed.unwrap_or_default(),
-          verification,
-        )
-      })
-      .collect()
+    let settings = state.applied_settings();
+    check_snapshot_bound(settings.len())?;
+    Ok(
+      settings
+        .into_iter()
+        .map(|setting| {
+          let verification = setting.verification().to_owned();
+          (
+            setting.path.display().to_string(),
+            setting.requested,
+            setting.observed.unwrap_or_default(),
+            verification,
+          )
+        })
+        .collect(),
+    )
   }
 
-  async fn get_config(&self) -> String {
+  async fn get_config(&self) -> fdo::Result<String> {
     let state = self.state.read().await;
-    state.config().to_owned()
+    if state.config().len() > MAX_CONFIG_BYTES {
+      return Err(fdo::Error::LimitsExceeded(
+        "active configuration exceeds 1 MiB".into(),
+      ));
+    }
+    Ok(state.config().to_owned())
   }
 
   #[zbus(signal)]
@@ -222,6 +396,13 @@ impl WattInterface {
   #[zbus(signal)]
   pub async fn applied_settings_changed(
     emitter: &SignalEmitter<'_>,
+  ) -> zbus::Result<()>;
+
+  #[zbus(signal)]
+  pub async fn configuration_reloaded(
+    emitter: &SignalEmitter<'_>,
+    success: bool,
+    message: &str,
   ) -> zbus::Result<()>;
 }
 
@@ -241,6 +422,103 @@ mod tests {
     dbus::test_support::TestBus,
     test_support::SystemFixture,
   };
+
+  #[tokio::test]
+  async fn configuration_verification_returns_diagnostics_without_reloading() {
+    let bus = TestBus::new();
+    timeout(Duration::from_secs(10), async {
+      let state =
+        Arc::new(RwLock::new(DaemonState::new("active config".into(), 7)));
+      let server = connection::Builder::address(bus.address.as_str())
+        .unwrap()
+        .name("dev.notashelf.Watt")
+        .unwrap()
+        .serve_at("/dev/notashelf/Watt", WattInterface::new(state))
+        .unwrap()
+        .build()
+        .await
+        .unwrap();
+      let client = connection::Builder::address(bus.address.as_str())
+        .unwrap()
+        .build()
+        .await
+        .unwrap();
+      let proxy = Proxy::new(
+        &client,
+        "dev.notashelf.Watt",
+        "/dev/notashelf/Watt",
+        "dev.notashelf.Watt",
+      )
+      .await
+      .unwrap();
+      let invalid =
+        "[[rule]]\nname='invalid'\npriority=9\ncpu.frequency-mhz-minimum=-1\n";
+      for hardware in [false, true] {
+        let diagnostics: Vec<(String, String, u16, String, String)> = proxy
+          .call("VerifyConfiguration", &(invalid, hardware))
+          .await
+          .unwrap();
+        assert_eq!(diagnostics.len(), 1);
+        let (severity, rule, priority, field, message) = &diagnostics[0];
+        assert_eq!(severity, "error");
+        assert_eq!(rule, "invalid");
+        assert_eq!(*priority, 9);
+        assert_eq!(field, "cpu.frequency-mhz-minimum");
+        assert!(!message.is_empty());
+      }
+      let malformed = proxy
+        .call::<_, _, Vec<(String, String, u16, String, String)>>(
+          "VerifyConfiguration",
+          &("[", false),
+        )
+        .await
+        .unwrap_err();
+      assert!(malformed.to_string().contains("InvalidArgs"));
+      let oversized = proxy
+        .call::<_, _, Vec<(String, String, u16, String, String)>>(
+          "VerifyConfiguration",
+          &(" ".repeat(MAX_CONFIG_BYTES + 1), false),
+        )
+        .await
+        .unwrap_err();
+      assert!(oversized.to_string().contains("LimitsExceeded"));
+      let duplicates = "[[rule]]\nname='duplicate'\npriority=1\n"
+        .repeat(MAX_DIAGNOSTICS / 2 + 2);
+      let excessive = proxy
+        .call::<_, _, Vec<(String, String, u16, String, String)>>(
+          "VerifyConfiguration",
+          &(duplicates, false),
+        )
+        .await
+        .unwrap_err();
+      assert!(excessive.to_string().contains("LimitsExceeded"));
+      let permit = VERIFICATION_SLOT.acquire().await.unwrap();
+      let busy = proxy
+        .call::<_, _, Vec<(String, String, u16, String, String)>>(
+          "VerifyConfiguration",
+          &(invalid, false),
+        )
+        .await
+        .unwrap_err();
+      assert!(busy.to_string().contains("LimitsExceeded"));
+      let active: String = proxy.call("GetConfig", &()).await.unwrap();
+      assert_eq!(active, "active config");
+      assert_eq!(proxy.get_property::<u32>("RuleCount").await.unwrap(), 7);
+      drop(permit);
+      let valid: Vec<(String, String, u16, String, String)> = proxy
+        .call(
+          "VerifyConfiguration",
+          &("[[rule]]\nname='valid'\npriority=1\n", false),
+        )
+        .await
+        .unwrap();
+      assert!(valid.is_empty());
+      client.close().await.unwrap();
+      server.close().await.unwrap();
+    })
+    .await
+    .unwrap();
+  }
 
   #[tokio::test]
   async fn exported_boost_capabilities_report_selected_global_control() {
