@@ -79,6 +79,10 @@ tested on a variety of systems to provide better performance out of the box.
 Unless the user wishes to configure Watt from ground up, it's enough to simply
 start the Watt daemon and leave it at that.
 
+NixOS users can enable the module from this flake. Other systems need the D-Bus
+and polkit policy files and a service unit; see
+[Installing Without NixOS](docs/configuration/administration.md#installing-without-nixos).
+
 ### Basic Commands
 
 ```sh
@@ -178,12 +182,19 @@ Not all features are available on all hardware:
 - Disk APM and spindown settings require `hdparm` and compatible drives
 - GPU panel power savings require compatible AMDGPU panel sysfs support
 
+The [support matrix](docs/configuration/hardware.md#support-matrix) lists the
+CPU drivers and controls covered by tests.
+
 ### Common Problems
 
 1. **Settings not applying**: Check for conflicts with other power management
-   tools
+   tools, and run `watt config errors` and `watt config settings` to see which
+   writes failed or were changed back
 2. **CPU frequencies fluctuating**: May be due to thermal throttling
 3. **Missing CPU information**: Verify kernel module support for your CPU
+
+See [Troubleshooting](docs/configuration/administration.md#troubleshooting) for
+the daemon diagnostics and what degraded states mean.
 
 While reporting issues, please include your system information and any relevant
 logs.
