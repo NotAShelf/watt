@@ -1,5 +1,6 @@
 use std::{
   collections::HashMap,
+  error::Error,
   fmt,
   str::FromStr,
   time::Instant,
@@ -70,7 +71,7 @@ impl fmt::Display for InvalidPowerProfile {
   }
 }
 
-impl std::error::Error for InvalidPowerProfile {}
+impl Error for InvalidPowerProfile {}
 
 #[derive(Debug, Clone)]
 pub struct ProfileHold {

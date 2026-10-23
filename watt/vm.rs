@@ -1,3 +1,8 @@
+use std::{
+  fmt::Display,
+  path::PathBuf,
+};
+
 use anyhow::{
   Context,
   bail,
@@ -103,10 +108,7 @@ impl Delta {
   }
 }
 
-fn write_proc_sys_vm(
-  name: &str,
-  value: impl std::fmt::Display,
-) -> anyhow::Result<()> {
+fn write_proc_sys_vm(name: &str, value: impl Display) -> anyhow::Result<()> {
   fs::write(format!("/proc/sys/vm/{name}"), &value.to_string())
     .with_context(|| format!("failed to set vm sysctl '{name}'"))
 }
@@ -118,7 +120,7 @@ fn write_transparent_hugepage(name: &str, value: &str) -> anyhow::Result<()> {
     .with_context(|| format!("failed to set transparent hugepage '{name}'"))
 }
 
-fn transparent_hugepage_path() -> Option<std::path::PathBuf> {
+fn transparent_hugepage_path() -> Option<PathBuf> {
   let path = fs::path("/sys/kernel/mm/transparent_hugepage");
   if fs::exists(&path) {
     return Some(path);

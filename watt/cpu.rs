@@ -2,10 +2,14 @@ use std::{
   cell::OnceCell,
   collections::HashMap,
   fmt,
-  fs::OpenOptions,
+  fs::{
+    File,
+    OpenOptions,
+  },
   hash,
   io::Write,
   mem,
+  path::Path,
   string::ToString,
   sync::Arc,
 };
@@ -120,7 +124,7 @@ impl fmt::Display for Cpu {
 }
 
 fn write_verified(
-  path: impl AsRef<std::path::Path>,
+  path: impl AsRef<Path>,
   value: &str,
   setting: &str,
 ) -> anyhow::Result<()> {
@@ -879,7 +883,7 @@ impl GlobalDelta {
 #[derive(Default, Debug)]
 pub struct DmaLatency {
   current: Option<i32>,
-  file:    Option<std::fs::File>,
+  file:    Option<File>,
 }
 
 impl DmaLatency {
@@ -920,6 +924,7 @@ mod tests {
   };
 
   use super::*;
+  use crate::fs::set_system_root_for_tests;
 
   #[test]
   fn scans_and_applies_cpu_controls_in_a_virtual_system_tree() {
@@ -947,7 +952,7 @@ mod tests {
     .unwrap();
     fs::write(root.join("proc/cpuinfo"), "processor : 0\n\n").unwrap();
 
-    let _root = crate::fs::set_system_root_for_tests(&root);
+    let _root = set_system_root_for_tests(&root);
     let mut cpu = Cpu::all().unwrap().pop().unwrap();
     Delta {
       governor: Some("powersave".to_owned()),

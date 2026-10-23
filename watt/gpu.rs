@@ -1,7 +1,10 @@
 use std::{
   fmt,
   hash,
-  path::PathBuf,
+  path::{
+    Path,
+    PathBuf,
+  },
 };
 
 use anyhow::{
@@ -64,11 +67,11 @@ impl Gpu {
     Ok(gpus)
   }
 
-  fn panel_power_savings_path(path: &std::path::Path) -> PathBuf {
+  fn panel_power_savings_path(path: &Path) -> PathBuf {
     path.join("amdgpu/panel_power_savings")
   }
 
-  fn radeon_power_method_path(path: &std::path::Path) -> PathBuf {
+  fn radeon_power_method_path(path: &Path) -> PathBuf {
     path.join("device/power_method")
   }
 

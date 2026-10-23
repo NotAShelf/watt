@@ -27,12 +27,15 @@ use tokio::{
     RwLock,
     watch,
   },
+  time::sleep,
 };
 
+#[cfg(feature = "metrics")] use crate::metrics;
 use crate::{
   audio,
   config,
   cpu,
+  dbus::server,
   disk,
   fs,
   gpu,
@@ -205,7 +208,7 @@ struct System {
 }
 
 fn retire_missing_devices<T>(
-  previous: Vec<std::path::PathBuf>,
+  previous: Vec<PathBuf>,
   current: &HashSet<Arc<T>>,
   path: impl Fn(&T) -> &Path,
 ) {
@@ -1288,15 +1291,13 @@ pub async fn run_daemon(
 
   #[cfg(feature = "metrics")]
   if let Some(metrics_config) = &config.metrics {
-    crate::metrics::start(metrics_config, Arc::clone(&state))?;
+    metrics::start(metrics_config, Arc::clone(&state))?;
   }
 
   tokio::spawn({
     let state = Arc::clone(&state);
     async move {
-      if let Err(error) =
-        crate::dbus::server::start(state, applied_rules_rx).await
-      {
+      if let Err(error) = server::start(state, applied_rules_rx).await {
         log::error!("D-Bus server exited with error: {error}");
       }
     }
@@ -1337,7 +1338,7 @@ pub async fn run_daemon(
           log::debug!("ignoring SIGHUP for the builtin config");
         }
       },
-      () = tokio::time::sleep(sleep_for) => {},
+      () = sleep(sleep_for) => {},
     }
 
     log::debug!("starting main polling loop iteration");
@@ -1744,7 +1745,7 @@ mod tests {
     let root =
       env::temp_dir().join(format!("watt-empty-system-{}", process::id(),));
     stdfs::create_dir_all(&root).unwrap();
-    let _root = crate::fs::set_system_root_for_tests(&root);
+    let _root = fs::set_system_root_for_tests(&root);
     let mut system = System::default();
     let mut failures = RuntimeFailures::default();
 
@@ -1805,7 +1806,7 @@ mod tests {
     let root =
       env::temp_dir().join(format!("watt-hotplug-fixture-{}", process::id()));
     stdfs::create_dir_all(&root).unwrap();
-    let _root = crate::fs::set_system_root_for_tests(&root);
+    let _root = fs::set_system_root_for_tests(&root);
     let mut system = System::default();
     let mut failures = RuntimeFailures::default();
 

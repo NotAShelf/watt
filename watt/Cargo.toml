@@ -8,6 +8,9 @@ rust-version.workspace = true
 [lib]
 path = "lib.rs"
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "watt"
 path = "main.rs"

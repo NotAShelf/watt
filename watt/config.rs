@@ -25,6 +25,7 @@ use crate::{
   disk,
   gpu,
   power_supply,
+  profile::PowerProfile,
   system,
   uncore,
   usb,
@@ -1326,7 +1327,7 @@ pub struct EvalState<'peripherals, 'context> {
 
   pub discharging: bool,
 
-  pub power_profile_preference: crate::profile::PowerProfile,
+  pub power_profile_preference: PowerProfile,
 
   pub context: EvalContext<'context>,
 
@@ -1362,6 +1363,8 @@ impl Expression {
   ) -> anyhow::Result<Option<Expression>> {
     use Expression::*;
 
+    use crate::fs;
+
     log::trace!("evaluating expression: {self:?}");
 
     macro_rules! try_ok {
@@ -1377,46 +1380,6 @@ impl Expression {
       ($expression:expr) => {
         try_ok!($expression.eval(state)?)
       };
-    }
-
-    fn eval_string_list(
-      values: &[Expression],
-      state: &EvalState<'_, '_>,
-      name: &str,
-    ) -> anyhow::Result<Option<Vec<std::string::String>>> {
-      let mut strings = Vec::with_capacity(values.len());
-
-      for value in values {
-        let Some(value) = value.eval(state)? else {
-          return Ok(None);
-        };
-
-        strings.push(
-          value
-            .try_into_string()
-            .with_context(|| format!("`{name}` item was not a string"))?,
-        );
-      }
-
-      Ok(Some(strings))
-    }
-
-    fn first_available_cpu_value(
-      state: &EvalState<'_, '_>,
-      values: &[std::string::String],
-      available: impl Fn(&cpu::Cpu) -> &[std::string::String],
-    ) -> Option<std::string::String> {
-      values.iter().find_map(|value| {
-        let is_available = match state.context {
-          EvalContext::Cpu(cpu) => available(cpu).contains(value),
-          EvalContext::PowerSupply(_) => false,
-          EvalContext::WidestPossible => {
-            state.cpus.iter().any(|cpu| available(cpu).contains(value))
-          },
-        };
-
-        is_available.then(|| value.clone())
-      })
     }
 
     Ok(Some(match self {
@@ -1555,7 +1518,7 @@ impl Expression {
       IsDriverLoaded { value } => {
         let value = eval!(value).try_into_string()?;
 
-        Boolean(crate::fs::exists(format!("/sys/module/{value}")))
+        Boolean(fs::exists(format!("/sys/module/{value}")))
       },
       IsBatteryAvailable { value } => {
         let value = eval!(value).try_into_string()?;
@@ -1819,6 +1782,46 @@ impl Expression {
   }
 }
 
+fn eval_string_list(
+  values: &[Expression],
+  state: &EvalState<'_, '_>,
+  name: &str,
+) -> anyhow::Result<Option<Vec<String>>> {
+  let mut strings = Vec::with_capacity(values.len());
+
+  for value in values {
+    let Some(value) = value.eval(state)? else {
+      return Ok(None);
+    };
+
+    strings.push(
+      value
+        .try_into_string()
+        .with_context(|| format!("`{name}` item was not a string"))?,
+    );
+  }
+
+  Ok(Some(strings))
+}
+
+fn first_available_cpu_value(
+  state: &EvalState<'_, '_>,
+  values: &[String],
+  available: impl Fn(&cpu::Cpu) -> &[String],
+) -> Option<String> {
+  values.iter().find_map(|value| {
+    let is_available = match state.context {
+      EvalContext::Cpu(cpu) => available(cpu).contains(value),
+      EvalContext::PowerSupply(_) => false,
+      EvalContext::WidestPossible => {
+        state.cpus.iter().any(|cpu| available(cpu).contains(value))
+      },
+    };
+
+    is_available.then(|| value.clone())
+  })
+}
+
 fn literal_true() -> Expression {
   Expression::Boolean(true)
 }
@@ -1907,10 +1910,15 @@ impl<'de> Deserialize<'de> for DaemonConfig {
   where
     D: serde::Deserializer<'de>,
   {
+    use serde::de::{
+      Error as _,
+      IgnoredAny,
+    };
+
     #[derive(Deserialize, Default)]
     #[serde(default, rename_all = "kebab-case")]
     struct RawDaemonConfig {
-      metrics: Option<serde::de::IgnoredAny>,
+      metrics: Option<IgnoredAny>,
 
       #[serde(rename = "rule")]
       rules: Vec<Rule>,
@@ -1919,7 +1927,7 @@ impl<'de> Deserialize<'de> for DaemonConfig {
     let raw = RawDaemonConfig::deserialize(deserializer)?;
 
     if raw.metrics.is_some() {
-      return Err(serde::de::Error::custom(
+      return Err(D::Error::custom(
         "metrics config requires building watt with --features metrics",
       ));
     }
@@ -2055,7 +2063,7 @@ mod tests {
         battery_cycles: Some(100.0),
         battery_health: Some(0.95),
         discharging: false,
-        power_profile_preference: crate::profile::PowerProfile::Balanced,
+        power_profile_preference: PowerProfile::Balanced,
         context: EvalContext::Cpu(&cpu),
         cpus: &cpus,
         uncores: &uncores,
@@ -2161,7 +2169,7 @@ mod tests {
       battery_cycles:              Some(100.0),
       battery_health:              Some(0.95),
       discharging:                 false,
-      power_profile_preference:    crate::profile::PowerProfile::Balanced,
+      power_profile_preference:    PowerProfile::Balanced,
       context:                     EvalContext::Cpu(&cpu),
       cpus:                        &cpus,
       uncores:                     &uncores,
@@ -2255,7 +2263,7 @@ mod tests {
       battery_cycles:              None,
       battery_health:              None,
       discharging:                 false,
-      power_profile_preference:    crate::profile::PowerProfile::Balanced,
+      power_profile_preference:    PowerProfile::Balanced,
       context:                     EvalContext::Cpu(&cpu),
       cpus:                        &cpus,
       uncores:                     &uncores,
@@ -2333,7 +2341,7 @@ mod tests {
       battery_cycles:              None,
       battery_health:              None,
       discharging:                 false,
-      power_profile_preference:    crate::profile::PowerProfile::Balanced,
+      power_profile_preference:    PowerProfile::Balanced,
       context:                     EvalContext::Cpu(&cpu),
       cpus:                        &cpus,
       uncores:                     &uncores,

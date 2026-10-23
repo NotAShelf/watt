@@ -569,6 +569,7 @@ mod tests {
   use std::{
     env,
     fs,
+    io::ErrorKind,
     path::PathBuf,
     process,
     sync::atomic::{
@@ -600,7 +601,7 @@ mod tests {
             fixture.write("type", "Battery");
             return fixture;
           },
-          Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {},
+          Err(error) if error.kind() == ErrorKind::AlreadyExists => {},
           Err(error) => panic!("create battery fixture directory: {error}"),
         }
       }

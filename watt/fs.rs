@@ -7,6 +7,7 @@ use std::{
   fs,
   io,
   path::{
+    Component,
     Path,
     PathBuf,
   },
@@ -112,10 +113,7 @@ pub fn path(path: impl AsRef<Path>) -> PathBuf {
   };
 
   if path.starts_with(&root)
-    || !matches!(
-      path.components().next(),
-      Some(std::path::Component::RootDir)
-    )
+    || !matches!(path.components().next(), Some(Component::RootDir))
   {
     return path.to_owned();
   }
