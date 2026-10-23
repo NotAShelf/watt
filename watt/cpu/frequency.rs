@@ -129,19 +129,15 @@ impl Transition {
 
 impl Cpu {
   pub(super) fn scan_frequency(&mut self) -> anyhow::Result<()> {
-    let number = self.number;
-    let path =
-      |name| format!("/sys/devices/system/cpu/cpu{number}/cpufreq/{name}");
-
-    self.frequency = read(path("cpuinfo_cur_freq"))
+    self.frequency = read(self.cpufreq_path("cpuinfo_cur_freq"))
       .with_context(|| format!("failed to parse {self} frequency"))?;
     if self.frequency.is_none() {
-      self.frequency = read(path("scaling_cur_freq"))
+      self.frequency = read(self.cpufreq_path("scaling_cur_freq"))
         .with_context(|| format!("failed to parse {self} frequency"))?;
     }
-    self.frequency_minimum = read(path("cpuinfo_min_freq"))
+    self.frequency_minimum = read(self.cpufreq_path("cpuinfo_min_freq"))
       .with_context(|| format!("failed to parse {self} frequency minimum"))?;
-    self.frequency_maximum = read(path("cpuinfo_max_freq"))
+    self.frequency_maximum = read(self.cpufreq_path("cpuinfo_max_freq"))
       .with_context(|| format!("failed to parse {self} frequency maximum"))?;
 
     Ok(())
@@ -218,8 +214,7 @@ impl Cpu {
   }
 
   fn read_frequency(&self, name: &str) -> anyhow::Result<Frequency> {
-    let path =
-      format!("/sys/devices/system/cpu/cpu{}/cpufreq/{name}", self.number);
+    let path = self.cpufreq_path(name);
 
     read(path)?.with_context(|| format!("{name} is unavailable for {self}"))
   }
@@ -229,8 +224,7 @@ impl Cpu {
     name: &str,
     frequency: Frequency,
   ) -> anyhow::Result<()> {
-    let path =
-      format!("/sys/devices/system/cpu/cpu{}/cpufreq/{name}", self.number);
+    let path = self.cpufreq_path(name);
 
     if self.read_frequency(name)? == frequency {
       fs::keep_setting(&path, frequency.as_khz().to_string());

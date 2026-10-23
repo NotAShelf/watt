@@ -152,19 +152,12 @@ impl PowerSupply {
           continue;
         },
       };
-      let path = entry.path();
+      let Some(path) = fs::canonicalize(entry.path())? else {
+        continue;
+      };
 
       let mut power_supply = PowerSupply {
-        name: path
-          .file_name()
-          .with_context(|| {
-            format!(
-              "failed to get file name of '{path}'",
-              path = path.display(),
-            )
-          })?
-          .to_string_lossy()
-          .to_string(),
+        name: entry.file_name().to_string_lossy().into_owned(),
 
         path,
         type_: String::new(),

@@ -1,6 +1,7 @@
 #[cfg(not(unix))] use std::future;
 use std::{
   collections::{
+    BTreeMap,
     HashMap,
     HashSet,
     VecDeque,
@@ -34,7 +35,10 @@ use tokio::{
 #[cfg(feature = "metrics")] use crate::metrics;
 use crate::{
   config,
-  cpu,
+  cpu::{
+    self,
+    policy::Policy,
+  },
   dbus::server,
   disk,
   fs,
@@ -150,6 +154,36 @@ impl RuntimeFailures {
         self.record(context, error);
         None
       },
+    }
+  }
+
+  fn apply_cpu_deltas(&mut self, deltas: &HashMap<Arc<cpu::Cpu>, cpu::Delta>) {
+    let mut cpus: Vec<_> = deltas.iter().collect();
+    cpus.sort_by_key(|(cpu, _)| cpu.number);
+    let mut policies = HashSet::new();
+    for (cpu, delta) in cpus {
+      self.apply_cpu_settings(cpu, &delta.cpu_settings());
+      let first_member = cpu
+        .policy
+        .as_ref()
+        .is_none_or(|policy| policies.insert(&policy.path));
+      if first_member {
+        self.apply_cpu_settings(cpu, &delta.policy_settings());
+      }
+    }
+  }
+
+  fn apply_cpu_settings(&mut self, cpu: &cpu::Cpu, delta: &cpu::Delta) {
+    if *delta == cpu::Delta::default() {
+      return;
+    }
+    if self
+      .attempt(format!("CPU validation for {cpu}"), || delta.validate(cpu))
+      .is_some()
+    {
+      self.attempt(format!("CPU application for {cpu}"), || {
+        delta.apply(&mut cpu.clone())
+      });
     }
   }
 
@@ -342,11 +376,31 @@ impl System {
         Arc::from(cpu)
       })
       .collect::<HashSet<_>>();
+    let current_policies: HashSet<_> = cpus
+      .iter()
+      .filter_map(|cpu| cpu.policy.as_ref().map(|policy| &policy.path))
+      .collect();
+    let previous_policies: HashSet<_> = self
+      .cpus
+      .iter()
+      .filter_map(|cpu| cpu.policy.as_ref().map(|policy| &policy.path))
+      .collect();
+    for path in previous_policies.difference(&current_policies) {
+      let present = self.cpus.iter().any(|cpu| {
+        cpu
+          .policy
+          .as_ref()
+          .is_some_and(|policy| &policy.path == *path)
+          && fs::exists(format!("/sys/devices/system/cpu/cpu{}", cpu.number))
+      });
+      if !present || !fs::exists(path) {
+        fs::retire_settings_under(path);
+      }
+    }
     for number in previous_stats.keys() {
-      if !cpus.iter().any(|cpu| cpu.number == *number) {
-        fs::retire_settings_under(format!(
-          "/sys/devices/system/cpu/cpu{number}",
-        ));
+      let path = format!("/sys/devices/system/cpu/cpu{number}");
+      if !cpus.iter().any(|cpu| cpu.number == *number) && !fs::exists(&path) {
+        fs::retire_settings_under(path);
       }
     }
     self.cpus = cpus;
@@ -419,13 +473,21 @@ impl System {
     let previous = self
       .gpus
       .iter()
-      .map(|gpu| gpu.path.clone())
+      .flat_map(|gpu| gpu.control_roots().map(Path::to_owned))
       .collect::<Vec<_>>();
     let gpus = gpu::Gpu::all()?
       .into_iter()
       .map(Arc::from)
       .collect::<HashSet<_>>();
-    retire_missing_devices(previous, &gpus, |gpu| &gpu.path);
+    let roots = gpus
+      .iter()
+      .flat_map(|gpu| gpu.control_roots())
+      .collect::<HashSet<_>>();
+    for path in previous {
+      if !roots.contains(path.as_path()) {
+        fs::retire_settings_under(path);
+      }
+    }
     self.gpus = gpus;
     Ok(())
   }
@@ -1243,6 +1305,19 @@ impl DaemonState {
     self.system.cpus.len()
   }
 
+  pub fn cpu_policies(&self) -> Vec<Arc<Policy>> {
+    self
+      .system
+      .cpus
+      .iter()
+      .filter_map(|cpu| cpu.policy.as_ref())
+      .map(|policy| (&policy.path, policy))
+      .collect::<BTreeMap<_, _>>()
+      .into_values()
+      .cloned()
+      .collect()
+  }
+
   pub fn latest_cpu_log(&self) -> Option<CpuLog> {
     self.system.cpu_log.back().cloned()
   }
@@ -1291,11 +1366,15 @@ fn reload_config(
 fn evaluate_rules(
   rules: &[config::Rule],
   state: &config::EvalState<'_, '_>,
-) -> anyhow::Result<(config::EvaluatedRule, Vec<String>)> {
+  failures: &mut RuntimeFailures,
+) -> (config::EvaluatedRule, Vec<String>) {
   let mut actions = config::EvaluatedRule::empty(state);
   let mut applied = Vec::new();
   for rule in rules.iter().rev() {
-    let Some(evaluated) = rule.evaluate(state)? else {
+    let Some(Some(evaluated)) = failures.attempt(
+      format!("rule '{}' (priority {})", rule.name, rule.priority),
+      || rule.evaluate(state),
+    ) else {
       continue;
     };
     actions.merge(evaluated);
@@ -1304,7 +1383,7 @@ fn evaluate_rules(
       break;
     }
   }
-  Ok((actions, applied))
+  (actions, applied)
 }
 
 fn apply_actions(
@@ -1327,16 +1406,7 @@ fn apply_actions(
   } = actions;
 
   fs::begin_settings_iteration();
-  for (cpu, delta) in &cpu_deltas {
-    if runtime_failures
-      .attempt(format!("CPU validation for {cpu}"), || delta.validate(cpu))
-      .is_some()
-    {
-      runtime_failures.attempt(format!("CPU application for {cpu}"), || {
-        delta.apply(&mut (**cpu).clone())
-      });
-    }
-  }
+  runtime_failures.apply_cpu_deltas(&cpu_deltas);
 
   log::trace!("applying CPU deltas to {len} CPUs", len = cpu_deltas.len());
 
@@ -1441,7 +1511,7 @@ impl PollingState {
     rules: &[config::Rule],
     state: &RwLock<DaemonState>,
     applied_rules_tx: &watch::Sender<Vec<String>>,
-  ) -> anyhow::Result<Duration> {
+  ) -> Duration {
     log::debug!("starting main polling loop iteration");
     let start = Instant::now();
 
@@ -1466,7 +1536,8 @@ impl PollingState {
       turbo_available,
     );
 
-    let (actions, last_applied_rules) = evaluate_rules(rules, &eval_state)?;
+    let (actions, last_applied_rules) =
+      evaluate_rules(rules, &eval_state, &mut self.runtime_failures);
     apply_actions(actions, &mut self.runtime_failures, &mut self.dma_latency);
 
     let delay = compute_poll_delay(
@@ -1507,7 +1578,7 @@ impl PollingState {
       minutes = delay.as_secs_f64() / 60.0,
     );
 
-    Ok(delay.saturating_sub(elapsed))
+    delay.saturating_sub(elapsed)
   }
 }
 
@@ -1623,9 +1694,7 @@ async fn run_polling_loop(
       },
       DaemonEvent::Poll => {},
     }
-    sleep_for = polling
-      .poll(&config.rules, &state, &applied_rules_tx)
-      .await?;
+    sleep_for = polling.poll(&config.rules, &state, &applied_rules_tx).await;
   }
 
   log::info!("stopping polling loop and shutting down");
@@ -1638,14 +1707,132 @@ mod tests {
   use std::{
     env,
     fs as stdfs,
+    io::ErrorKind,
+    os::unix::fs::symlink,
     process,
   };
 
   use super::*;
   use crate::{
     audio,
+    profile::PowerProfile,
     test_support::SystemFixture,
   };
+
+  #[test]
+  fn renamed_gpu_and_uncore_aliases_keep_restoration_ownership() {
+    let fixture = SystemFixture::new();
+    let gpu = fixture.path("/sys/devices/gpu");
+    let panel = gpu.join("amdgpu/panel_power_savings");
+    fixture.write(&panel, "0");
+    let uncore = fixture.path("/sys/devices/uncore");
+    for (name, value) in [
+      ("initial_min_freq_khz", "800000"),
+      ("initial_max_freq_khz", "3000000"),
+      ("min_freq_khz", "800000"),
+      ("max_freq_khz", "3000000"),
+    ] {
+      fixture.write(uncore.join(name), value);
+    }
+    let gpu_alias = fixture.path("/sys/class/drm/card0");
+    let uncore_alias = fixture
+      .path("/sys/devices/system/cpu/intel_uncore_frequency/package_00_die_00");
+    for (target, alias) in [(&gpu, &gpu_alias), (&uncore, &uncore_alias)] {
+      stdfs::create_dir_all(alias.parent().unwrap()).unwrap();
+      symlink(target, alias).unwrap();
+    }
+    let mut system = System::default();
+    system.scan_gpus().unwrap();
+    system.scan_uncores().unwrap();
+    let _managed = fs::manage_settings();
+    fs::begin_settings_iteration();
+    system
+      .gpus
+      .iter()
+      .next()
+      .unwrap()
+      .set_panel_power_savings(2)
+      .unwrap();
+    system
+      .uncores
+      .iter()
+      .next()
+      .unwrap()
+      .set_min_khz(1_000_000)
+      .unwrap();
+    stdfs::rename(&gpu_alias, gpu_alias.with_file_name("card1")).unwrap();
+    stdfs::rename(
+      &uncore_alias,
+      uncore_alias.with_file_name("package_01_die_00"),
+    )
+    .unwrap();
+    system.scan_gpus().unwrap();
+    system.scan_uncores().unwrap();
+    assert_eq!(fs::applied_settings().len(), 2);
+    fs::begin_settings_iteration();
+    assert!(fs::restore_unmanaged_settings().is_empty());
+    assert_eq!(stdfs::read_to_string(panel).unwrap(), "0");
+    assert_eq!(
+      stdfs::read_to_string(uncore.join("min_freq_khz")).unwrap(),
+      "800000"
+    );
+  }
+
+  #[test]
+  fn renamed_battery_alias_keeps_threshold_restoration() {
+    let fixture = SystemFixture::new();
+    let battery = fixture.path("/sys/devices/battery");
+    fixture.write(battery.join("type"), "Battery");
+    fixture.write(battery.join("charge_control_start_threshold"), "40");
+    let threshold = battery.join("charge_control_end_threshold");
+    fixture.write(&threshold, "80");
+    let alias = fixture.path("/sys/class/power_supply/BAT0");
+    stdfs::create_dir_all(alias.parent().unwrap()).unwrap();
+    symlink(&battery, &alias).unwrap();
+    let mut supply = power_supply::PowerSupply::all().unwrap().pop().unwrap();
+    assert_eq!(supply.name, "BAT0");
+    let mut system = System::default();
+    system.scan_power_supplies().unwrap();
+    let _managed = fs::manage_settings();
+    fs::begin_settings_iteration();
+    supply.set_charge_threshold_end(0.6).unwrap();
+    stdfs::rename(&alias, alias.with_file_name("BAT1")).unwrap();
+    system.scan_power_supplies().unwrap();
+    assert_eq!(fs::applied_settings().len(), 1);
+    fs::begin_settings_iteration();
+    assert!(fs::restore_unmanaged_settings().is_empty());
+    assert_eq!(stdfs::read_to_string(threshold).unwrap(), "80");
+  }
+
+  #[test]
+  fn shared_radeon_device_retains_ownership_after_one_card_disappears() {
+    let fixture = SystemFixture::new();
+    let device = fixture.path("/sys/devices/radeon");
+    let method = device.join("power_method");
+    fixture.write(&method, "profile");
+    let drm = fixture.path("/sys/class/drm");
+    for name in ["card0", "card1"] {
+      let card = drm.join(name);
+      stdfs::create_dir_all(&card).unwrap();
+      symlink(&device, card.join("device")).unwrap();
+    }
+    let mut system = System::default();
+    system.scan_gpus().unwrap();
+    assert_eq!(system.gpus.len(), 2);
+    let _managed = fs::manage_settings();
+    fs::begin_settings_iteration();
+    for gpu in &system.gpus {
+      gpu.set_radeon_powersave("dynpm").unwrap();
+    }
+    assert_eq!(fs::applied_settings().len(), 1);
+    stdfs::remove_dir_all(drm.join("card0")).unwrap();
+    system.scan_gpus().unwrap();
+    assert_eq!(system.gpus.len(), 1);
+    assert_eq!(fs::applied_settings().len(), 1);
+    fs::begin_settings_iteration();
+    assert!(fs::restore_unmanaged_settings().is_empty());
+    assert_eq!(stdfs::read_to_string(method).unwrap(), "profile");
+  }
 
   #[test]
   fn shutdown_restores_audio_and_platform_controls() {
@@ -1680,6 +1867,116 @@ mod tests {
     assert_eq!(stdfs::read_to_string(reset).unwrap(), "N");
     assert_eq!(stdfs::read_to_string(profile).unwrap(), "balanced");
     assert!(fs::applied_settings().is_empty());
+  }
+
+  #[test]
+  fn failed_rule_does_not_override_lower_priority_actions_and_recovers() {
+    let fixture = SystemFixture::new();
+    let policy = fixture.policy(0, &[0], "acpi-cpufreq");
+    fixture.cpu_telemetry(&[0]);
+    let system = System {
+      cpus: cpu::Cpu::all().unwrap().into_iter().map(Arc::new).collect(),
+      ..System::default()
+    };
+    let now = Instant::now();
+    let eval = system.eval_state(now, now, PowerProfile::Balanced, false);
+    let mut high: config::Rule = toml::from_str(
+      "name='high'\npriority=2\ncpu.governor='performance'\naudio.\
+       timeout-seconds='invalid'",
+    )
+    .unwrap();
+    let low: config::Rule =
+      toml::from_str("name='low'\npriority=1\ncpu.governor='powersave'")
+        .unwrap();
+    let mut failures = RuntimeFailures::default();
+    for expected in ["powersave", "performance"] {
+      failures.begin_iteration();
+      let (actions, applied) =
+        evaluate_rules(&[low.clone(), high.clone()], &eval, &mut failures);
+      assert_eq!(applied.contains(&high.name), expected == "performance");
+      apply_actions(actions, &mut failures, &mut cpu::DmaLatency::default());
+      failures.finish_iteration();
+      assert_eq!(
+        stdfs::read_to_string(policy.join("scaling_governor")).unwrap(),
+        expected
+      );
+      assert_eq!(failures.errors.is_empty(), expected == "performance");
+      high.audio = Default::default();
+    }
+  }
+
+  #[test]
+  fn invalid_arithmetic_rule_leaves_lower_priority_rule_eligible() {
+    let system = System::default();
+    let now = Instant::now();
+    let eval = system.eval_state(now, now, PowerProfile::Balanced, false);
+    let low: config::Rule =
+      toml::from_str("name='low'\npriority=1\ncpu.turbo=false").unwrap();
+    for expression in [
+      "{ value=1, divide=0 }",
+      "{ value=0, divide=0 }",
+      "{ value=1e308, multiply=1e308 }",
+      "{ value=-1, power=0.5 }",
+    ] {
+      let high: config::Rule = toml::from_str(&format!(
+        "name='high'\npriority=2\ncpu.turbo=true\naudio.\
+         timeout-seconds={expression}",
+      ))
+      .unwrap();
+      let mut failures = RuntimeFailures::default();
+      let (actions, applied) =
+        evaluate_rules(&[low.clone(), high], &eval, &mut failures);
+      assert_eq!(actions.cpu_global.turbo, Some(false));
+      assert_eq!(applied, vec!["low"]);
+      assert_eq!(failures.errors.len(), 1);
+      let message = failures.latest_message().unwrap();
+      assert!(message.contains("non-finite"), "{expression}: {message}");
+    }
+  }
+
+  #[test]
+  fn shared_policy_failure_does_not_repeat_or_skip_local_controls() {
+    let fixture = SystemFixture::new();
+    let policy = fixture.policy(0, &[0, 1], "intel_pstate");
+    fixture.cpu_telemetry(&[0, 1]);
+    for number in [0, 1] {
+      fixture.write(
+        format!(
+          "/sys/devices/system/cpu/cpu{number}/power/pm_qos_resume_latency_us"
+        ),
+        "0",
+      );
+    }
+    let governor = policy.join("scaling_governor");
+    fixture.write_result(&governor, Err(ErrorKind::PermissionDenied));
+    let deltas = cpu::Cpu::all()
+      .unwrap()
+      .into_iter()
+      .map(|cpu| {
+        (Arc::new(cpu), cpu::Delta {
+          governor: Some("performance".into()),
+          pm_qos_resume_latency_us: Some("100".into()),
+          ..cpu::Delta::default()
+        })
+      })
+      .collect();
+    let mut failures = RuntimeFailures::default();
+    failures.apply_cpu_deltas(&deltas);
+    assert_eq!(fixture.write_count(&governor), 1);
+    assert_eq!(failures.errors.len(), 1);
+    for number in [0, 1] {
+      let path = fixture.path(format!(
+        "/sys/devices/system/cpu/cpu{number}/power/pm_qos_resume_latency_us"
+      ));
+      assert_eq!(stdfs::read_to_string(path).unwrap(), "100");
+    }
+    fixture.clear_io(&governor);
+    failures.begin_iteration();
+    failures.apply_cpu_deltas(&deltas);
+    failures.finish_iteration();
+    assert!(failures.errors.is_empty());
+    assert_eq!(fixture.write_count(&governor), 1);
+    assert_eq!(stdfs::read_to_string(governor).unwrap(), "performance");
   }
 
   #[test]
@@ -1770,6 +2067,84 @@ mod tests {
       system.cpus.iter().next().unwrap().governor.as_deref(),
       Some("performance"),
     );
+  }
+
+  #[test]
+  fn policy_ownership_survives_one_member_but_not_policy_removal() {
+    let fixture = SystemFixture::new();
+    let policy = fixture.policy(0, &[0, 1], "intel_pstate");
+    fixture.cpu_telemetry(&[0, 1]);
+    let _settings = fs::manage_settings();
+    fs::begin_settings_iteration();
+    let mut system = System::default();
+    system.scan_cpus().unwrap();
+    let mut cpu = (**system.cpus.iter().next().unwrap()).clone();
+    cpu.set_governor("performance").unwrap();
+    stdfs::remove_dir_all(fixture.path("/sys/devices/system/cpu/cpu0"))
+      .unwrap();
+    system.scan_cpus().unwrap();
+    assert_eq!(fs::applied_settings().len(), 1);
+    stdfs::remove_dir_all(fixture.path("/sys/devices/system/cpu/cpu1"))
+      .unwrap();
+    system.scan_cpus().unwrap();
+    assert!(fs::applied_settings().is_empty());
+
+    fixture.policy(0, &[0], "intel_pstate");
+    fixture.write(policy.join("scaling_governor"), "schedutil");
+    system.scan_cpus().unwrap();
+    let mut cpu = (**system.cpus.iter().next().unwrap()).clone();
+    cpu.set_governor("performance").unwrap();
+    fs::begin_settings_iteration();
+    assert!(fs::restore_unmanaged_settings().is_empty());
+    assert_eq!(
+      stdfs::read_to_string(policy.join("scaling_governor")).unwrap(),
+      "schedutil"
+    );
+  }
+
+  #[test]
+  fn partial_cpu_scan_preserves_original_settings_for_restoration() {
+    let fixture = SystemFixture::new();
+    let policy = fixture.policy(0, &[0], "acpi-cpufreq");
+    fixture.policy(1, &[1], "acpi-cpufreq");
+    fixture.cpu_telemetry(&[0, 1]);
+    let governor = policy.join("scaling_governor");
+    fixture.write(&governor, "powersave");
+    let latency = "/sys/devices/system/cpu/cpu0/power/pm_qos_resume_latency_us";
+    fixture.write(latency, "0");
+    let _settings = fs::manage_settings();
+    fs::begin_settings_iteration();
+    let mut system = System::default();
+    system.scan_cpus().unwrap();
+    fs::write(&governor, "performance").unwrap();
+    fs::observe(&governor, "performance");
+    fs::write(latency, "100").unwrap();
+    fs::observe(latency, "100");
+
+    fixture.fail_read(&governor, ErrorKind::PermissionDenied);
+    assert!(system.scan_cpus().is_err());
+    assert_eq!(system.cpus.len(), 2);
+    fixture.clear_io(&governor);
+    fs::begin_settings_iteration();
+    assert!(fs::restore_unmanaged_settings().is_empty());
+    assert_eq!(stdfs::read_to_string(governor).unwrap(), "powersave");
+    assert_eq!(fs::read(latency).unwrap().as_deref(), Some("0"));
+  }
+
+  #[test]
+  fn status_lists_shared_policies_once() {
+    let fixture = SystemFixture::new();
+    fixture.policy(0, &[0, 1], "intel_pstate");
+    fixture.policy(2, &[2], "acpi-cpufreq");
+    fixture.cpu_telemetry(&[0, 1, 2]);
+    let mut state = DaemonState::new(String::new(), 0);
+    state.system.scan_cpus().unwrap();
+    let policies = state.cpu_policies();
+    assert_eq!(policies.len(), 2);
+    assert_eq!(policies[0].name, "policy0");
+    assert_eq!(policies[0].related_cpus, [0, 1]);
+    assert_eq!(policies[1].name, "policy2");
+    assert_eq!(policies[1].related_cpus, [2]);
   }
 
   #[test]

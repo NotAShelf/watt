@@ -160,6 +160,22 @@ mod tests {
   use crate::config::test_support::with_cpu_state;
 
   #[test]
+  fn failed_late_action_returns_no_partial_rule() {
+    with_cpu_state(&HashSet::new(), |state| {
+      let mut rule: Rule = toml::from_str(
+        "name='test'\npriority=1\ncpu.turbo=true\naudio.timeout-seconds='\
+         invalid'",
+      )
+      .unwrap();
+      let error = rule.evaluate(state).err().expect("invalid audio action");
+      assert!(format!("{error:#}").contains("audio"));
+      rule.audio = Default::default();
+      let result = rule.evaluate(state).unwrap().unwrap();
+      assert_eq!(result.cpu_global.turbo, Some(true));
+    });
+  }
+
+  #[test]
   fn skipped_rule_does_not_evaluate_invalid_actions() {
     with_cpu_state(&HashSet::new(), |state| {
       for condition in ["false", "'$cpu-temperature'"] {

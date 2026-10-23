@@ -45,7 +45,9 @@ impl UsbDevice {
 
     for entry in entries {
       let entry = entry.context("failed to read USB device entry")?;
-      let path = entry.path();
+      let Some(path) = fs::canonicalize(entry.path())? else {
+        continue;
+      };
       if !path.join("power").exists() || !path.join("idVendor").exists() {
         continue;
       }
@@ -71,6 +73,41 @@ impl UsbDevice {
       &delay_ms.to_string(),
     )
     .with_context(|| format!("failed to set autosuspend delay for {self}"))
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use std::{
+    fs as stdfs,
+    os::unix::fs::symlink,
+  };
+
+  use super::*;
+  use crate::test_support::SystemFixture;
+
+  #[test]
+  fn aliases_share_the_original_autosuspend_setting() {
+    let fixture = SystemFixture::new();
+    let device = fixture.path("/sys/devices/usb1/1-1");
+    fixture.write(device.join("idVendor"), "1234");
+    let control = device.join("power/control");
+    fixture.write(&control, "on");
+    let aliases = fixture.path("/sys/bus/usb/devices");
+    stdfs::create_dir_all(&aliases).unwrap();
+    symlink(&device, aliases.join("1-1")).unwrap();
+    symlink(&device, aliases.join("renamed")).unwrap();
+    let devices = UsbDevice::all().unwrap();
+    assert_eq!(devices.len(), 2);
+    let _managed = fs::manage_settings();
+    fs::begin_settings_iteration();
+    for device in devices {
+      device.set_autosuspend(true).unwrap();
+    }
+    assert_eq!(fs::applied_settings().len(), 1);
+    fs::begin_settings_iteration();
+    assert!(fs::restore_unmanaged_settings().is_empty());
+    assert_eq!(stdfs::read_to_string(control).unwrap(), "on");
   }
 }
 
