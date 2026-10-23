@@ -86,6 +86,21 @@ fn assert_property(xml: &str, name: &str, signature: &str, access: &str) {
   assert_eq!(attribute(property, "access"), access, "property {name}");
 }
 
+fn assert_documented(interface: &str) {
+  let documentation =
+    include_str!("../../docs/configuration/administration.md");
+  for kind in ["method", "property", "signal"] {
+    for member in interface.split(&format!("<{kind} name=\"")).skip(1) {
+      let name = member.split('"').next().unwrap();
+      assert!(
+        documentation.contains(&format!("`{name}`"))
+          || documentation.contains(&format!("`{name}(")),
+        "{kind} {name} is missing from administration.md"
+      );
+    }
+  }
+}
+
 async fn introspect(
   connection: &Connection,
   destination: &str,
@@ -147,6 +162,7 @@ async fn public_bus_names_paths_and_signatures_remain_additive() {
   ] {
     assert_signature(watt, "signal", name, "", signature);
   }
+  assert_documented(watt);
   let proxy = native(&connection).await;
   assert_eq!(
     bounded(proxy.get_property::<u32>("InterfaceVersion"))
@@ -167,6 +183,7 @@ async fn public_bus_names_paths_and_signatures_remain_additive() {
   assert_signature(ppd, "method", "HoldProfile", "sss", "u");
   assert_signature(ppd, "method", "ReleaseProfile", "u", "");
   assert_signature(ppd, "signal", "ProfileReleased", "", "u");
+  assert_documented(ppd);
   daemon.shutdown("-TERM").await;
 }
 
