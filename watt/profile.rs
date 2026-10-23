@@ -3,6 +3,10 @@ use std::{
   error::Error,
   fmt,
   str::FromStr,
+  sync::{
+    Arc,
+    Weak,
+  },
   time::Instant,
 };
 
@@ -105,10 +109,17 @@ pub struct ProfileHold {
 }
 
 #[derive(Debug)]
+pub(crate) struct OwnerCheck {
+  owner:      String,
+  generation: Arc<()>,
+}
+
+#[derive(Debug)]
 pub struct ProfileState {
   preferred_profile: PowerProfile,
   holds:             HashMap<u32, ProfileHold>,
   next_cookie:       u32,
+  owner_checks:      HashMap<String, Weak<()>>,
 }
 
 impl ProfileState {
@@ -117,6 +128,7 @@ impl ProfileState {
       preferred_profile: PowerProfile::Balanced,
       holds:             HashMap::new(),
       next_cookie:       1,
+      owner_checks:      HashMap::new(),
     }
   }
 
@@ -127,6 +139,34 @@ impl ProfileState {
     application_id: String,
   ) -> u32 {
     self.add_hold_for(profile, reason, application_id, String::new())
+  }
+
+  pub(crate) fn begin_owner_check(&mut self, owner: &str) -> OwnerCheck {
+    // Cancelled requests leave weak entries, reclaimed by the next check.
+    self
+      .owner_checks
+      .retain(|_, check| check.strong_count() > 0);
+    let current = self.owner_checks.entry(owner.to_owned()).or_default();
+    let generation = current.upgrade().unwrap_or_else(|| Arc::new(()));
+    *current = Arc::downgrade(&generation);
+    OwnerCheck {
+      owner: owner.to_owned(),
+      generation,
+    }
+  }
+
+  pub(crate) fn add_checked_hold(
+    &mut self,
+    check: OwnerCheck,
+    profile: PowerProfile,
+    reason: String,
+    application_id: String,
+  ) -> Option<u32> {
+    let current = self.owner_checks.get(&check.owner)?;
+    if !current.ptr_eq(&Arc::downgrade(&check.generation)) {
+      return None;
+    }
+    Some(self.add_hold_for(profile, reason, application_id, check.owner))
   }
 
   pub fn add_hold_for(
@@ -187,6 +227,7 @@ impl ProfileState {
   }
 
   pub fn release_owner(&mut self, owner: &str) -> Vec<u32> {
+    self.owner_checks.remove(owner);
     self
       .holds
       .extract_if(|_, hold| hold.owner == owner)
@@ -195,6 +236,7 @@ impl ProfileState {
   }
 
   pub fn release_bus_holds(&mut self) {
+    self.owner_checks.clear();
     self.holds.retain(|_, hold| hold.owner.is_empty());
   }
 
@@ -312,5 +354,58 @@ mod tests {
     );
     assert_eq!(state.release_owner(":1.12").len(), 1);
     assert!(state.get_holds().is_empty());
+  }
+
+  #[test]
+  fn owner_checks_cannot_survive_disconnect_or_bus_replacement() {
+    let mut state = ProfileState::new();
+    let first = state.begin_owner_check(":1.42");
+    let concurrent = state.begin_owner_check(":1.42");
+    assert!(
+      state
+        .add_checked_hold(
+          first,
+          PowerProfile::Performance,
+          "render".into(),
+          "app".into()
+        )
+        .is_some()
+    );
+    assert_eq!(state.release_owner(":1.42").len(), 1);
+    assert!(
+      state
+        .add_checked_hold(
+          concurrent,
+          PowerProfile::Performance,
+          "render".into(),
+          "app".into()
+        )
+        .is_none()
+    );
+
+    let old_bus = state.begin_owner_check(":1.42");
+    state.release_bus_holds();
+    let new_bus = state.begin_owner_check(":1.42");
+    assert!(
+      state
+        .add_checked_hold(
+          old_bus,
+          PowerProfile::Performance,
+          "render".into(),
+          "app".into()
+        )
+        .is_none()
+    );
+    assert!(
+      state
+        .add_checked_hold(
+          new_bus,
+          PowerProfile::PowerSaver,
+          "battery".into(),
+          "app".into()
+        )
+        .is_some()
+    );
+    assert_eq!(state.get_holds().len(), 1);
   }
 }
