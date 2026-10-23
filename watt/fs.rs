@@ -40,18 +40,27 @@ thread_local! {
   static TEST_MANAGED_SETTINGS: RefCell<ManagedSettings> = RefCell::new(ManagedSettings::default());
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum ReadbackKind {
+  #[default]
+  Ordinary,
+  DriverTranslated,
+}
+
 #[derive(Debug)]
 struct ManagedSetting {
-  original:     String,
-  last_written: String,
-  observed:     Option<String>,
-  generation:   u64,
+  original:      String,
+  last_written:  String,
+  observed:      Option<String>,
+  readback_kind: ReadbackKind,
+  generation:    u64,
 }
 
 impl ManagedSetting {
   fn record_write(&mut self, value: &str) {
     value.clone_into(&mut self.last_written);
     self.observed = None;
+    self.readback_kind = ReadbackKind::Ordinary;
   }
 }
 
@@ -60,6 +69,7 @@ pub struct AppliedSetting {
   pub path:      PathBuf,
   pub requested: String,
   pub observed:  Option<String>,
+  readback_kind: ReadbackKind,
 }
 
 impl AppliedSetting {
@@ -73,6 +83,10 @@ impl AppliedSetting {
   pub fn verification(&self) -> &'static str {
     if self.is_verified() {
       return "verified";
+    }
+
+    if self.readback_kind == ReadbackKind::DriverTranslated {
+      return "translated";
     }
 
     match self.observed {
@@ -248,6 +262,7 @@ pub fn write(input: impl AsRef<Path>, value: &str) -> anyhow::Result<()> {
           original,
           last_written: value.to_owned(),
           observed: None,
+          readback_kind: ReadbackKind::Ordinary,
           generation,
         });
       }
@@ -258,11 +273,27 @@ pub fn write(input: impl AsRef<Path>, value: &str) -> anyhow::Result<()> {
 }
 
 pub fn observe(input: impl AsRef<Path>, observed: impl Into<String>) {
+  record_observation(input, observed, ReadbackKind::Ordinary);
+}
+
+pub(crate) fn observe_translation(
+  input: impl AsRef<Path>,
+  observed: impl Into<String>,
+) {
+  record_observation(input, observed, ReadbackKind::DriverTranslated);
+}
+
+fn record_observation(
+  input: impl AsRef<Path>,
+  observed: impl Into<String>,
+  readback_kind: ReadbackKind,
+) {
   let path = path(input);
   let observed = observed.into();
   with_managed_settings(|settings| {
     if let Some(setting) = settings.settings.get_mut(&path) {
       setting.observed = Some(observed);
+      setting.readback_kind = readback_kind;
     }
   });
 }
@@ -275,6 +306,7 @@ pub fn keep_setting(input: impl AsRef<Path>, observed: impl Into<String>) {
     if let Some(setting) = settings.settings.get_mut(&path) {
       setting.generation = generation;
       setting.observed = Some(observed);
+      setting.readback_kind = ReadbackKind::Ordinary;
     }
   });
 }
@@ -286,9 +318,10 @@ pub fn applied_settings() -> Vec<AppliedSetting> {
       .iter()
       .map(|(path, setting)| {
         AppliedSetting {
-          path:      path.clone(),
-          requested: setting.last_written.clone(),
-          observed:  setting.observed.clone(),
+          path:          path.clone(),
+          requested:     setting.last_written.clone(),
+          observed:      setting.observed.clone(),
+          readback_kind: setting.readback_kind,
         }
       })
       .collect()
@@ -606,9 +639,10 @@ mod tests {
   #[test]
   fn distinguishes_frequency_clamping_from_a_mismatch() {
     let setting = AppliedSetting {
-      path:      PathBuf::from("/sys/cpu/scaling_min_freq"),
-      requested: "1000".into(),
-      observed:  Some("900".into()),
+      path:          PathBuf::from("/sys/cpu/scaling_min_freq"),
+      requested:     "1000".into(),
+      observed:      Some("900".into()),
+      readback_kind: ReadbackKind::Ordinary,
     };
     assert_eq!(setting.verification(), "clamped");
 
@@ -617,6 +651,25 @@ mod tests {
       ..setting
     };
     assert_eq!(setting.verification(), "mismatch");
+  }
+
+  #[test]
+  fn translated_readback_is_not_exact_and_does_not_survive_new_observations() {
+    let fixture = SystemFixture::new();
+    let path = "/sys/energy_performance_preference";
+    fixture.write(path, "balance_power");
+    let _settings = manage_settings();
+    begin_settings_iteration();
+    write(path, "123").unwrap();
+    observe_translation(path, "performance");
+    let applied = applied_settings().remove(0);
+    assert_eq!(applied.verification(), "translated");
+    assert!(!applied.is_verified());
+    observe(path, "unexpected");
+    assert_eq!(applied_settings()[0].verification(), "mismatch");
+    observe_translation(path, "performance");
+    write(path, "124").unwrap();
+    assert_eq!(applied_settings()[0].verification(), "unverified");
   }
 
   #[test]

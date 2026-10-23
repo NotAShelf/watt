@@ -29,6 +29,7 @@ use yansi::Paint as _;
 
 use crate::fs;
 
+mod boost;
 pub mod frequency;
 pub mod policy;
 
@@ -273,8 +274,8 @@ impl Cpu {
       self.scan_governor()?;
       self.scan_frequency()?;
       self.scan_epp()?;
-      self.scan_epb()?;
     }
+    self.scan_epb()?;
 
     self.scan_stat(cache)?;
     self.scan_info(cache)?;
@@ -539,23 +540,72 @@ impl Cpu {
 
   pub fn set_epp(&mut self, epp: &str) -> anyhow::Result<()> {
     self.validate_epp(epp)?;
+    let numeric = epp.parse::<u8>().ok().map(|value| value.to_string());
+    let epp = numeric.as_deref().unwrap_or(epp);
     let path = self.cpufreq_path("energy_performance_preference");
 
-    write_verified(&path, epp, "CPU EPP").with_context(|| {
+    let observed = self.write_epp(&path, epp).with_context(|| {
       format!(
         "this probably means that {self} doesn't exist or doesn't support \
          changing EPP"
       )
     })?;
 
-    self.epp = Some(epp.to_owned());
+    self.epp = Some(observed);
 
     log::trace!("CPU {number} EPP set to {epp}", number = self.number);
 
     Ok(())
   }
 
+  fn write_epp(&self, path: &Path, epp: &str) -> anyhow::Result<String> {
+    let current = fs::read(path)?.context("CPU EPP control is unavailable")?;
+    if current == epp {
+      fs::keep_setting(path, &current);
+      return Ok(current);
+    }
+
+    fs::write(path, epp)?;
+    let observed =
+      fs::read(path)?.context("CPU EPP disappeared after it was written")?;
+    if observed == epp {
+      fs::observe(path, &observed);
+      return Ok(observed);
+    }
+    if self.accepts_epp_translation(epp, &observed) {
+      fs::observe_translation(path, &observed);
+      return Ok(observed);
+    }
+    fs::observe(path, &observed);
+    bail!("CPU EPP did not retain '{epp}'; observed '{observed}'");
+  }
+
+  fn accepts_epp_translation(&self, requested: &str, observed: &str) -> bool {
+    requested.parse::<u8>().is_ok()
+      && self
+        .policy
+        .as_ref()
+        .is_some_and(|policy| policy.driver.as_deref() == Some("intel_pstate"))
+      && observed.parse::<u16>().is_err()
+      && self.available_epps.iter().any(|value| value == observed)
+  }
+
   fn validate_epp(&self, epp: &str) -> anyhow::Result<()> {
+    if let Ok(value) = epp.parse::<u16>() {
+      let supported = self.policy.as_ref().is_some_and(|policy| {
+        matches!(
+          policy.driver.as_deref(),
+          Some("intel_pstate" | "amd-pstate-epp")
+        )
+      });
+      if value <= u8::MAX as u16 && supported && self.epp.is_some() {
+        return Ok(());
+      }
+      bail!(
+        "numeric EPP requires a supported P-State EPP interface and a value \
+         in 0..=255"
+      );
+    }
     if !self.available_epps.iter().any(|value| value == epp) {
       bail!(
         "EPP value '{epp}' is not available for {self}. available EPP values: \
@@ -665,91 +715,23 @@ impl Cpu {
 
   pub fn set_turbo<'a>(
     on: bool,
-    mut cpus: impl Iterator<Item = &'a Self>,
+    cpus: impl Iterator<Item = &'a Self>,
   ) -> anyhow::Result<()> {
-    log::info!("setting CPU turbo boost to {on}");
-
-    let value_boost = match on {
-      true => "1",  // boost = 1 means turbo is enabled.
-      false => "0", // boost = 0 means turbo is disabled.
-    };
-
-    let value_boost_negated = match on {
-      true => "0",  // no_turbo = 0 means turbo is enabled.
-      false => "1", // no_turbo = 1 means turbo is disabled.
-    };
-
-    // AMD specific paths
-    let amd_boost_path = "/sys/devices/system/cpu/amd_pstate/cpufreq/boost";
-    let msr_boost_path =
-      "/sys/devices/system/cpu/cpufreq/amd_pstate_enable_boost";
-
-    // Path priority (from most to least specific)
-    let intel_boost_path_negated =
-      "/sys/devices/system/cpu/intel_pstate/no_turbo";
-    let generic_boost_path = "/sys/devices/system/cpu/cpufreq/boost";
-
-    // Try each boost control path in order of specificity
-    if write_verified(
-      intel_boost_path_negated,
-      value_boost_negated,
-      "Intel P-State turbo",
-    )
-    .is_ok()
-    {
-      return Ok(());
-    }
-    if write_verified(amd_boost_path, value_boost, "AMD P-State turbo").is_ok()
-    {
-      return Ok(());
-    }
-    if write_verified(msr_boost_path, value_boost, "AMD turbo").is_ok() {
-      return Ok(());
-    }
-    if write_verified(generic_boost_path, value_boost, "generic turbo").is_ok()
-    {
-      return Ok(());
-    }
-
-    // Also try per-core cpufreq boost for some AMD systems.
-    if cpus.any(|cpu| {
-      let Cpu { number, .. } = cpu;
-
-      write_verified(
-        format!("/sys/devices/system/cpu/cpu{number}/cpufreq/boost"),
-        value_boost,
-        "CPU turbo",
-      )
-      .is_ok()
-    }) {
-      return Ok(());
-    }
-
-    bail!("no supported CPU boost control mechanism found");
+    boost::Boost::discover(cpus)
+      .context("no supported CPU boost control mechanism found")?
+      .write(on)
   }
 
   pub fn is_intel_pstate() -> bool {
     fs::exists("/sys/devices/system/cpu/intel_pstate")
   }
 
-  pub fn turbo() -> anyhow::Result<Option<bool>> {
-    log::trace!("reading turbo boost status");
-
-    if let Some(content) =
-      fs::read_n::<u64>("/sys/devices/system/cpu/intel_pstate/no_turbo")
-        .context("failed to read CPU turbo boost status")?
-    {
-      return Ok(Some(content == 0));
-    }
-
-    if let Some(content) =
-      fs::read_n::<u64>("/sys/devices/system/cpu/cpufreq/boost")
-        .context("failed to read CPU turbo boost status")?
-    {
-      return Ok(Some(content == 1));
-    }
-
-    Ok(None)
+  pub fn turbo<'a>(
+    cpus: impl Iterator<Item = &'a Self>,
+  ) -> anyhow::Result<Option<bool>> {
+    boost::Boost::discover(cpus)
+      .map(|boost| boost.read())
+      .transpose()
   }
 }
 
@@ -956,7 +938,10 @@ impl DmaLatency {
 mod tests {
   use std::{
     fs as stdfs,
-    io::ErrorKind,
+    io::{
+      Error,
+      ErrorKind,
+    },
   };
 
   use super::{
@@ -969,6 +954,33 @@ mod tests {
     fs,
     test_support::SystemFixture,
   };
+
+  fn is_permission_denied(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+      cause
+        .downcast_ref::<Error>()
+        .is_some_and(|error| error.kind() == ErrorKind::PermissionDenied)
+    })
+  }
+
+  #[test]
+  fn epb_remains_available_without_cpufreq() {
+    let fixture = SystemFixture::new();
+    fixture.cpu_telemetry(&[0]);
+    let epb = "/sys/devices/system/cpu/cpu0/power/energy_perf_bias";
+    fixture.write(epb, "6");
+    let mut cpu = Cpu::all().unwrap().remove(0);
+    assert!(cpu.policy.is_none());
+    assert_eq!(cpu.epb.as_deref(), Some("6"));
+    let delta = Delta {
+      energy_perf_bias: Some("0".into()),
+      ..Delta::default()
+    };
+    delta.validate(&cpu).unwrap();
+    delta.apply(&mut cpu).unwrap();
+    assert_eq!(stdfs::read_to_string(fixture.path(epb)).unwrap(), "0");
+    assert_eq!(cpu.epb.as_deref(), Some("0"));
+  }
 
   #[test]
   fn scans_and_applies_cpu_controls_in_a_virtual_system_tree() {
@@ -1003,6 +1015,175 @@ mod tests {
         "1000000"
       );
     }
+  }
+
+  #[test]
+  fn numeric_epp_requires_a_supported_interface() {
+    for driver in ["intel_pstate", "amd-pstate-epp"] {
+      let fixture = SystemFixture::new();
+      let policy = fixture.policy(0, &[0], driver);
+      fixture.cpu_telemetry(&[0]);
+      let mut cpu = Cpu::all().unwrap().remove(0);
+      cpu.set_epp("123").unwrap();
+      assert_eq!(
+        stdfs::read_to_string(policy.join("energy_performance_preference"))
+          .unwrap(),
+        "123"
+      );
+      cpu.set_epp("010").unwrap();
+      assert_eq!(
+        stdfs::read_to_string(policy.join("energy_performance_preference"))
+          .unwrap(),
+        "10"
+      );
+      for bound in ["0", "255"] {
+        cpu.set_epp(bound).unwrap();
+        assert_eq!(cpu.epp.as_deref(), Some(bound));
+      }
+      assert!(cpu.set_epp("256").is_err());
+      stdfs::remove_file(policy.join("energy_performance_preference")).unwrap();
+      assert!(cpu.set_epp("123").is_err());
+      assert!(!policy.join("energy_performance_preference").exists());
+      let cpu = Cpu::all().unwrap().remove(0);
+      assert!(cpu.validate_epp("123").is_err());
+    }
+    let mut cpu = Cpu::default();
+    assert!(cpu.set_epp("123").is_err());
+  }
+
+  #[test]
+  fn numeric_epp_accepts_named_driver_readback_for_restoration() {
+    let fixture = SystemFixture::new();
+    let policy = fixture.policy(0, &[0], "intel_pstate");
+    fixture.cpu_telemetry(&[0]);
+    let path = policy.join("energy_performance_preference");
+    fixture.write(&path, "balance_power");
+    let mut cpu = Cpu::all().unwrap().remove(0);
+    let _managed = fs::manage_settings();
+    fs::begin_settings_iteration();
+    fixture.write_result(&path, Ok("performance"));
+    cpu.set_epp("0").unwrap();
+    let settings = fs::applied_settings();
+    assert_eq!(settings.len(), 1);
+    assert_eq!(settings[0].requested, "0");
+    assert_eq!(settings[0].observed.as_deref(), Some("performance"));
+    assert_eq!(settings[0].verification(), "translated");
+    assert!(!settings[0].is_verified());
+    assert_eq!(cpu.epp.as_deref(), Some("performance"));
+    fixture.clear_io(&path);
+    fs::begin_settings_iteration();
+    assert!(fs::restore_unmanaged_settings().is_empty());
+    assert_eq!(stdfs::read_to_string(path).unwrap(), "balance_power");
+  }
+
+  #[test]
+  fn numeric_epp_rejects_driver_mismatches_and_restores_observed_ownership() {
+    for (driver, observed) in [
+      ("intel_pstate", "122"),
+      ("intel_pstate", "unknown"),
+      ("amd-pstate-epp", "performance"),
+      ("amd-pstate-epp", "122"),
+    ] {
+      let fixture = SystemFixture::new();
+      let policy = fixture.policy(0, &[0], driver);
+      fixture.cpu_telemetry(&[0]);
+      let path = policy.join("energy_performance_preference");
+      let mut cpu = Cpu::all().unwrap().remove(0);
+      let original = cpu.epp.clone();
+      let _managed = fs::manage_settings();
+      fs::begin_settings_iteration();
+      fixture.write_result(&path, Ok(observed));
+      let error = cpu.set_epp("123").unwrap_err();
+      assert!(format!("{error:#}").contains("did not retain '123'"));
+      assert_eq!(cpu.epp, original);
+      let applied = fs::applied_settings().remove(0);
+      assert_eq!(applied.observed.as_deref(), Some(observed));
+      assert_eq!(applied.verification(), "mismatch");
+      fixture.clear_io(&path);
+      fs::begin_settings_iteration();
+      assert!(fs::restore_unmanaged_settings().is_empty());
+      assert_eq!(fs::read(&path).unwrap(), original);
+    }
+  }
+
+  #[test]
+  fn numeric_epp_does_not_swallow_a_write_error_with_named_readback() {
+    let fixture = SystemFixture::new();
+    let policy = fixture.policy(0, &[0], "intel_pstate");
+    fixture.cpu_telemetry(&[0]);
+    let path = policy.join("energy_performance_preference");
+    let mut cpu = Cpu::all().unwrap().remove(0);
+    let original = cpu.epp.clone();
+    let _managed = fs::manage_settings();
+    fs::begin_settings_iteration();
+    fixture.write_result(&path, Err(ErrorKind::PermissionDenied));
+    assert!(is_permission_denied(&cpu.set_epp("123").unwrap_err()));
+    assert_eq!(cpu.epp, original);
+    assert!(fs::applied_settings().is_empty());
+    assert_eq!(fs::read(&path).unwrap(), original);
+    assert_eq!(fixture.write_count(&path), 1);
+  }
+
+  #[test]
+  fn numeric_epp_read_errors_do_not_write_or_accept_translation() {
+    let fixture = SystemFixture::new();
+    let policy = fixture.policy(0, &[0], "intel_pstate");
+    fixture.cpu_telemetry(&[0]);
+    let path = policy.join("energy_performance_preference");
+    let mut cpu = Cpu::all().unwrap().remove(0);
+    let original = cpu.epp.clone();
+    let _managed = fs::manage_settings();
+    fs::begin_settings_iteration();
+    fixture.fail_read(&path, ErrorKind::PermissionDenied);
+    assert!(is_permission_denied(&cpu.set_epp("123").unwrap_err()));
+    assert_eq!(cpu.epp, original);
+    assert!(fs::applied_settings().is_empty());
+    assert_eq!(fixture.write_count(&path), 0);
+  }
+
+  #[test]
+  fn numeric_epp_does_not_retry_a_transient_readback_failure_as_translation() {
+    let fixture = SystemFixture::new();
+    let policy = fixture.policy(0, &[0], "intel_pstate");
+    fixture.cpu_telemetry(&[0]);
+    let path = policy.join("energy_performance_preference");
+    let mut cpu = Cpu::all().unwrap().remove(0);
+    let original = cpu.epp.clone();
+    let _managed = fs::manage_settings();
+    fs::begin_settings_iteration();
+    fixture.write_result(&path, Ok("performance"));
+    fixture.fail_read_after_write(&path, ErrorKind::PermissionDenied);
+    assert!(is_permission_denied(&cpu.set_epp("123").unwrap_err()));
+    assert_eq!(cpu.epp, original);
+    let applied = fs::applied_settings().remove(0);
+    assert_eq!(applied.requested, "123");
+    assert!(applied.observed.is_none());
+    assert_eq!(applied.verification(), "unverified");
+    assert_eq!(fixture.write_count(&path), 1);
+    assert_eq!(fs::read(&path).unwrap().as_deref(), Some("performance"));
+    fixture.clear_io(&path);
+    fs::begin_settings_iteration();
+    assert!(fs::restore_unmanaged_settings().is_empty());
+    assert_eq!(fs::read(&path).unwrap().as_deref(), Some("performance"));
+  }
+
+  #[test]
+  fn translated_epp_does_not_restore_over_an_external_change() {
+    let fixture = SystemFixture::new();
+    let policy = fixture.policy(0, &[0], "intel_pstate");
+    fixture.cpu_telemetry(&[0]);
+    let path = policy.join("energy_performance_preference");
+    let mut cpu = Cpu::all().unwrap().remove(0);
+    let _managed = fs::manage_settings();
+    fs::begin_settings_iteration();
+    fixture.write_result(&path, Ok("performance"));
+    cpu.set_epp("123").unwrap();
+    fixture.clear_io(&path);
+    fixture.write(&path, "power");
+    fs::begin_settings_iteration();
+    assert!(fs::restore_unmanaged_settings().is_empty());
+    assert!(fs::applied_settings().is_empty());
+    assert_eq!(fs::read(&path).unwrap().as_deref(), Some("power"));
   }
 
   #[test]

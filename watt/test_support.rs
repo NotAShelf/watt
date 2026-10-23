@@ -23,10 +23,11 @@ use crate::fs::{
 
 #[derive(Default)]
 struct FileBehavior {
-  writes:       usize,
-  bound:        Option<(PathBuf, Ordering)>,
-  read_error:   Option<io::ErrorKind>,
-  write_result: Option<Result<String, io::ErrorKind>>,
+  writes:                 usize,
+  bound:                  Option<(PathBuf, Ordering)>,
+  read_error:             Option<io::ErrorKind>,
+  read_error_after_write: Option<io::ErrorKind>,
+  write_result:           Option<Result<String, io::ErrorKind>>,
 }
 
 thread_local! {
@@ -104,6 +105,17 @@ impl SystemFixture {
 
   pub(crate) fn fail_read(&self, path: impl AsRef<Path>, error: io::ErrorKind) {
     self.configure(path, |behavior| behavior.read_error = Some(error));
+  }
+
+  /// Fails the first read after a tracked write attempt, then resumes reads.
+  pub(crate) fn fail_read_after_write(
+    &self,
+    path: impl AsRef<Path>,
+    error: io::ErrorKind,
+  ) {
+    self.configure(path, |behavior| {
+      behavior.read_error_after_write = Some(error);
+    });
   }
 
   pub(crate) fn write_result(
@@ -187,10 +199,14 @@ impl Drop for SystemFixture {
 pub(crate) fn read_raw(path: impl AsRef<Path>) -> io::Result<String> {
   let path = path.as_ref();
   let error = fs::canonicalize(path).ok().and_then(|path| {
-    FILE_BEHAVIORS.with_borrow(|behaviors| {
-      behaviors
-        .get(&path)
-        .and_then(|behavior| behavior.read_error)
+    FILE_BEHAVIORS.with_borrow_mut(|behaviors| {
+      behaviors.get_mut(&path).and_then(|behavior| {
+        behavior.read_error.or_else(|| {
+          (behavior.writes > 0)
+            .then(|| behavior.read_error_after_write.take())
+            .flatten()
+        })
+      })
     })
   });
   if let Some(error) = error {

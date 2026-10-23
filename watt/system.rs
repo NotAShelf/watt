@@ -1526,7 +1526,9 @@ impl PollingState {
     let power_profile_preference = state.read().await.active_profile();
     let turbo_available = self
       .runtime_failures
-      .attempt("turbo capability scan", cpu::Cpu::turbo)
+      .attempt("turbo capability scan", || {
+        cpu::Cpu::turbo(self.system.cpus.iter().map(AsRef::as_ref))
+      })
       .flatten()
       .is_some();
     let eval_state = self.system.eval_state(
