@@ -11,3 +11,4 @@ fill settings that higher-priority rules leave unset.
 - [Loading, verification and daemon administration](configuration/administration.md)
 - [Rules and expressions](configuration/rules.md)
 - [Actions and targets](configuration/actions.md)
+- [Hardware support and changes](configuration/hardware.md)
