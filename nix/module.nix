@@ -47,6 +47,7 @@ in {
     systemd.services.watt = {
       wantedBy = ["multi-user.target"];
       conflicts = map (service: "${service}.service") conflictingServices;
+      environment.WATT_CONFIG = cfgFile;
       serviceConfig = {
         WorkingDirectory = "";
         ExecStart = getExe cfg.package;
