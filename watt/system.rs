@@ -9,6 +9,7 @@ use std::{
   env,
   future::Future,
   iter::once,
+  mem,
   path::{
     Path,
     PathBuf,
@@ -61,6 +62,15 @@ use crate::{
   profile,
   uncore,
   usb,
+};
+
+mod capabilities;
+mod diagnostics;
+
+pub use capabilities::DeviceCapabilities;
+pub use diagnostics::{
+  DurationMetricDiagnostics,
+  PollingDiagnostics,
 };
 
 pub type ReloadResult = (bool, String);
@@ -289,9 +299,11 @@ struct System {
   power_supply_log: VecDeque<PowerSupplyLog>,
 
   /// Battery cycle count (aggregated average across all batteries).
-  battery_cycles: Option<f64>,
+  battery_cycles:      Option<f64>,
   /// Battery health (aggregated average across all batteries).
-  battery_health: Option<f64>,
+  battery_health:      Option<f64>,
+  device_capabilities: Vec<DeviceCapabilities>,
+  boost_capabilities:  Option<cpu::BoostCapabilities>,
 }
 
 fn retire_missing_devices<T>(
@@ -426,6 +438,9 @@ impl System {
     );
     self.scan_component(failures, "temperature scan", Self::scan_temperatures);
     self.append_logs();
+    self.boost_capabilities =
+      cpu::Cpu::boost_capabilities(self.cpus.iter().map(AsRef::as_ref));
+    self.device_capabilities = capabilities::snapshot(self, failures);
   }
 
   fn scan_component(
@@ -1107,6 +1122,14 @@ impl System {
   }
 
   fn is_cpu_idle(&self, now: Instant) -> bool {
+    self.is_cpu_idle_with_volatility(now, self.cpu_volatility(now).as_ref())
+  }
+
+  fn is_cpu_idle_with_volatility(
+    &self,
+    now: Instant,
+    volatility: Option<&CpuVolatility>,
+  ) -> bool {
     let (total, count) =
       CpuLog::recent(&self.cpu_log, now, Duration::from_secs(5 * 60))
         .fold((0.0, 0usize), |(total, count), log| {
@@ -1117,9 +1140,7 @@ impl System {
     }
 
     total / (count as f64) < 0.1
-      && self
-        .cpu_volatility(now)
-        .is_some_and(|volatility| volatility.usage < 0.05)
+      && volatility.is_some_and(|volatility| volatility.usage < 0.05)
   }
 
   fn poll_delay_for_power_source(&self) -> Duration {
@@ -1182,53 +1203,21 @@ fn idle_multiplier(idle_for: Duration) -> f64 {
   (1.0 + factor).clamp(1.0, 5.0)
 }
 
+#[cfg(test)]
 fn compute_poll_delay(
   system: &System,
   last_polling_delay: Option<Duration>,
   last_cpu_activity: Instant,
   now: Instant,
 ) -> Duration {
-  let mut delay = system.poll_delay_for_power_source();
-
-  if system.is_cpu_idle(now) {
-    let idle_for = now.saturating_duration_since(last_cpu_activity);
-
-    if idle_for > Duration::from_secs(30) {
-      let factor = idle_multiplier(idle_for);
-
-      log::debug!(
-        "CPU has been idle for {seconds} seconds (approx {minutes} minutes), \
-         applying idle factor: {factor:.2}x",
-        seconds = idle_for.as_secs(),
-        minutes = idle_for.as_secs() / 60,
-      );
-
-      delay = Duration::from_secs_f64(delay.as_secs_f64() * factor);
-    }
-  }
-
-  if let Some(volatility) = system.cpu_volatility(now)
-    && (volatility.usage > 0.1
-      || volatility
-        .temperature
-        .is_some_and(|temperature| temperature > 1.0))
-  {
-    delay = (delay / 2).max(Duration::from_secs(1));
-  }
-
-  let delay = match last_polling_delay {
-    Some(last_delay) => {
-      Duration::from_secs_f64(
-        delay.as_secs_f64() * 0.3 + last_delay.as_secs_f64() * 0.7,
-      )
-    },
-    None => delay,
-  };
-
   Duration::from_secs_f64(
-    delay
-      .as_secs_f64()
-      .clamp(1.0, MAX_POLL_INTERVAL_SECONDS as f64),
+    PollingDiagnostics::calculate(
+      system,
+      last_polling_delay,
+      last_cpu_activity,
+      now,
+    )
+    .clamped_delay_seconds,
   )
 }
 
@@ -1367,23 +1356,28 @@ pub struct CpuCapabilities {
   pub governors:         Vec<String>,
   pub epps:              Vec<String>,
   pub epbs:              Vec<String>,
+  pub minimum_khz:       Option<u64>,
+  pub maximum_khz:       Option<u64>,
 }
 
 #[derive(Debug)]
 pub struct DaemonState {
-  config:               String,
-  system:               System,
-  rule_count:           usize,
-  profile:              profile::ProfileState,
-  profile_state_path:   Option<PathBuf>,
-  last_applied_rules:   Vec<String>,
-  performance_degraded: Option<String>,
-  error_count:          usize,
-  latest_error:         Option<String>,
-  recent_errors:        Vec<String>,
-  degraded_conditions:  Vec<DegradedCondition>,
-  applied_settings:     Vec<fs::AppliedSetting>,
-  rule_metadata:        Vec<(String, u16)>,
+  config:                String,
+  system:                System,
+  rule_count:            usize,
+  profile:               profile::ProfileState,
+  profile_state_path:    Option<PathBuf>,
+  last_applied_rules:    Vec<String>,
+  performance_degraded:  Option<String>,
+  error_count:           usize,
+  latest_error:          Option<String>,
+  recent_errors:         Vec<String>,
+  degraded_conditions:   Vec<DegradedCondition>,
+  applied_settings:      Vec<fs::AppliedSetting>,
+  polling_diagnostics:   PollingDiagnostics,
+  duration_requirements: diagnostics::DurationRequirements,
+  rule_metadata:         Vec<(String, u16)>,
+  evaluation_count:      u64,
 }
 
 impl DaemonState {
@@ -1399,6 +1393,7 @@ impl DaemonState {
         Err(error) => log::warn!("failed to load active profile: {error:#}"),
       }
     }
+    let duration_requirements = diagnostics::duration_requirements(&config);
     Self {
       config,
       system: System::default(),
@@ -1412,7 +1407,10 @@ impl DaemonState {
       recent_errors: Vec::new(),
       degraded_conditions: Vec::new(),
       applied_settings: Vec::new(),
+      polling_diagnostics: PollingDiagnostics::default(),
+      duration_requirements,
       rule_metadata: Vec::new(),
+      evaluation_count: 0,
     }
   }
 
@@ -1421,6 +1419,7 @@ impl DaemonState {
   }
 
   fn set_config(&mut self, config: String, rules: &[config::Rule]) {
+    self.duration_requirements = diagnostics::duration_requirements(&config);
     self.config = config;
     self.rule_count = rules.len();
     self.rule_metadata = rules
@@ -1572,6 +1571,12 @@ impl DaemonState {
           governors:         cpu.available_governors.clone(),
           epps:              cpu.available_epps.clone(),
           epbs:              cpu.available_epbs.clone(),
+          minimum_khz:       cpu
+            .frequency_minimum
+            .map(|frequency| frequency.as_khz()),
+          maximum_khz:       cpu
+            .frequency_maximum
+            .map(|frequency| frequency.as_khz()),
         }
       })
       .collect();
@@ -1579,8 +1584,8 @@ impl DaemonState {
     capabilities
   }
 
-  pub fn boost_capabilities(&self) -> Option<cpu::BoostCapabilities> {
-    cpu::Cpu::boost_capabilities(self.system.cpus.iter().map(AsRef::as_ref))
+  pub fn boost_capabilities(&self) -> Option<&cpu::BoostCapabilities> {
+    self.system.boost_capabilities.as_ref()
   }
 
   pub fn latest_cpu_log(&self) -> Option<CpuLog> {
@@ -1620,6 +1625,18 @@ impl DaemonState {
 
   pub fn degraded_conditions(&self) -> &[DegradedCondition] {
     &self.degraded_conditions
+  }
+
+  pub fn evaluation_count(&self) -> u64 {
+    self.evaluation_count
+  }
+
+  pub fn polling_diagnostics(&self) -> &PollingDiagnostics {
+    &self.polling_diagnostics
+  }
+
+  pub fn device_capabilities(&self) -> &[DeviceCapabilities] {
+    &self.system.device_capabilities
   }
 
   pub fn rule_metadata(&self) -> &[(String, u16)] {
@@ -1674,11 +1691,24 @@ fn evaluate_rules(
   (actions, applied)
 }
 
+fn install_rule_attribution(
+  actions: &mut config::EvaluatedRule,
+  failures: &mut RuntimeFailures,
+) {
+  let attribution = mem::take(&mut actions.attribution).resolve(actions);
+  fs::begin_settings_iteration();
+  fs::set_setting_rules(attribution.rules);
+  for error in attribution.failures {
+    failures.record("setting attribution resolution", error);
+  }
+}
+
 fn apply_actions(
-  actions: config::EvaluatedRule,
+  mut actions: config::EvaluatedRule,
   runtime_failures: &mut RuntimeFailures,
   dma_latency: &mut cpu::DmaLatency,
 ) {
+  install_rule_attribution(&mut actions, runtime_failures);
   let config::EvaluatedRule {
     cpu: cpu_deltas,
     cpu_global: cpu_global_delta,
@@ -1691,9 +1721,9 @@ fn apply_actions(
     gpu: gpu_deltas,
     power: power_deltas,
     platform_profile: power_platform_profile,
+    attribution: _,
   } = actions;
 
-  fs::begin_settings_iteration();
   runtime_failures.apply_cpu_deltas(&cpu_deltas);
 
   log::trace!("applying CPU deltas to {len} CPUs", len = cpu_deltas.len());
@@ -1830,12 +1860,13 @@ impl PollingState {
       evaluate_rules(&config.rules, &eval_state, &mut self.runtime_failures);
     apply_actions(actions, &mut self.runtime_failures, &mut self.dma_latency);
 
-    let delay = compute_poll_delay(
+    let mut diagnostics = PollingDiagnostics::calculate(
       &self.system,
       self.last_polling_delay,
       self.last_cpu_activity,
       now,
     );
+    let delay = Duration::from_secs_f64(diagnostics.clamped_delay_seconds);
     self.system.polling_delay = Some(delay);
     self.last_polling_delay = Some(delay);
     self.runtime_failures.finish_iteration();
@@ -1844,12 +1875,24 @@ impl PollingState {
       &self.runtime_failures,
       config.thermal.degradation_threshold_celsius,
     );
-    state.write().await.update_system(
-      &self.system,
-      last_applied_rules.clone(),
-      performance_degraded,
-      &self.runtime_failures,
-    );
+    {
+      let mut state = state.write().await;
+      diagnostics.evaluation_elapsed_seconds = start.elapsed().as_secs_f64();
+      diagnostics.update_requirements(
+        &state.duration_requirements,
+        &self.system,
+        now,
+      );
+      log::trace!("polling decision: {diagnostics:?}");
+      state.polling_diagnostics = diagnostics;
+      state.evaluation_count = state.evaluation_count.saturating_add(1);
+      state.update_system(
+        &self.system,
+        last_applied_rules.clone(),
+        performance_degraded,
+        &self.runtime_failures,
+      );
+    }
     applied_rules_tx.send_if_modified(|rules| {
       let changed = *rules != last_applied_rules;
       if changed {
@@ -2268,6 +2311,142 @@ mod tests {
     {
       yield_now().await;
     }
+  }
+
+  async fn assert_selected_boost(
+    proxy: &Proxy<'_>,
+    expected: Option<(&str, bool, &str)>,
+  ) {
+    let boost: HashMap<String, OwnedValue> =
+      proxy.call("GetBoostCapabilities", &()).await.unwrap();
+    let devices: Vec<HashMap<String, OwnedValue>> =
+      proxy.call("GetDeviceCapabilities", &()).await.unwrap();
+    let paths: Vec<_> = devices
+      .iter()
+      .filter(|device| <&str>::try_from(&device["name"]).unwrap() == "boost")
+      .map(|device| <&str>::try_from(&device["path"]).unwrap())
+      .collect();
+    match expected {
+      Some((scope, inverted, path)) => {
+        assert_eq!(<&str>::try_from(&boost["scope"]).unwrap(), scope);
+        assert_eq!(bool::try_from(&boost["inverted"]).unwrap(), inverted);
+        assert_eq!(
+          Vec::<String>::try_from(boost["control-paths"].try_clone().unwrap())
+            .unwrap(),
+          [path]
+        );
+        assert_eq!(paths, [path]);
+      },
+      None => {
+        assert!(boost.is_empty());
+        assert!(paths.is_empty());
+      },
+    }
+  }
+
+  #[tokio::test]
+  async fn selected_boost_capabilities_change_only_with_completed_snapshots() {
+    let fixture = SystemFixture::new();
+    let policy = fixture.policy(0, &[0], "amd-pstate-epp").join("boost");
+    let global = "/sys/devices/system/cpu/intel_pstate/no_turbo";
+    fixture.cpu_telemetry(&[0]);
+    fixture.write(&policy, "1");
+    fixture.write(global, "0");
+    let mut system = System::default();
+    let mut failures = RuntimeFailures::default();
+    system.scan(&mut failures);
+    let state = Arc::new(RwLock::new(DaemonState::new(String::new(), 0)));
+    state
+      .write()
+      .await
+      .update_system(&system, Vec::new(), None, &failures);
+    let bus = TestBus::new();
+    timeout(Duration::from_secs(10), async {
+      let connection = connection::Builder::address(bus.address.as_str())
+        .unwrap()
+        .build()
+        .await
+        .unwrap();
+      let client = connection::Builder::address(bus.address.as_str())
+        .unwrap()
+        .build()
+        .await
+        .unwrap();
+      let closing = connection.clone();
+      let (_updates, applied_rules) = watch::channel(Vec::new());
+      let (_reloads, reload_results) = broadcast::channel(64);
+      let observe = async {
+        wait_native_service(&client).await;
+        let proxy = Proxy::new(
+          &client,
+          "dev.notashelf.Watt",
+          "/dev/notashelf/Watt",
+          "dev.notashelf.Watt",
+        )
+        .await
+        .unwrap();
+        let mut changes =
+          proxy.receive_signal("CapabilitiesChanged").await.unwrap();
+        let policy_path = policy.to_str().unwrap();
+        let global_path = global;
+        let mut previous = Some(("global", true, global_path));
+        assert_selected_boost(&proxy, previous).await;
+        for selected in [
+          Some(("policy", false, policy_path)),
+          None,
+          Some(("global", true, global_path)),
+        ] {
+          match selected {
+            Some(("policy", ..)) => {
+              stdfs::remove_file(fixture.path(global)).unwrap();
+            },
+            None => {
+              stdfs::remove_file(&policy).unwrap();
+            },
+            Some(_) => fixture.write(global, "0"),
+          }
+          // Hardware mutations are not visible until the next published scan.
+          assert_selected_boost(&proxy, previous).await;
+          failures.begin_iteration();
+          system.scan(&mut failures);
+          failures.finish_iteration();
+          state.write().await.update_system(
+            &system,
+            Vec::new(),
+            None,
+            &failures,
+          );
+          changes
+            .next()
+            .await
+            .unwrap()
+            .body()
+            .deserialize::<()>()
+            .unwrap();
+          assert_selected_boost(&proxy, selected).await;
+          let cpus: Vec<HashMap<String, OwnedValue>> =
+            proxy.call("GetCpuCapabilities", &()).await.unwrap();
+          assert_eq!(cpus.len(), 1);
+          previous = selected;
+        }
+        assert_eq!(fixture.write_count(global), 0);
+        closing.close().await.unwrap();
+      };
+      let (result, ()) = tokio::join!(
+        server::run_connection(
+          connection,
+          state.clone(),
+          applied_rules,
+          mpsc::channel(1).0,
+          reload_results
+        ),
+        observe
+      );
+      assert!(result.is_err());
+      client.close().await.unwrap();
+    })
+    .await
+    .expect("boost snapshot notification timed out");
   }
 
   #[test]
@@ -2893,99 +3072,8 @@ priority = 1
     assert!(cpus[2].governors.is_empty());
     assert!(!cpus[2].epbs.is_empty());
   }
-
-  fn apply_rules(system: &System, rules: &[config::Rule]) {
-    let now = Instant::now();
-    let eval = system.eval_state(now, now, PowerProfile::Balanced, false);
-    let mut failures = RuntimeFailures::default();
-    failures.begin_iteration();
-    let (actions, _) = evaluate_rules(rules, &eval, &mut failures);
-    apply_actions(actions, &mut failures, &mut cpu::DmaLatency::default());
-    failures.finish_iteration();
-  }
-
-  #[tokio::test]
-  async fn identical_reload_outcomes_each_complete_and_publish() {
-    let (results, mut receiver) = broadcast::channel(64);
-    for _ in 0..2 {
-      let (response, result) = oneshot::channel();
-      publish_reload_result(&results, Ok(()), Some(response));
-      result.await.unwrap().unwrap();
-    }
-    // Both identical outcomes stay queued even when the subscriber is busy.
-    assert_eq!(
-      receiver.recv().await.unwrap(),
-      (true, "configuration reloaded".into())
-    );
-    assert_eq!(
-      receiver.recv().await.unwrap(),
-      (true, "configuration reloaded".into())
-    );
-    publish_reload_result(
-      &results,
-      Err(anyhow::anyhow!("invalid candidate")),
-      None,
-    );
-    assert_eq!(
-      receiver.recv().await.unwrap(),
-      (false, "invalid candidate".into())
-    );
-  }
-
-  #[test]
-  fn repeated_partial_inventory_keeps_original_until_rediscovery() {
-    let fixture = SystemFixture::new();
-    let root = fixture.path("/sys/block/sda");
-    fixture.write(root.join("queue/scheduler"), "mq-deadline");
-    fixture.write(root.join("removable"), "0");
-    let mut system = System::default();
-    system.scan_disks().unwrap();
-    let _managed = fs::manage_settings();
-    let rule: config::Rule =
-      toml::from_str("name='disk-owner'\npriority=5\ndisk.scheduler='none'")
-        .unwrap();
-    apply_rules(&system, &[rule]);
-    fixture.fail_read(root.join("removable"), ErrorKind::PermissionDenied);
-    for _ in 0..2 {
-      assert!(system.scan_disks().is_err());
-      apply_rules(&system, &[]);
-      assert_eq!(
-        stdfs::read_to_string(root.join("queue/scheduler")).unwrap(),
-        "none"
-      );
-    }
-    fixture.clear_io(root.join("removable"));
-    system.scan_disks().unwrap();
-    apply_rules(&system, &[]);
-    assert_eq!(
-      stdfs::read_to_string(root.join("queue/scheduler")).unwrap(),
-      "mq-deadline"
-    );
-    assert!(fs::applied_settings().is_empty());
-  }
-
-  #[test]
-  fn thermal_fallback_clears_readings_when_sensor_inventory_disappears() {
-    let fixture = SystemFixture::new();
-    stdfs::create_dir_all(fixture.path("/sys/class/hwmon")).unwrap();
-    let root = fixture.path("/sys/devices/virtual/thermal/thermal_zone0");
-    fixture.write(root.join("type"), "x86_pkg_temp");
-    fixture.write(root.join("temp"), "53300");
-    let mut system = System::default();
-    system.scan_temperatures().unwrap();
-    assert_eq!(
-      system
-        .cpu_temperatures
-        .values()
-        .copied()
-        .collect::<Vec<_>>(),
-      [53.3]
-    );
-    stdfs::remove_dir_all(fixture.path("/sys/devices/virtual/thermal"))
-      .unwrap();
-    system.scan_temperatures().unwrap();
-    assert!(system.cpu_temperatures.is_empty());
-  }
 }
 
 #[cfg(test)] mod telemetry_tests;
+
+#[cfg(test)] mod explain_tests;

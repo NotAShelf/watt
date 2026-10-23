@@ -50,6 +50,13 @@ enum ReadbackKind {
   DriverTranslated,
 }
 
+/// The rule whose action successfully requested a managed value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuleOrigin {
+  pub name:     String,
+  pub priority: u16,
+}
+
 #[derive(Debug)]
 struct ManagedSetting {
   original:      String,
@@ -57,6 +64,7 @@ struct ManagedSetting {
   observed:      Option<String>,
   readback_kind: ReadbackKind,
   generation:    u64,
+  rule:          Option<RuleOrigin>,
 }
 
 impl ManagedSetting {
@@ -72,6 +80,7 @@ pub struct AppliedSetting {
   pub path:      PathBuf,
   pub requested: String,
   pub observed:  Option<String>,
+  pub rule:      Option<RuleOrigin>,
   readback_kind: ReadbackKind,
 }
 
@@ -111,6 +120,7 @@ struct ManagedSettings {
   active:          bool,
   generation:      u64,
   settings:        BTreeMap<PathBuf, ManagedSetting>,
+  rules:           BTreeMap<PathBuf, RuleOrigin>,
   scan_protection: BTreeMap<&'static str, BTreeSet<PathBuf>>,
 }
 
@@ -150,6 +160,15 @@ fn retain_unavailable_settings(settings: &mut ManagedSettings) {
       setting.generation = settings.generation;
     }
   }
+}
+
+pub(crate) fn set_setting_rules(rules: BTreeMap<PathBuf, RuleOrigin>) {
+  with_managed_settings(|settings| {
+    settings.rules = rules
+      .into_iter()
+      .map(|(input, rule)| (path(input), rule))
+      .collect();
+  });
 }
 
 #[derive(Debug, Clone)]
@@ -348,9 +367,11 @@ pub fn write(input: impl AsRef<Path>, value: &str) -> anyhow::Result<()> {
   if track {
     with_managed_settings(|settings| {
       let generation = settings.generation;
+      let rule = settings.rules.get(&path).cloned();
       if let Some(setting) = settings.settings.get_mut(&path) {
         setting.record_write(value);
         setting.generation = generation;
+        setting.rule = rule;
       } else if let Some(original) = original {
         settings.settings.insert(path, ManagedSetting {
           original,
@@ -358,6 +379,7 @@ pub fn write(input: impl AsRef<Path>, value: &str) -> anyhow::Result<()> {
           observed: None,
           readback_kind: ReadbackKind::Ordinary,
           generation,
+          rule,
         });
       }
     });
@@ -397,8 +419,10 @@ pub fn keep_setting(input: impl AsRef<Path>, observed: impl Into<String>) {
   let observed = observed.into();
   with_managed_settings(|settings| {
     let generation = settings.generation;
+    let rule = settings.rules.get(&path).cloned();
     if let Some(setting) = settings.settings.get_mut(&path) {
       setting.generation = generation;
+      setting.rule = rule;
       setting.observed = Some(observed);
       setting.readback_kind = ReadbackKind::Ordinary;
     }
@@ -415,6 +439,7 @@ pub fn applied_settings() -> Vec<AppliedSetting> {
           path:          path.clone(),
           requested:     setting.last_written.clone(),
           observed:      setting.observed.clone(),
+          rule:          setting.rule.clone(),
           readback_kind: setting.readback_kind,
         }
       })
@@ -430,6 +455,7 @@ pub fn begin_settings_iteration() {
   with_managed_settings(|settings| {
     settings.active = true;
     settings.generation = settings.generation.wrapping_add(1);
+    settings.rules.clear();
     retain_unavailable_settings(settings);
   });
 }
@@ -565,6 +591,7 @@ fn restore_setting(
   with_managed_settings(|managed| {
     if let Some(setting) = managed.settings.get_mut(path) {
       setting.record_write(original);
+      setting.rule = None;
     }
   });
   let observed = read_raw(path).context("failed to verify restored setting")?;
@@ -646,6 +673,34 @@ mod tests {
     begin_settings_iteration();
     assert!(restore_unmanaged_settings().is_empty());
     assert!(applied_settings().is_empty());
+  }
+
+  #[test]
+  fn failed_restoration_readback_clears_the_former_rule_origin() {
+    let fixture = SystemFixture::new();
+    let control = fixture.path("/sys/test/control");
+    fixture.write(&control, "original");
+    let _managed = manage_settings();
+    begin_settings_iteration();
+    set_setting_rules(BTreeMap::from([(control.clone(), RuleOrigin {
+      name:     "removed-rule".into(),
+      priority: 10,
+    })]));
+    write(&control, "requested").unwrap();
+    assert_eq!(
+      applied_settings()[0].rule.as_ref().unwrap().name,
+      "removed-rule"
+    );
+    fixture.clear_io(&control);
+    fixture.fail_read_after_write(&control, io::ErrorKind::PermissionDenied);
+    begin_settings_iteration();
+    assert_eq!(restore_unmanaged_settings().len(), 1);
+    let setting = applied_settings().remove(0);
+    assert_eq!(setting.requested, "original");
+    assert_eq!(setting.rule, None);
+    fixture.clear_io(&control);
+    assert!(restore_unmanaged_settings().is_empty());
+    assert_eq!(read(&control).unwrap().as_deref(), Some("original"));
   }
 
   #[test]
@@ -761,6 +816,7 @@ mod tests {
       requested:     "1000".into(),
       observed:      Some("900".into()),
       readback_kind: ReadbackKind::Ordinary,
+      rule:          None,
     };
     assert_eq!(setting.verification(), "clamped");
 

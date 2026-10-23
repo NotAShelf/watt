@@ -2,6 +2,7 @@ use std::{
   cmp::Reverse,
   collections::HashMap,
   fmt,
+  time::Duration,
 };
 
 use anyhow::{
@@ -28,6 +29,17 @@ use crate::{
 mod constants;
 mod expressions;
 mod hardware;
+
+/// Evaluates a constant string expression as a duration without reading
+/// telemetry.
+pub(crate) fn constant_duration(expression: &Expression) -> Option<Duration> {
+  let constants::Constant::String(value) =
+    constants::analyze(expression).ok()?
+  else {
+    return None;
+  };
+  humantime::parse_duration(value).ok()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -735,7 +747,10 @@ fn selectors(rule: &Rule) -> [&Option<Expression>; 6] {
 
 #[cfg(test)]
 mod tests {
-  use std::fs;
+  use std::{
+    fs,
+    time::Duration,
+  };
 
   use super::*;
 
@@ -1284,5 +1299,25 @@ cpu.turbo=true"#,
       assert_eq!(diagnostics[0].severity, Severity::Error);
       assert_eq!(diagnostics[0].field, fields.split('=').next().unwrap());
     }
+  }
+
+  #[test]
+  fn constant_duration_folds_selected_strings_and_defers_others() {
+    let expression = |text: &str| toml::from_str(text).unwrap();
+    assert_eq!(
+      constant_duration(&expression(
+        "if={not=false}\nthen='500ms'\nelse='invalid'"
+      )),
+      Some(Duration::from_millis(500))
+    );
+    assert_eq!(
+      constant_duration(&expression("if='?discharging'\nthen='1s'\nelse='2s'")),
+      None
+    );
+    assert_eq!(constant_duration(&expression("value=1\nplus=2")), None);
+    assert_eq!(
+      constant_duration(&Expression::String("invalid".into())),
+      None
+    );
   }
 }

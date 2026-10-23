@@ -24,7 +24,7 @@ const GLOBAL_CONTROLS: [(&str, bool); 4] = [
   ("/sys/devices/system/cpu/cpufreq/boost", false),
 ];
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoostCapabilities {
   pub paths:    Vec<PathBuf>,
   pub global:   bool,
