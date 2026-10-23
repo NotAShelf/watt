@@ -3,6 +3,7 @@ use std::{
   fs::{
     self,
     File,
+    OpenOptions,
   },
   io::{
     self,
@@ -29,6 +30,14 @@ pub struct Process {
 impl Process {
   pub fn capture(command: &mut Command) -> io::Result<Self> {
     Self::spawn(command, tempfile::tempfile()?, tempfile::tempfile()?)
+  }
+
+  pub fn logged(
+    command: &mut Command,
+    stdout: &Path,
+    stderr: &Path,
+  ) -> io::Result<Self> {
+    Self::spawn(command, capture_file(stdout)?, capture_file(stderr)?)
   }
 
   fn spawn(
@@ -65,6 +74,15 @@ impl Drop for Process {
     let _ = self.child.kill();
     let _ = self.child.wait();
   }
+}
+
+fn capture_file(path: &Path) -> io::Result<File> {
+  OpenOptions::new()
+    .read(true)
+    .write(true)
+    .create(true)
+    .truncate(true)
+    .open(path)
 }
 
 fn read_capture(file: &mut File) -> io::Result<Vec<u8>> {

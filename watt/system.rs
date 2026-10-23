@@ -25,10 +25,19 @@ use anyhow::{
   Context,
   bail,
 };
+#[cfg(unix)]
+use tokio::signal::unix::{
+  Signal,
+  SignalKind,
+  signal as unix_signal,
+};
 use tokio::{
   signal,
   sync::{
     RwLock,
+    broadcast,
+    mpsc,
+    oneshot,
     watch,
   },
   time::sleep,
@@ -41,7 +50,10 @@ use crate::{
     self,
     policy::Policy,
   },
-  dbus::server,
+  dbus::{
+    server,
+    watt::ReloadRequest,
+  },
   disk,
   fs,
   gpu,
@@ -50,6 +62,8 @@ use crate::{
   uncore,
   usb,
 };
+
+pub type ReloadResult = (bool, String);
 
 pub(crate) const HISTORY_SAMPLE_LIMIT: usize = 100;
 pub(crate) const MAX_POLL_INTERVAL_SECONDS: u64 = 30;
@@ -249,6 +263,7 @@ struct System {
   load_average_1min:  f64,
   load_average_5min:  f64,
   load_average_15min: f64,
+  polling_delay:      Option<Duration>,
 
   /// All CPUs.
   cpus:             HashSet<Arc<cpu::Cpu>>,
@@ -1255,17 +1270,35 @@ async fn wait_for_shutdown() -> anyhow::Result<()> {
     .context("failed to listen for Ctrl-C")
 }
 
-async fn wait_for_reload() -> anyhow::Result<()> {
+struct ReloadSignal {
   #[cfg(unix)]
-  {
-    let mut reload = signal::unix::signal(signal::unix::SignalKind::hangup())
-      .context("failed to listen for SIGHUP")?;
-    reload.recv().await;
-    Ok(())
+  signal: Signal,
+}
+
+impl ReloadSignal {
+  fn new() -> anyhow::Result<Self> {
+    #[cfg(unix)]
+    {
+      Ok(Self {
+        signal: unix_signal(SignalKind::hangup())
+          .context("failed to listen for SIGHUP")?,
+      })
+    }
+    #[cfg(not(unix))]
+    {
+      Ok(Self {})
+    }
   }
 
-  #[cfg(not(unix))]
-  future::pending().await
+  async fn wait(&mut self) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+      self.signal.recv().await.context("SIGHUP listener closed")?;
+      Ok(())
+    }
+    #[cfg(not(unix))]
+    future::pending().await
+  }
 }
 
 fn read_chassis_type() -> anyhow::Result<Option<String>> {
@@ -1350,6 +1383,7 @@ pub struct DaemonState {
   recent_errors:        Vec<String>,
   degraded_conditions:  Vec<DegradedCondition>,
   applied_settings:     Vec<fs::AppliedSetting>,
+  rule_metadata:        Vec<(String, u16)>,
 }
 
 impl DaemonState {
@@ -1378,6 +1412,7 @@ impl DaemonState {
       recent_errors: Vec::new(),
       degraded_conditions: Vec::new(),
       applied_settings: Vec::new(),
+      rule_metadata: Vec::new(),
     }
   }
 
@@ -1385,9 +1420,13 @@ impl DaemonState {
     &self.config
   }
 
-  fn set_config(&mut self, config: String, rule_count: usize) {
+  fn set_config(&mut self, config: String, rules: &[config::Rule]) {
     self.config = config;
-    self.rule_count = rule_count;
+    self.rule_count = rules.len();
+    self.rule_metadata = rules
+      .iter()
+      .map(|rule| (rule.name.clone(), rule.priority))
+      .collect();
   }
 
   fn update_system(
@@ -1559,6 +1598,10 @@ impl DaemonState {
       .filter(|_| self.active_profile() == profile::PowerProfile::Performance)
   }
 
+  pub(crate) fn polling_delay(&self) -> Option<Duration> {
+    self.system.polling_delay
+  }
+
   pub fn last_applied_rules(&self) -> Vec<String> {
     self.last_applied_rules.clone()
   }
@@ -1577,6 +1620,10 @@ impl DaemonState {
 
   pub fn degraded_conditions(&self) -> &[DegradedCondition] {
     &self.degraded_conditions
+  }
+
+  pub fn rule_metadata(&self) -> &[(String, u16)] {
+    &self.rule_metadata
   }
 
   pub fn applied_settings(&self) -> Vec<fs::AppliedSetting> {
@@ -1789,6 +1836,7 @@ impl PollingState {
       self.last_cpu_activity,
       now,
     );
+    self.system.polling_delay = Some(delay);
     self.last_polling_delay = Some(delay);
     self.runtime_failures.finish_iteration();
     let performance_degraded = detect_performance_degradation(
@@ -1830,13 +1878,14 @@ impl PollingState {
 
 enum DaemonEvent {
   Shutdown,
-  Reload,
+  Reload(Option<oneshot::Sender<anyhow::Result<()>>>),
   Poll,
 }
 
 async fn next_daemon_event(
   shutdown: Pin<&mut impl Future<Output = anyhow::Result<()>>>,
   reload: Pin<&mut impl Future<Output = anyhow::Result<()>>>,
+  reload_requests: &mut mpsc::Receiver<ReloadRequest>,
   delay: Duration,
 ) -> anyhow::Result<DaemonEvent> {
   tokio::select! {
@@ -1846,9 +1895,32 @@ async fn next_daemon_event(
     },
     result = reload => {
       result?;
-      Ok(DaemonEvent::Reload)
+      Ok(DaemonEvent::Reload(None))
+    },
+    request = reload_requests.recv(), if !reload_requests.is_closed() || !reload_requests.is_empty() => {
+      Ok(request.map_or(DaemonEvent::Poll, |request| {
+        DaemonEvent::Reload(Some(request.response))
+      }))
     },
     () = sleep(delay) => Ok(DaemonEvent::Poll),
+  }
+}
+
+fn publish_reload_result(
+  results: &broadcast::Sender<ReloadResult>,
+  result: anyhow::Result<()>,
+  response: Option<oneshot::Sender<anyhow::Result<()>>>,
+) {
+  let snapshot = match &result {
+    Ok(()) => (true, "configuration reloaded".to_owned()),
+    Err(error) => {
+      log::error!("failed to reload daemon config: {error:#}");
+      (false, format!("{error:#}"))
+    },
+  };
+  let _ = results.send(snapshot);
+  if let Some(response) = response {
+    let _ = response.send(result);
   }
 }
 
@@ -1856,21 +1928,14 @@ async fn reload_daemon_config(
   path: Option<&Path>,
   config: &mut config::DaemonConfig,
   state: &RwLock<DaemonState>,
-) {
+) -> anyhow::Result<()> {
   let Some(path) = path else {
-    log::debug!("ignoring SIGHUP for the builtin config");
-    return;
+    bail!("builtin configuration cannot be reloaded")
   };
-  match reload_config(path, config) {
-    Ok(serialized) => {
-      state
-        .write()
-        .await
-        .set_config(serialized, config.rules.len());
-      log::info!("reloaded daemon config");
-    },
-    Err(error) => log::error!("failed to reload daemon config: {error:#}"),
-  }
+  let serialized = reload_config(path, config)?;
+  state.write().await.set_config(serialized, &config.rules);
+  log::info!("reloaded daemon config");
+  Ok(())
 }
 
 pub async fn run_daemon(
@@ -1885,11 +1950,12 @@ pub async fn run_daemon(
 
   let serialized_config = toml::to_string_pretty(&config)
     .context("failed to serialize daemon config")?;
-  let state = Arc::new(RwLock::new(DaemonState::new(
-    serialized_config,
-    config.rules.len(),
-  )));
+  let mut daemon_state = DaemonState::new(String::new(), 0);
+  daemon_state.set_config(serialized_config, &config.rules);
+  let state = Arc::new(RwLock::new(daemon_state));
   let (applied_rules_tx, applied_rules_rx) = watch::channel(Vec::new());
+  let (reload_tx, reload_rx) = mpsc::channel(1);
+  let (reload_results_tx, reload_results_rx) = broadcast::channel(64);
 
   #[cfg(feature = "metrics")]
   if let Some(metrics_config) = &config.metrics {
@@ -1899,13 +1965,24 @@ pub async fn run_daemon(
   tokio::spawn({
     let state = Arc::clone(&state);
     async move {
-      if let Err(error) = server::start(state, applied_rules_rx).await {
+      if let Err(error) =
+        server::start(state, applied_rules_rx, reload_tx, reload_results_rx)
+          .await
+      {
         log::error!("D-Bus server exited with error: {error}");
       }
     }
   });
 
-  run_polling_loop(config, config_path, state, applied_rules_tx).await
+  run_polling_loop(
+    config,
+    config_path,
+    state,
+    applied_rules_tx,
+    reload_rx,
+    reload_results_tx,
+  )
+  .await
 }
 
 async fn run_polling_loop(
@@ -1913,19 +1990,23 @@ async fn run_polling_loop(
   config_path: Option<PathBuf>,
   state: Arc<RwLock<DaemonState>>,
   applied_rules_tx: watch::Sender<Vec<String>>,
+  mut reload_rx: mpsc::Receiver<ReloadRequest>,
+  reload_results_tx: broadcast::Sender<ReloadResult>,
 ) -> anyhow::Result<()> {
   let mut polling = PollingState::new();
   let _managed_settings = fs::manage_settings();
   let shutdown_signal = wait_for_shutdown();
   tokio::pin!(shutdown_signal);
-  let reload_signal = wait_for_reload();
-  tokio::pin!(reload_signal);
+  let mut reload_signal = ReloadSignal::new()?;
   let mut sleep_for = Duration::ZERO;
 
   loop {
-    match next_daemon_event(
+    let reload_wait = reload_signal.wait();
+    tokio::pin!(reload_wait);
+    let reload = match next_daemon_event(
       shutdown_signal.as_mut(),
-      reload_signal.as_mut(),
+      reload_wait.as_mut(),
+      &mut reload_rx,
       sleep_for,
     )
     .await?
@@ -1934,13 +2015,19 @@ async fn run_polling_loop(
         log::info!("received shutdown signal");
         break;
       },
-      DaemonEvent::Reload => {
-        reload_signal.set(wait_for_reload());
-        reload_daemon_config(config_path.as_deref(), &mut config, &state).await;
+      DaemonEvent::Reload(response) => {
+        let result =
+          reload_daemon_config(config_path.as_deref(), &mut config, &state)
+            .await;
+        Some((result, response))
       },
-      DaemonEvent::Poll => {},
-    }
+      DaemonEvent::Poll => None,
+    };
+
     sleep_for = polling.poll(&config, &state, &applied_rules_tx).await;
+    if let Some((result, response)) = reload {
+      publish_reload_result(&reload_results_tx, result, response);
+    }
   }
 
   log::info!("stopping polling loop and shutting down");
@@ -1953,6 +2040,7 @@ mod tests {
   use std::{
     env,
     fs as stdfs,
+    future::pending,
     io::ErrorKind,
     os::unix::fs::symlink,
     process,
@@ -1977,6 +2065,31 @@ mod tests {
     profile::PowerProfile,
     test_support::SystemFixture,
   };
+
+  #[tokio::test]
+  async fn closed_reload_request_channel_does_not_terminate_tuning() {
+    let (sender, mut receiver) = mpsc::channel(1);
+    drop(sender);
+    let shutdown = pending::<anyhow::Result<()>>();
+    let reload = pending::<anyhow::Result<()>>();
+    tokio::pin!(shutdown, reload);
+    let delay = Duration::from_millis(5);
+    let started = Instant::now();
+    let event = timeout(
+      Duration::from_secs(1),
+      next_daemon_event(
+        shutdown.as_mut(),
+        reload.as_mut(),
+        &mut receiver,
+        delay,
+      ),
+    )
+    .await
+    .expect("closed reload channel must not stall polling")
+    .expect("closed reload channel must not terminate tuning");
+    assert!(matches!(event, DaemonEvent::Poll));
+    assert!(started.elapsed() >= delay);
+  }
 
   #[test]
   fn thermal_threshold_reports_only_hot_systems() {
@@ -2128,8 +2241,15 @@ mod tests {
         assert_eq!(stdfs::read_to_string(&first).unwrap(), "1");
         closing.close().await.unwrap();
       };
+      let (_reload_results_tx, reload_results_rx) = broadcast::channel(64);
       let (result, ()) = tokio::join!(
-        server::run_connection(connection, state.clone(), applied_rules),
+        server::run_connection(
+          connection,
+          state.clone(),
+          applied_rules,
+          mpsc::channel(1).0,
+          reload_results_rx,
+        ),
         observe
       );
       assert!(result.is_err());
@@ -2467,7 +2587,9 @@ mod tests {
         &path,
         format!("[[rule]]\nname='test'\npriority=1\n{action}\n"),
       );
-      reload_daemon_config(Some(&path), &mut active, &state).await;
+      reload_daemon_config(Some(&path), &mut active, &state)
+        .await
+        .unwrap();
       polling.poll(&active, &state, &applied_rules).await;
       assert_eq!(state.read().await.rule_count(), 1);
       assert_eq!(stdfs::read_to_string(&governor).unwrap(), expected);
@@ -2780,6 +2902,34 @@ priority = 1
     let (actions, _) = evaluate_rules(rules, &eval, &mut failures);
     apply_actions(actions, &mut failures, &mut cpu::DmaLatency::default());
     failures.finish_iteration();
+  }
+
+  #[tokio::test]
+  async fn identical_reload_outcomes_each_complete_and_publish() {
+    let (results, mut receiver) = broadcast::channel(64);
+    for _ in 0..2 {
+      let (response, result) = oneshot::channel();
+      publish_reload_result(&results, Ok(()), Some(response));
+      result.await.unwrap().unwrap();
+    }
+    // Both identical outcomes stay queued even when the subscriber is busy.
+    assert_eq!(
+      receiver.recv().await.unwrap(),
+      (true, "configuration reloaded".into())
+    );
+    assert_eq!(
+      receiver.recv().await.unwrap(),
+      (true, "configuration reloaded".into())
+    );
+    publish_reload_result(
+      &results,
+      Err(anyhow::anyhow!("invalid candidate")),
+      None,
+    );
+    assert_eq!(
+      receiver.recv().await.unwrap(),
+      (false, "invalid candidate".into())
+    );
   }
 
   #[test]

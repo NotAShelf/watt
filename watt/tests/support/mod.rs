@@ -4,6 +4,7 @@ mod process;
 
 use std::{
   fs,
+  future::Future,
   path::{
     Path,
     PathBuf,
@@ -22,8 +23,15 @@ use tokio::time::{
   interval,
   timeout,
 };
+use zbus::connection;
 
 pub const DEADLINE: Duration = Duration::from_secs(15);
+
+pub async fn bounded<T>(future: impl Future<Output = T>) -> T {
+  timeout(DEADLINE, future)
+    .await
+    .expect("process scenario timed out")
+}
 
 /// Poll until the expected state appears or the deadline expires.
 pub async fn eventually(description: &str, mut ready: impl FnMut() -> bool) {
@@ -59,15 +67,21 @@ pub fn assert_success(output: &Output) {
   );
 }
 
-/// Temporary runtime files for invoking the CLI.
+/// Bus process with temporary runtime files.
+/// Drop the child guard before deleting its files.
 pub struct Harness {
-  root: TempDir,
+  bus:         Option<Process>,
+  pub address: String,
+  root:        TempDir,
 }
 
 impl Harness {
   pub fn isolated(config: &str) -> Self {
+    let root = tempfile::tempdir().unwrap();
     let harness = Self {
-      root: tempfile::tempdir().unwrap(),
+      bus: None,
+      address: format!("unix:path={}/bus", root.path().display()),
+      root,
     };
     harness.config(config);
     harness
@@ -90,11 +104,50 @@ impl Harness {
     self.write("/config.toml", contents);
   }
 
+  fn command(&self, executable: &str) -> Command {
+    let mut command = isolated_command(executable, self.root.path());
+    command
+      .env("DBUS_SYSTEM_BUS_ADDRESS", &self.address)
+      .env("DBUS_SESSION_BUS_ADDRESS", &self.address);
+    command
+  }
+
+  /// Start a private bus and wait until it accepts connections.
+  pub async fn start_bus(&mut self) {
+    let address = self.address.clone();
+    let bus = self.bus.insert(
+      Process::logged(
+        self
+          .command("dbus-daemon")
+          .args(["--session", "--nofork"])
+          .arg(format!("--address={address}")),
+        &self.path("/bus.stdout"),
+        &self.path("/bus.log"),
+      )
+      .expect("dbus-daemon is required for process tests"),
+    );
+    bounded(async {
+      let mut ticks = interval(Duration::from_millis(10));
+      loop {
+        ticks.tick().await;
+        assert!(
+          bus.child.try_wait().unwrap().is_none(),
+          "private bus exited"
+        );
+        if connection::Builder::address(address.as_str())
+          .unwrap()
+          .build()
+          .await
+          .is_ok()
+        {
+          break;
+        }
+      }
+    })
+    .await;
+  }
+
   pub async fn cli(&self, arguments: &[&str]) -> Output {
-    run(
-      isolated_command(env!("CARGO_BIN_EXE_watt"), self.root.path())
-        .args(arguments),
-    )
-    .await
+    run(self.command(env!("CARGO_BIN_EXE_watt")).args(arguments)).await
   }
 }
