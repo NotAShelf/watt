@@ -51,6 +51,9 @@ use crate::{
   usb,
 };
 
+pub(crate) const HISTORY_SAMPLE_LIMIT: usize = 100;
+pub(crate) const MAX_POLL_INTERVAL_SECONDS: u64 = 30;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CpuLog {
   pub at: Instant,
@@ -608,7 +611,7 @@ impl System {
     if self.cpus.is_empty() {
       return;
     }
-    while self.cpu_log.len() >= 100 {
+    while self.cpu_log.len() >= HISTORY_SAMPLE_LIMIT {
       self.cpu_log.pop_front();
     }
     self.cpu_log.push_back(CpuLog {
@@ -636,7 +639,7 @@ impl System {
     if charge_count == 0 {
       return;
     }
-    while self.power_supply_log.len() >= 100 {
+    while self.power_supply_log.len() >= HISTORY_SAMPLE_LIMIT {
       self.power_supply_log.pop_front();
     }
     self.power_supply_log.push_back(PowerSupplyLog {
@@ -1207,7 +1210,11 @@ fn compute_poll_delay(
     None => delay,
   };
 
-  Duration::from_secs_f64(delay.as_secs_f64().clamp(1.0, 30.0))
+  Duration::from_secs_f64(
+    delay
+      .as_secs_f64()
+      .clamp(1.0, MAX_POLL_INTERVAL_SECONDS as f64),
+  )
 }
 
 fn detect_performance_degradation(
@@ -2423,6 +2430,7 @@ mod tests {
     for contents in [
       "invalid",
       "[[rule]]\nname='bad'\npriority=1\ncpu.frequency-mhz-minimum=-1\n",
+      "[[rule]]\nname='bad'\npriority=1\nif='true'\n",
     ] {
       stdfs::write(&path, contents).unwrap();
       assert!(reload_config(&path, &mut active).is_err());

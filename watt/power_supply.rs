@@ -126,6 +126,19 @@ impl fmt::Display for PowerSupply {
 
 const POWER_SUPPLY_PATH: &str = "/sys/class/power_supply";
 
+fn threshold_percentage(value: f64) -> anyhow::Result<u8> {
+  let percent = (value * 100.0).round();
+  // Account for binary rounding when percentages are normalized to 0..=1.
+  if !(0.0..=1.0).contains(&value)
+    || (value - percent / 100.0).abs() > f64::EPSILON
+  {
+    bail!(
+      "charge threshold must represent an integer percentage from 0 to 100"
+    );
+  }
+  Ok(percent as u8)
+}
+
 /// Discovered power supplies and errors from incomplete discovery.
 #[derive(Debug)]
 pub struct PowerSupplyInventory {
@@ -436,6 +449,7 @@ impl PowerSupply {
     &mut self,
     charge_threshold_start: f64,
   ) -> anyhow::Result<()> {
+    let percent = threshold_percentage(charge_threshold_start)?;
     fs::write(
       &self.charge_threshold_path_start().ok_or_else(|| {
         anyhow!(
@@ -444,17 +458,15 @@ impl PowerSupply {
           name = self.name,
         )
       })?,
-      &((charge_threshold_start * 100.0) as u8).to_string(),
+      &percent.to_string(),
     )
     .with_context(|| {
       format!("failed to set charge threshold start for {self}")
     })?;
 
-    self.charge_threshold_start = charge_threshold_start;
+    self.charge_threshold_start = f64::from(percent) / 100.0;
 
-    log::trace!(
-      "set battery threshold start for {self} to {charge_threshold_start}%"
-    );
+    log::trace!("set battery threshold start for {self} to {percent}%");
 
     Ok(())
   }
@@ -463,6 +475,7 @@ impl PowerSupply {
     &mut self,
     charge_threshold_end: f64,
   ) -> anyhow::Result<()> {
+    let percent = threshold_percentage(charge_threshold_end)?;
     fs::write(
       &self.charge_threshold_path_end().ok_or_else(|| {
         anyhow!(
@@ -471,17 +484,15 @@ impl PowerSupply {
           name = self.name,
         )
       })?,
-      &((charge_threshold_end * 100.0) as u8).to_string(),
+      &percent.to_string(),
     )
     .with_context(|| {
       format!("failed to set charge threshold end for {self}")
     })?;
 
-    self.charge_threshold_end = charge_threshold_end;
+    self.charge_threshold_end = f64::from(percent) / 100.0;
 
-    log::trace!(
-      "set battery threshold end for {self} to {charge_threshold_end}%"
-    );
+    log::trace!("set battery threshold end for {self} to {percent}%");
 
     Ok(())
   }
@@ -567,6 +578,12 @@ impl Delta {
   }
 
   pub fn apply(&self, power_supply: &mut PowerSupply) -> anyhow::Result<()> {
+    for value in [self.charge_threshold_start, self.charge_threshold_end]
+      .into_iter()
+      .flatten()
+    {
+      threshold_percentage(value)?;
+    }
     if let Some(charge_threshold_start) = self.charge_threshold_start {
       power_supply.set_charge_threshold_start(charge_threshold_start)?;
     }
@@ -594,9 +611,55 @@ mod tests {
   };
 
   use super::{
+    Delta,
     PowerSupply,
     PowerSupplyInventory,
   };
+  use crate::test_support::SystemFixture;
+
+  #[test]
+  fn threshold_writes_preserve_integer_percentages_and_reject_invalid_pairs() {
+    let fixture = SystemFixture::new();
+    let battery = "/sys/class/power_supply/BAT0";
+    fixture.write(format!("{battery}/type"), "Battery");
+    let start = format!("{battery}/charge_control_start_threshold");
+    let end = format!("{battery}/charge_control_end_threshold");
+    fixture.write(&start, "40");
+    fixture.write(&end, "80");
+    let mut supply = PowerSupply::all().unwrap().pop().unwrap();
+    for percent in 0..=100 {
+      let value = f64::from(percent) / 100.0;
+      supply.set_charge_threshold_start(value).unwrap();
+      supply.set_charge_threshold_end(value).unwrap();
+      assert_eq!(
+        fs::read_to_string(fixture.path(&start)).unwrap(),
+        percent.to_string()
+      );
+      assert_eq!(
+        fs::read_to_string(fixture.path(&end)).unwrap(),
+        percent.to_string()
+      );
+    }
+    let writes = fixture.write_count(&start) + fixture.write_count(&end);
+    for invalid in [-0.01, 1.01, 0.405, f64::NAN, f64::INFINITY] {
+      assert!(supply.set_charge_threshold_start(invalid).is_err());
+      assert!(supply.set_charge_threshold_end(invalid).is_err());
+      assert!(
+        Delta {
+          charge_threshold_start: Some(0.4),
+          charge_threshold_end:   Some(invalid),
+        }
+        .apply(&mut supply)
+        .is_err()
+      );
+    }
+    assert_eq!(
+      fixture.write_count(&start) + fixture.write_count(&end),
+      writes
+    );
+    assert_eq!(supply.charge_threshold_start, 1.0);
+    assert_eq!(supply.charge_threshold_end, 1.0);
+  }
 
   static NEXT_TEMP_DIR: AtomicU64 = AtomicU64::new(0);
 
