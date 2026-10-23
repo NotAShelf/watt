@@ -135,7 +135,7 @@ signals and dictionary keys may be added, so clients must ignore unknown keys.
 | `GetBoostCapabilities`     | `a{sv}`          | Boost control paths, `global` or `policy` scope, and inversion            |
 | `GetDeviceCapabilities`    | `aa{sv}`         | `subsystem`, `name`, `path`, `controls`, `available-values`               |
 | `GetAppliedSettings`       | `a(ssss)`        | Path, requested value, observed value and verification                    |
-| `GetAppliedSettingDetails` | `aa{sv}`         | The same values plus the owning `rule` and `priority`                     |
+| `GetAppliedSettingDetails` | `aa{sv}`         | The same values plus the owning `rule`, `priority` and affected `cpus`    |
 | `GetPollingDiagnostics`    | `a{sv}`          | Polling interval calculation and sample availability                      |
 | `GetRecentErrors`          | `as`             | Up to 32 current errors, newest first                                     |
 | `GetConfig`                | `s`              | Loaded configuration as normalized TOML                                   |
@@ -152,6 +152,11 @@ kernel adjusted a frequency bound, `translated` when Intel P-State reported a
 named EPP for a numeric write, `mismatch` for a different value and
 `unverified` when the control cannot be read back. DMA latency requests and
 `hdparm` settings are not listed.
+
+`GetAppliedSettingDetails` adds `cpus` (`au`) to CPU policy and per-CPU
+settings. For a policy control it lists every logical CPU in the policy,
+including offline CPUs, since one write affects all of them. Global controls
+such as Intel P-State `no_turbo` omit it.
 
 `GetPollingDiagnostics` reports `base-interval-seconds`,
 `current-interval-seconds`, `next-interval-seconds`, `idle-factor`,

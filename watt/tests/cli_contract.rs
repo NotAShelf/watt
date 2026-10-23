@@ -93,6 +93,7 @@ async fn json_queries_expose_live_values_without_variant_wrappers() {
     &json!({
       "path": governor_path, "requested": "performance", "observed": "performance",
       "verification": "verified", "rule": "json-rule", "priority": 10,
+      "cpus": [0],
     })
   );
   let polling = query(&daemon, &["config", "--json", "polling"]).await;
