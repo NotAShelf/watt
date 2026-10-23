@@ -6,7 +6,10 @@ use std::{
   path::PathBuf,
 };
 
-use anyhow::Context as _;
+use anyhow::{
+  Context as _,
+  bail,
+};
 use clap::Parser as _;
 use tokio::runtime::Builder as RuntimeBuilder;
 
@@ -41,6 +44,10 @@ pub struct Cli {
   /// The daemon config path.
   #[arg(long, env = "WATT_CONFIG")]
   config: Option<PathBuf>,
+
+  /// Check configuration and exit.
+  #[arg(long)]
+  verify_config: bool,
 
   #[command(subcommand)]
   command: Option<Command>,
@@ -86,6 +93,9 @@ pub fn main() -> anyhow::Result<()> {
     .format_module_path(false)
     .init();
 
+  if cli.verify_config && cli.command.is_some() {
+    bail!("--verify-config cannot be combined with a subcommand");
+  }
   if let Some(Command::Config { command }) = cli.command {
     return run_config_command(command);
   }
@@ -93,6 +103,10 @@ pub fn main() -> anyhow::Result<()> {
   let config_path = cli.config.clone();
   let config = config::DaemonConfig::load_from(config_path.as_deref())
     .context("failed to load daemon config")?;
+
+  if cli.verify_config {
+    return print_output("Configuration valid.");
+  }
 
   log::info!("starting watt daemon");
 

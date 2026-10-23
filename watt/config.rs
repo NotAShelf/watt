@@ -1,3 +1,5 @@
+pub mod verify;
+
 mod eval;
 mod rule;
 pub use rule::EvaluatedRule;
@@ -270,10 +272,9 @@ impl CpusDelta {
         let value = value.try_into_number().context(
           "`cpu.pm-qos-resume-latency-us` was not a number or \"n/a\"",
         )?;
-        if value.fract() != 0.0 || value < 0.0 || value >= u64::MAX as f64 {
-          bail!("invalid `cpu.pm-qos-resume-latency-us`: {value}");
-        }
-        Ok(Some((value as u64).to_string()))
+        unsigned_integer(value)
+          .context("invalid `cpu.pm-qos-resume-latency-us`")
+          .map(|value| Some(value.to_string()))
       },
     }
   }
@@ -682,22 +683,6 @@ impl GpusDelta {
   }
 }
 
-fn eval_u32(
-  expression: &Option<Expression>,
-  state: &EvalState<'_, '_>,
-  name: &str,
-) -> anyhow::Result<Option<u32>> {
-  let Some(value) = eval_u64(expression, state, name)? else {
-    return Ok(None);
-  };
-
-  if value > u32::MAX as u64 {
-    bail!("invalid `{name}`: {value}");
-  }
-
-  Ok(Some(value as u32))
-}
-
 fn eval_frequency(
   expression: &Option<Expression>,
   state: &EvalState<'_, '_>,
@@ -764,11 +749,16 @@ fn eval_u64(
     .try_into_number()
     .with_context(|| format!("`{name}` was not a number"))?;
 
-  if value.fract() != 0.0 || value < 0.0 || value > u64::MAX as f64 {
-    bail!("invalid `{name}`: {value}");
-  }
+  unsigned_integer(value)
+    .with_context(|| format!("invalid `{name}`"))
+    .map(Some)
+}
 
-  Ok(Some(value as u64))
+fn unsigned_integer(value: f64) -> anyhow::Result<u64> {
+  if value.fract() != 0.0 || !(0.0..u64::MAX as f64).contains(&value) {
+    bail!("value is not a representable unsigned integer: {value}");
+  }
+  Ok(value as u64)
 }
 
 fn eval_string(
@@ -835,15 +825,25 @@ fn eval_percent(
   state: &EvalState<'_, '_>,
   name: &str,
 ) -> anyhow::Result<Option<u8>> {
-  let Some(value) = eval_u32(expression, state, name)? else {
+  let Some(expression) = expression else {
     return Ok(None);
   };
+  expression
+    .eval(state)?
+    .map(|value| {
+      value
+        .try_into_number()
+        .and_then(percentage)
+        .with_context(|| format!("invalid `{name}`"))
+    })
+    .transpose()
+}
 
-  if value > 100 {
-    bail!("`{name}` must be between 0 and 100, got {value}");
+fn percentage(value: f64) -> anyhow::Result<u8> {
+  if value.fract() != 0.0 || !(0.0..=100.0).contains(&value) {
+    bail!("percentage must be an integer between 0 and 100, got {value}");
   }
-
-  Ok(Some(value as u8))
+  Ok(value as u8)
 }
 
 #[derive(
@@ -1467,7 +1467,7 @@ impl Default for Rule {
 
 #[derive(Serialize, schemars::JsonSchema, Default, Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "metrics", derive(Deserialize))]
-#[serde(default, rename_all = "kebab-case")]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 #[cfg_attr(not(feature = "metrics"), non_exhaustive)]
 pub struct DaemonConfig {
   #[cfg(feature = "metrics")]
@@ -1500,7 +1500,7 @@ impl<'de> Deserialize<'de> for DaemonConfig {
     };
 
     #[derive(Deserialize, Default)]
-    #[serde(default, rename_all = "kebab-case")]
+    #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
     struct RawDaemonConfig {
       metrics: Option<IgnoredAny>,
 
@@ -1543,18 +1543,16 @@ impl DaemonConfig {
       )
     })?;
 
-    {
-      let mut priorities = Vec::with_capacity(config.rules.len());
-
-      log::debug!("validating rule priorities...");
-
-      for rule in &config.rules {
-        if priorities.contains(&rule.priority) {
-          bail!("each config rule must have a different priority")
-        }
-
-        priorities.push(rule.priority);
-      }
+    let diagnostics = config.verify_static();
+    if !diagnostics.is_empty() {
+      bail!(
+        "{}",
+        diagnostics
+          .iter()
+          .map(ToString::to_string)
+          .collect::<Vec<_>>()
+          .join("\n")
+      );
     }
 
     // This is just for debug traces.
@@ -1585,6 +1583,19 @@ mod tests {
   use proptest::prelude::*;
 
   use super::*;
+
+  #[test]
+  fn loading_rejects_a_misspelled_rule_table() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("config.toml");
+    fs::write(&path, "[[rules]]\nname = 'power'\npriority = 1\n").unwrap();
+    let error = DaemonConfig::load_from(Some(&path)).unwrap_err();
+    assert!(format!("{error:#}").contains("unknown field `rules`"));
+    fs::write(&path, "[[rule]]\nname = 'power'\npriority = 1\n").unwrap();
+    let config = DaemonConfig::load_from(Some(&path)).unwrap();
+    assert_eq!(config.rules.len(), 1);
+    assert_eq!(config.rules[0].name, "power");
+  }
 
   fn frequency_mhz(mhz: u64) -> cpu::frequency::Frequency {
     cpu::frequency::Frequency::from_mhz(mhz as f64)
