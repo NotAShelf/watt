@@ -19,6 +19,8 @@ use anyhow::{
 use clap::Parser as _;
 use tokio::runtime::Builder as RuntimeBuilder;
 
+use crate::dbus::client::OutputFormat;
+
 pub mod audio;
 pub mod cpu;
 pub mod disk;
@@ -50,6 +52,10 @@ pub struct Cli {
   /// The daemon config path.
   #[arg(long, env = "WATT_CONFIG")]
   config: Option<PathBuf>,
+
+  /// Print daemon query results as stable JSON.
+  #[arg(long, global = true)]
+  json: bool,
 
   /// Check configuration and exit. Hardware mode also checks discovered CPU,
   /// power-supply and peripheral controls.
@@ -117,6 +123,24 @@ enum ConfigCommand {
   Schema,
 }
 
+impl ConfigCommand {
+  fn validate_format(&self, format: OutputFormat) -> anyhow::Result<()> {
+    let json_query = matches!(
+      self,
+      Self::Query(_)
+        | Self::Active { .. }
+        | Self::Profile {
+          command: ProfileCommand::Get,
+        }
+    );
+    ensure!(
+      format != OutputFormat::Json || json_query,
+      "--json is supported only for daemon queries"
+    );
+    Ok(())
+  }
+}
+
 #[derive(clap::Subcommand, Debug)]
 enum ConfigQuery {
   /// Print recent daemon errors.
@@ -125,8 +149,12 @@ enum ConfigQuery {
   Status,
   /// Print configured rules and priorities.
   Rules,
-  /// Print discovered CPU capabilities.
+  /// Print discovered CPU and device capabilities.
   Capabilities,
+  /// Explain applied settings and their winning rules.
+  Settings,
+  /// Explain adaptive polling decisions and sample availability.
+  Polling,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -150,14 +178,21 @@ pub fn main() -> anyhow::Result<()> {
     bail!("--verify-config cannot be combined with a subcommand");
   }
   if let Some(Command::Config { command }) = cli.command {
-    return run_config_command(command);
+    return run_config_command(command, OutputFormat::from(cli.json));
   }
 
-  let config_path = cli.config.clone();
+  ensure!(!cli.json, "--json requires a config query subcommand");
+  run_daemon_command(cli.config, cli.verify_config)
+}
+
+fn run_daemon_command(
+  config_path: Option<PathBuf>,
+  verification: Option<VerificationMode>,
+) -> anyhow::Result<()> {
   let config = config::DaemonConfig::load_from(config_path.as_deref())
     .context("failed to load daemon config")?;
 
-  if let Some(mode) = cli.verify_config {
+  if let Some(mode) = verification {
     return verify_configuration(&config, mode);
   }
 
@@ -186,7 +221,11 @@ fn verify_configuration(
   print_output("Configuration valid.")
 }
 
-fn run_config_command(command: ConfigCommand) -> anyhow::Result<()> {
+fn run_config_command(
+  command: ConfigCommand,
+  format: OutputFormat,
+) -> anyhow::Result<()> {
+  command.validate_format(format)?;
   let runtime = RuntimeBuilder::new_current_thread()
     .enable_all()
     .build()
@@ -197,12 +236,12 @@ fn run_config_command(command: ConfigCommand) -> anyhow::Result<()> {
       runtime.block_on(dbus::client::verify_configuration(&contents, hardware))
     },
     ConfigCommand::Active { watch } => {
-      runtime.block_on(dbus::client::print_active_rules(watch))
+      runtime.block_on(dbus::client::print_active_rules(watch, format))
     },
     ConfigCommand::Reload => runtime.block_on(dbus::client::reload()),
-    ConfigCommand::Query(query) => runtime.block_on(run_query(query)),
+    ConfigCommand::Query(query) => runtime.block_on(run_query(query, format)),
     ConfigCommand::Profile { command } => {
-      runtime.block_on(run_profile(command))
+      runtime.block_on(run_profile(command, format))
     },
     ConfigCommand::Show { default } => {
       runtime.block_on(show_configuration(default))
@@ -211,18 +250,26 @@ fn run_config_command(command: ConfigCommand) -> anyhow::Result<()> {
   }
 }
 
-async fn run_query(query: ConfigQuery) -> anyhow::Result<()> {
+async fn run_query(
+  query: ConfigQuery,
+  format: OutputFormat,
+) -> anyhow::Result<()> {
   match query {
-    ConfigQuery::Errors => dbus::client::print_errors().await,
-    ConfigQuery::Status => dbus::client::print_status().await,
-    ConfigQuery::Rules => dbus::client::print_configured_rules().await,
-    ConfigQuery::Capabilities => dbus::client::print_capabilities().await,
+    ConfigQuery::Errors => dbus::client::print_errors(format).await,
+    ConfigQuery::Status => dbus::client::print_status(format).await,
+    ConfigQuery::Rules => dbus::client::print_configured_rules(format).await,
+    ConfigQuery::Capabilities => dbus::client::print_capabilities(format).await,
+    ConfigQuery::Settings => dbus::client::print_settings(format).await,
+    ConfigQuery::Polling => dbus::client::print_polling(format).await,
   }
 }
 
-async fn run_profile(command: ProfileCommand) -> anyhow::Result<()> {
+async fn run_profile(
+  command: ProfileCommand,
+  format: OutputFormat,
+) -> anyhow::Result<()> {
   match command {
-    ProfileCommand::Get => dbus::client::get_profile().await,
+    ProfileCommand::Get => dbus::client::get_profile(format).await,
     ProfileCommand::Set { profile } => {
       dbus::client::set_profile(&profile).await
     },

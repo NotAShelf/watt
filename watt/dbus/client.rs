@@ -11,10 +11,27 @@ use anyhow::{
   ensure,
 };
 use futures_util::StreamExt;
+use serde::Serialize;
+use serde_json::{
+  Value,
+  json,
+};
 use zbus::{
   Connection,
   zvariant::OwnedValue,
 };
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum OutputFormat {
+  Human,
+  Json,
+}
+
+impl From<bool> for OutputFormat {
+  fn from(json: bool) -> Self {
+    if json { Self::Json } else { Self::Human }
+  }
+}
 
 #[zbus::proxy(
   interface = "dev.notashelf.Watt",
@@ -36,6 +53,15 @@ trait Watt {
   fn get_cpu_capabilities(
     &self,
   ) -> zbus::Result<Vec<HashMap<String, OwnedValue>>>;
+  fn get_device_capabilities(
+    &self,
+  ) -> zbus::Result<Vec<HashMap<String, OwnedValue>>>;
+  fn get_applied_setting_details(
+    &self,
+  ) -> zbus::Result<Vec<HashMap<String, OwnedValue>>>;
+  fn get_polling_diagnostics(
+    &self,
+  ) -> zbus::Result<HashMap<String, OwnedValue>>;
 
   #[zbus(signal)]
   fn applied_rules_changed(&self) -> zbus::Result<()>;
@@ -107,61 +133,94 @@ pub async fn reload() -> anyhow::Result<()> {
     .context("daemon configuration reload failed")
 }
 
-pub async fn print_errors() -> anyhow::Result<()> {
-  for error in watt()
+pub async fn print_errors(format: OutputFormat) -> anyhow::Result<()> {
+  let errors = watt()
     .await?
     .get_recent_errors()
     .await
-    .context("failed to get daemon errors")?
-  {
-    println!("{error}");
+    .context("failed to get daemon errors")?;
+  if format == OutputFormat::Json {
+    return print_payload(errors, format);
+  }
+  let mut stdout = io::stdout().lock();
+  for error in errors {
+    writeln!(stdout, "{error}")?;
   }
   Ok(())
 }
 
-pub async fn print_status() -> anyhow::Result<()> {
-  for (name, value) in watt()
+pub async fn print_status(format: OutputFormat) -> anyhow::Result<()> {
+  let status = watt()
     .await?
     .get_status()
     .await
-    .context("failed to get daemon status")?
-  {
-    println!("{name}: {value:?}");
-  }
-  Ok(())
+    .context("failed to get daemon status")?;
+  print_payload(status, format)
 }
 
-pub async fn print_configured_rules() -> anyhow::Result<()> {
-  for (name, priority) in watt()
+pub async fn print_configured_rules(
+  format: OutputFormat,
+) -> anyhow::Result<()> {
+  let rules = watt()
     .await?
     .get_rules()
     .await
-    .context("failed to get daemon rules")?
-  {
-    println!("{priority}\t{name}");
+    .context("failed to get daemon rules")?;
+  if format == OutputFormat::Json {
+    let rules: Vec<_> = rules
+      .into_iter()
+      .map(|(name, priority)| json!({"name": name, "priority": priority}))
+      .collect();
+    return print_payload(rules, format);
+  }
+  let mut stdout = io::stdout().lock();
+  for (name, priority) in rules {
+    writeln!(stdout, "{priority}\t{name}")?;
   }
   Ok(())
 }
 
-pub async fn print_capabilities() -> anyhow::Result<()> {
-  for capability in watt()
-    .await?
+pub async fn print_capabilities(format: OutputFormat) -> anyhow::Result<()> {
+  let proxy = watt().await?;
+  let cpus = proxy
     .get_cpu_capabilities()
     .await
-    .context("failed to get CPU capabilities")?
-  {
-    println!("{capability:?}");
-  }
-  Ok(())
+    .context("failed to get CPU capabilities")?;
+  let devices = proxy
+    .get_device_capabilities()
+    .await
+    .context("failed to get device capabilities")?;
+  print_payload(json!({"cpus": cpus, "devices": devices}), format)
 }
 
-pub async fn get_profile() -> anyhow::Result<()> {
+pub async fn print_settings(format: OutputFormat) -> anyhow::Result<()> {
+  let settings = watt()
+    .await?
+    .get_applied_setting_details()
+    .await
+    .context("failed to get applied settings")?;
+  print_payload(settings, format)
+}
+
+pub async fn print_polling(format: OutputFormat) -> anyhow::Result<()> {
+  let polling = watt()
+    .await?
+    .get_polling_diagnostics()
+    .await
+    .context("failed to get polling diagnostics")?;
+  print_payload(polling, format)
+}
+
+pub async fn get_profile(format: OutputFormat) -> anyhow::Result<()> {
   let profile = PowerProfilesProxy::new(&connect().await?)
     .await?
     .active_profile()
     .await
     .context("failed to get active profile")?;
-  println!("{profile}");
+  if format == OutputFormat::Json {
+    return print_payload(json!({"profile": profile}), format);
+  }
+  writeln!(io::stdout().lock(), "{profile}")?;
   Ok(())
 }
 
@@ -173,7 +232,49 @@ pub async fn set_profile(profile: &str) -> anyhow::Result<()> {
   Ok(())
 }
 
-pub async fn print_active_rules(watch: bool) -> anyhow::Result<()> {
+fn print_payload(
+  payload: impl Serialize,
+  format: OutputFormat,
+) -> anyhow::Result<()> {
+  let value = plain_variants(serde_json::to_value(payload)?);
+  let mut stdout = io::stdout().lock();
+  match format {
+    OutputFormat::Human => serde_json::to_writer_pretty(&mut stdout, &value)?,
+    OutputFormat::Json => serde_json::to_writer(&mut stdout, &value)?,
+  }
+  writeln!(stdout)?;
+  Ok(())
+}
+
+/// Unwraps serialized D-Bus variants (`{"signature", "value"}`) into their
+/// plain values.
+fn plain_variants(value: Value) -> Value {
+  match value {
+    Value::Object(mut object) => {
+      if object.len() == 2
+        && object.get("signature").is_some_and(Value::is_string)
+        && let Some(value) = object.remove("value")
+      {
+        return plain_variants(value);
+      }
+      Value::Object(
+        object
+          .into_iter()
+          .map(|(key, value)| (key, plain_variants(value)))
+          .collect(),
+      )
+    },
+    Value::Array(values) => {
+      Value::Array(values.into_iter().map(plain_variants).collect())
+    },
+    value => value,
+  }
+}
+
+pub async fn print_active_rules(
+  watch: bool,
+  format: OutputFormat,
+) -> anyhow::Result<()> {
   let connection = zbus::Connection::system()
     .await
     .context("failed to connect to the system D-Bus")?;
@@ -195,7 +296,7 @@ pub async fn print_active_rules(watch: bool) -> anyhow::Result<()> {
     .get_applied_rules()
     .await
     .context("failed to get active rules")?;
-  print_rules(&rules, false)?;
+  print_rules(&rules, false, format)?;
 
   let Some(signals) = &mut signals else {
     return Ok(());
@@ -207,7 +308,7 @@ pub async fn print_active_rules(watch: bool) -> anyhow::Result<()> {
       .await
       .context("failed to get active rules")?;
     if next != rules {
-      print_rules(&next, true)?;
+      print_rules(&next, true, format)?;
       rules = next;
     }
   }
@@ -215,7 +316,14 @@ pub async fn print_active_rules(watch: bool) -> anyhow::Result<()> {
   anyhow::bail!("connection to the watt daemon closed")
 }
 
-fn print_rules(rules: &[String], separator: bool) -> anyhow::Result<()> {
+fn print_rules(
+  rules: &[String],
+  separator: bool,
+  format: OutputFormat,
+) -> anyhow::Result<()> {
+  if format == OutputFormat::Json {
+    return print_payload(rules, format);
+  }
   let stdout = io::stdout();
   let mut stdout = stdout.lock();
 
