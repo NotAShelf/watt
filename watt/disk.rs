@@ -115,7 +115,7 @@ pub fn set_alpm(policy: &str) -> anyhow::Result<()> {
     let policy_path = host_path.join("link_power_management_policy");
 
     if is_external_sata_port(&host_path)? {
-      log::info!(
+      log::trace!(
         "skipping ALPM for external or hotplug-capable SATA host '{host}'",
         host = host_path.display(),
       );

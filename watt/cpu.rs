@@ -490,7 +490,7 @@ impl Cpu {
 
     self.governor = Some(governor.to_owned());
 
-    log::info!(
+    log::trace!(
       "CPU {number} governor set to {governor}",
       number = self.number
     );
@@ -531,7 +531,7 @@ impl Cpu {
 
     self.epp = Some(epp.to_owned());
 
-    log::info!("CPU {number} EPP set to {epp}", number = self.number);
+    log::trace!("CPU {number} EPP set to {epp}", number = self.number);
 
     Ok(())
   }
@@ -563,7 +563,7 @@ impl Cpu {
 
     self.epb = Some(epb.to_owned());
 
-    log::info!("CPU {number} EPB set to {epb}", number = self.number);
+    log::trace!("CPU {number} EPB set to {epb}", number = self.number);
 
     Ok(())
   }
@@ -599,7 +599,7 @@ impl Cpu {
       },
     )?;
 
-    log::info!(
+    log::trace!(
       "CPU {number} PM QoS resume latency set to {latency} us",
       number = self.number,
     );
@@ -626,7 +626,7 @@ impl Cpu {
     )
     .context("failed to set Intel P-State minimum performance percent")?;
 
-    log::info!("Intel P-State minimum performance set to {percent}%");
+    log::trace!("Intel P-State minimum performance set to {percent}%");
 
     Ok(())
   }
@@ -639,7 +639,7 @@ impl Cpu {
     )
     .context("failed to set Intel P-State maximum performance percent")?;
 
-    log::info!("Intel P-State maximum performance set to {percent}%");
+    log::trace!("Intel P-State maximum performance set to {percent}%");
 
     Ok(())
   }

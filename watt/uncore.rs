@@ -105,7 +105,7 @@ impl Uncore {
     fs::write(self.path.join("min_freq_khz"), &value.to_string())
       .with_context(|| format!("failed to set minimum frequency for {self}"))?;
 
-    log::info!("{self} minimum frequency set to {value} kHz");
+    log::trace!("{self} minimum frequency set to {value} kHz");
     Ok(())
   }
 
@@ -120,7 +120,7 @@ impl Uncore {
     fs::write(self.path.join("max_freq_khz"), &value.to_string())
       .with_context(|| format!("failed to set maximum frequency for {self}"))?;
 
-    log::info!("{self} maximum frequency set to {value} kHz");
+    log::trace!("{self} maximum frequency set to {value} kHz");
     Ok(())
   }
 }
