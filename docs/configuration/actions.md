@@ -30,8 +30,11 @@ Configuration values are in MHz and rounded to the nearest kHz.
 
 Numeric EPP values (`0` to `255`) require an `intel_pstate` or `amd-pstate-epp`
 interface, and the driver may still reject them. Prefer advertised names and
-ordered alternatives for portable rules. Intel P-State may read back a named
-preference after a numeric write; Watt reports that setting as `translated`.
+ordered alternatives for portable rules. Intel P-State reads back a preference
+name when the written value equals it: `performance` for `0`, `balance_power`
+for `192`, `power` for `255` and `balance_performance` for its model-specific
+value. Watt reports a matching name as `translated` and any other name as
+`mismatch`.
 
 The native D-Bus `GetBoostCapabilities` method returns the selected boost
 control paths, `global` or `policy` scope, and whether `1` disables boost. An

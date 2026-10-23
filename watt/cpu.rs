@@ -601,13 +601,25 @@ impl Cpu {
     bail!("CPU EPP did not retain '{epp}'; observed '{observed}'");
   }
 
+  /// intel_pstate reports a preference name instead of the raw EPP only when
+  /// the raw value equals that preference. The balance_performance value is
+  /// model-specific, so it may stand for any value without a fixed name.
   fn accepts_epp_translation(&self, requested: &str, observed: &str) -> bool {
-    requested.parse::<u8>().is_ok()
+    let Ok(requested) = requested.parse::<u8>() else {
+      return false;
+    };
+    let matches = match observed {
+      "performance" => requested == 0,
+      "balance_power" => requested == 192,
+      "power" => requested == 255,
+      "balance_performance" => !matches!(requested, 0 | 192 | 255),
+      _ => false,
+    };
+    matches
       && self
         .policy
         .as_ref()
         .is_some_and(|policy| policy.driver.as_deref() == Some("intel_pstate"))
-      && observed.parse::<u16>().is_err()
       && self.available_epps.iter().any(|value| value == observed)
   }
 
@@ -1080,6 +1092,37 @@ mod tests {
   }
 
   #[test]
+  fn numeric_epp_translation_requires_the_matching_intel_pstate_name() {
+    for (requested, observed, accepted) in [
+      ("0", "performance", true),
+      ("192", "balance_power", true),
+      ("255", "power", true),
+      ("128", "balance_performance", true),
+      ("115", "balance_performance", true),
+      ("255", "performance", false),
+      ("0", "balance_performance", false),
+      ("128", "power", false),
+    ] {
+      let fixture = SystemFixture::new();
+      let policy = fixture.policy(0, &[0], "intel_pstate");
+      fixture.cpu_telemetry(&[0]);
+      let path = policy.join("energy_performance_preference");
+      let mut cpu = Cpu::all().unwrap().remove(0);
+      let _managed = fs::manage_settings();
+      fs::begin_settings_iteration();
+      fixture.write_result(&path, Ok(observed));
+      assert_eq!(
+        cpu.set_epp(requested).is_ok(),
+        accepted,
+        "{requested} read back as {observed}"
+      );
+      let verification = if accepted { "translated" } else { "mismatch" };
+      assert_eq!(fs::applied_settings()[0].verification(), verification);
+      fixture.clear_io(&path);
+    }
+  }
+
+  #[test]
   fn numeric_epp_accepts_named_driver_readback_for_restoration() {
     let fixture = SystemFixture::new();
     let policy = fixture.policy(0, &[0], "intel_pstate");
@@ -1205,7 +1248,7 @@ mod tests {
     let _managed = fs::manage_settings();
     fs::begin_settings_iteration();
     fixture.write_result(&path, Ok("performance"));
-    cpu.set_epp("123").unwrap();
+    cpu.set_epp("0").unwrap();
     fixture.clear_io(&path);
     fixture.write(&path, "power");
     fs::begin_settings_iteration();
