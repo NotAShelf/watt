@@ -1968,7 +1968,8 @@ async fn reload_daemon_config(
   state: &RwLock<DaemonState>,
 ) -> anyhow::Result<()> {
   let Some(path) = path else {
-    bail!("builtin configuration cannot be reloaded")
+    log::info!("running on the built-in configuration, nothing to reload");
+    return Ok(());
   };
   let serialized = reload_config(path, config)?;
   state.write().await.set_config(serialized, &config.rules);
@@ -2738,6 +2739,18 @@ mod tests {
       toml::from_str::<config::DaemonConfig>(&serialized).unwrap(),
       active
     );
+  }
+
+  #[tokio::test]
+  async fn builtin_reload_succeeds_without_changing_the_config() {
+    let mut active = config::DaemonConfig::load_from(None).unwrap();
+    let original = active.clone();
+    let state = RwLock::new(DaemonState::new("loaded".to_owned(), 0));
+    reload_daemon_config(None, &mut active, &state)
+      .await
+      .unwrap();
+    assert_eq!(active, original);
+    assert_eq!(state.read().await.config(), "loaded");
   }
 
   #[tokio::test]
