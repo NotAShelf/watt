@@ -201,10 +201,19 @@ fn system_root() -> Option<PathBuf> {
 /// Resolves system paths under `WATT_SYSTEM_ROOT` when configured.
 ///
 /// The default remains the real host filesystem. The alternate root is for
-/// unprivileged tests and must contain the same absolute-path layout.
+/// unprivileged tests and must contain the same absolute-path layout. Unit
+/// tests panic on absolute paths unless a `SystemFixture` or
+/// `WATT_SYSTEM_ROOT` provides a root.
 pub fn path(path: impl AsRef<Path>) -> PathBuf {
   let path = path.as_ref();
   let Some(root) = system_root() else {
+    #[cfg(test)]
+    assert!(
+      !path.is_absolute(),
+      "refusing to resolve host path '{}' in a test without a SystemFixture \
+       or WATT_SYSTEM_ROOT",
+      path.display()
+    );
     return path.to_owned();
   };
 
@@ -652,9 +661,7 @@ impl Drop for SystemRootGuard {
 #[cfg(test)]
 mod tests {
   use std::{
-    env,
     fs as stdfs,
-    process,
     slice,
   };
 
@@ -776,11 +783,10 @@ mod tests {
 
   #[test]
   fn restores_only_settings_watt_still_owns() {
-    let root =
-      env::temp_dir().join(format!("watt-settings-fixture-{}", process::id(),));
-    stdfs::create_dir_all(&root).unwrap();
+    let fixture = SystemFixture::new();
+    let root = fixture.path("/sys/devices/test");
     let setting = root.join("setting");
-    stdfs::write(&setting, "original").unwrap();
+    fixture.write(&setting, "original");
     let _settings = manage_settings();
 
     begin_settings_iteration();
@@ -812,9 +818,12 @@ mod tests {
     begin_settings_iteration();
     assert!(restore_unmanaged_settings().is_empty());
     assert_eq!(stdfs::read_to_string(&setting).unwrap(), "watt");
+  }
 
-    drop(_settings);
-    stdfs::remove_dir_all(root).unwrap();
+  #[test]
+  #[should_panic(expected = "refusing to resolve host path '/sys/kernel'")]
+  fn tests_without_a_fixture_cannot_resolve_host_paths() {
+    exists("/sys/kernel");
   }
 
   #[test]

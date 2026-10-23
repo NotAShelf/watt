@@ -599,15 +599,8 @@ impl Delta {
 #[cfg(test)]
 mod tests {
   use std::{
-    env,
     fs,
-    io::ErrorKind,
     path::PathBuf,
-    process,
-    sync::atomic::{
-      AtomicU64,
-      Ordering,
-    },
   };
 
   use super::{
@@ -661,36 +654,24 @@ mod tests {
     assert_eq!(supply.charge_threshold_end, 1.0);
   }
 
-  static NEXT_TEMP_DIR: AtomicU64 = AtomicU64::new(0);
-
   struct BatteryFixture {
-    path: PathBuf,
+    system: SystemFixture,
+    path:   PathBuf,
   }
 
   impl BatteryFixture {
     fn new() -> Self {
-      let root = env::temp_dir();
-
-      loop {
-        let counter = NEXT_TEMP_DIR.fetch_add(1, Ordering::Relaxed);
-        let path =
-          root.join(format!("watt-power-supply-{}-{counter}", process::id(),));
-
-        match fs::create_dir(&path) {
-          Ok(()) => {
-            let fixture = Self { path };
-            fixture.write("type", "Battery");
-            return fixture;
-          },
-          Err(error) if error.kind() == ErrorKind::AlreadyExists => {},
-          Err(error) => panic!("create battery fixture directory: {error}"),
-        }
-      }
+      let system = SystemFixture::new();
+      let fixture = Self {
+        path: system.path("/sys/class/power_supply/BAT0"),
+        system,
+      };
+      fixture.write("type", "Battery");
+      fixture
     }
 
     fn write(&self, name: &str, value: &str) {
-      fs::write(self.path.join(name), value)
-        .expect("write battery fixture value");
+      self.system.write(self.path.join(name), value);
     }
 
     fn power_supply(&self) -> PowerSupply {
@@ -708,12 +689,6 @@ mod tests {
         drain_rate_watts:       None,
         threshold_config:       None,
       }
-    }
-  }
-
-  impl Drop for BatteryFixture {
-    fn drop(&mut self) {
-      let _ = fs::remove_dir_all(&self.path);
     }
   }
 
