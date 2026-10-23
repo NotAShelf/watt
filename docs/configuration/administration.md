@@ -9,8 +9,8 @@ Configuration is loaded in this order:
 - the built-in default at `watt/config.toml`
 
 Send SIGHUP to reload a file-backed configuration. If the new file fails to
-parse or validate, Watt keeps the previous configuration. SIGHUP does nothing
-when running on the built-in defaults. Changes to the metrics listener require a
+parse or validate, Watt keeps the previous configuration. On the built-in
+defaults, SIGHUP and `Reload` succeed without changing anything. Changes to the metrics listener require a
 restart, and a reload that changes it is rejected.
 
 Thermal degradation reporting is disabled by default. Set
