@@ -194,14 +194,22 @@ impl Cpu {
 
     let writes = match order {
       WriteOrder::MinimumFirst => {
-        [("scaling_min_freq", minimum), ("scaling_max_freq", maximum)]
+        [
+          ("scaling_min_freq", minimum, None),
+          ("scaling_max_freq", None, maximum),
+        ]
       },
       WriteOrder::MaximumFirst => {
-        [("scaling_max_freq", maximum), ("scaling_min_freq", minimum)]
+        [
+          ("scaling_max_freq", None, maximum),
+          ("scaling_min_freq", minimum, None),
+        ]
       },
     };
-    for (name, frequency) in writes {
-      if let Some(frequency) = frequency {
+    for (name, minimum, maximum) in writes {
+      if let Some(frequency) = minimum.or(maximum) {
+        // A clamped first write may invalidate the planned second bound.
+        self.frequency_transition(minimum, maximum)?;
         self.write_frequency(name, frequency)?;
       }
     }

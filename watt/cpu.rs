@@ -1034,6 +1034,68 @@ mod tests {
   }
 
   #[test]
+  fn clamped_first_bound_prevents_an_invalid_second_write() {
+    let fixture = SystemFixture::new();
+    let policy = fixture.policy(0, &[0], "acpi-cpufreq");
+    fixture.cpu_telemetry(&[0]);
+    let minimum = policy.join("scaling_min_freq");
+    let maximum = policy.join("scaling_max_freq");
+    fixture.write(&maximum, "1000000");
+    fixture.write_result(&maximum, Ok("1500000"));
+
+    let mut cpu = Cpu::all().unwrap().pop().unwrap();
+    let result = Delta {
+      frequency_minimum: Some(Frequency::from_khz(2_000_000).unwrap()),
+      frequency_maximum: Some(Frequency::from_khz(3_000_000).unwrap()),
+      ..Delta::default()
+    }
+    .apply(&mut cpu);
+
+    assert!(result.is_err());
+    assert_eq!(fixture.write_count(&minimum), 0);
+    assert_eq!(stdfs::read_to_string(&minimum).unwrap(), "800000");
+    assert_eq!(stdfs::read_to_string(&maximum).unwrap(), "1500000");
+  }
+
+  #[test]
+  fn frequency_transitions_preserve_valid_intermediate_bounds() {
+    for ((old_min, old_max), (new_min, new_max)) in [
+      ((800_000, 1_000_000), (2_000_000, 3_000_000)),
+      ((2_000_000, 3_000_000), (800_000, 1_000_000)),
+      ((1_000_000, 2_000_000), (800_000, 3_000_000)),
+      ((800_000, 3_000_000), (1_000_000, 2_000_000)),
+      ((800_000, 3_000_000), (2_000_000, 2_000_000)),
+    ] {
+      let fixture = SystemFixture::new();
+      let policy = fixture.policy(0, &[0], "acpi-cpufreq");
+      fixture.cpu_telemetry(&[0]);
+      let minimum = policy.join("scaling_min_freq");
+      let maximum = policy.join("scaling_max_freq");
+      fixture.write(&minimum, old_min.to_string());
+      fixture.write(&maximum, old_max.to_string());
+      fixture.enforce_bounds(&minimum, &maximum);
+
+      let mut cpu = Cpu::all().unwrap().pop().unwrap();
+      Delta {
+        frequency_minimum: Some(Frequency::from_khz(new_min).unwrap()),
+        frequency_maximum: Some(Frequency::from_khz(new_max).unwrap()),
+        ..Delta::default()
+      }
+      .apply(&mut cpu)
+      .unwrap();
+
+      assert_eq!(
+        stdfs::read_to_string(&minimum).unwrap(),
+        new_min.to_string()
+      );
+      assert_eq!(
+        stdfs::read_to_string(&maximum).unwrap(),
+        new_max.to_string()
+      );
+    }
+  }
+
+  #[test]
   fn invalid_frequency_targets_leave_both_bounds_untouched() {
     for (minimum, maximum) in [
       (Some(2_000_000), Some(1_000_000)),
