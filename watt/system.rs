@@ -293,7 +293,7 @@ impl System {
   }
 
   fn scan(&mut self, failures: &mut RuntimeFailures) {
-    log::info!("scanning view of system hardware...");
+    log::trace!("scanning view of system hardware...");
 
     self.scan_component(failures, "CPU scan", Self::scan_cpus);
     self.scan_component(
@@ -1348,13 +1348,13 @@ fn apply_actions(
     }
   }
 
-  log::info!("applying CPU deltas to {len} CPUs", len = cpu_deltas.len());
+  log::trace!("applying CPU deltas to {len} CPUs", len = cpu_deltas.len());
 
   runtime_failures.attempt("global CPU application", || {
     cpu_global_delta.apply(cpu_deltas.keys().map(|arc| &**arc), dma_latency)
   });
 
-  log::info!(
+  log::trace!(
     "applying uncore deltas to {len} devices",
     len = uncore_deltas.len(),
   );
@@ -1368,7 +1368,7 @@ fn apply_actions(
 
   runtime_failures.attempt("VM application", || vm_delta.apply());
 
-  log::info!(
+  log::trace!(
     "applying disk deltas to {len} devices",
     len = disk_deltas.len(),
   );
@@ -1380,7 +1380,7 @@ fn apply_actions(
   runtime_failures
     .attempt("global disk application", || disk_global_delta.apply());
 
-  log::info!(
+  log::trace!(
     "applying USB deltas to {len} devices",
     len = usb_deltas.len(),
   );
@@ -1392,7 +1392,7 @@ fn apply_actions(
 
   runtime_failures.attempt("audio application", || audio_delta.apply());
 
-  log::info!(
+  log::trace!(
     "applying GPU deltas to {len} devices",
     len = gpu_deltas.len(),
   );
@@ -1401,7 +1401,7 @@ fn apply_actions(
       .attempt(format!("GPU application for {gpu}"), || delta.apply(&gpu));
   }
 
-  log::info!(
+  log::trace!(
     "applying power supply deltas to {len} devices",
     len = power_deltas.len(),
   );
@@ -1504,13 +1504,13 @@ impl PollingState {
     });
 
     let elapsed = start.elapsed();
-    log::info!(
+    log::trace!(
       "filtered and applied rules in {seconds} seconds or {minutes} minutes",
       seconds = elapsed.as_secs_f64(),
       minutes = elapsed.as_secs_f64() / 60.0,
     );
 
-    log::info!(
+    log::trace!(
       "next poll will be in {seconds} seconds or {minutes} minutes, possibly \
        delayed if application of rules takes more than the polling delay",
       seconds = delay.as_secs_f64(),

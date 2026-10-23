@@ -437,7 +437,7 @@ impl PowerSupply {
 
     self.charge_threshold_start = charge_threshold_start;
 
-    log::info!(
+    log::trace!(
       "set battery threshold start for {self} to {charge_threshold_start}%"
     );
 
@@ -464,7 +464,7 @@ impl PowerSupply {
 
     self.charge_threshold_end = charge_threshold_end;
 
-    log::info!(
+    log::trace!(
       "set battery threshold end for {self} to {charge_threshold_end}%"
     );
 
@@ -498,7 +498,7 @@ impl PowerSupply {
   ///
   /// [`The Kernel docs`]: <https://docs.kernel.org/userspace-api/sysfs-platform_profile.html>
   pub fn set_platform_profile(profile: &str) -> anyhow::Result<()> {
-    log::info!("setting platform profile to '{profile}'");
+    log::trace!("setting platform profile to '{profile}'");
 
     let profiles = Self::get_available_platform_profiles()?;
 
