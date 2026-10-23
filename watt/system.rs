@@ -1651,6 +1651,29 @@ impl DaemonState {
   pub fn applied_settings(&self) -> Vec<fs::AppliedSetting> {
     self.applied_settings.clone()
   }
+
+  /// Logical CPUs affected by a write to a CPU policy or per-CPU control.
+  pub fn setting_cpus(&self, path: &Path) -> Vec<u32> {
+    let policy = self
+      .system
+      .cpus
+      .iter()
+      .filter_map(|cpu| cpu.policy.as_deref())
+      .find(|policy| path.starts_with(&policy.path));
+    if let Some(policy) = policy {
+      return policy.related_cpus.clone();
+    }
+    self
+      .system
+      .cpus
+      .iter()
+      .map(|cpu| cpu.number)
+      .filter(|number| {
+        path
+          .starts_with(fs::path(format!("/sys/devices/system/cpu/cpu{number}")))
+      })
+      .collect()
+  }
 }
 
 fn load_config(path: &Path) -> anyhow::Result<(config::DaemonConfig, String)> {
@@ -2153,6 +2176,31 @@ mod tests {
     assert_eq!(
       detect_performance_degradation(&system, &failures, Some(90)).as_deref(),
       Some("high-operating-temperature")
+    );
+  }
+
+  #[test]
+  fn setting_cpus_lists_every_cpu_sharing_a_policy() {
+    let fixture = SystemFixture::new();
+    let policy = fixture.policy(0, &[0, 1], "intel_pstate");
+    fixture.cpu_telemetry(&[0, 1]);
+    let system = System {
+      cpus: cpu::Cpu::all().unwrap().into_iter().map(Arc::new).collect(),
+      ..System::default()
+    };
+    let mut state = DaemonState::new(String::new(), 0);
+    state.update_system(&system, Vec::new(), None, &RuntimeFailures::default());
+    assert_eq!(state.setting_cpus(&policy.join("scaling_governor")), [0, 1]);
+    assert_eq!(
+      state.setting_cpus(
+        &fixture.path("/sys/devices/system/cpu/cpu1/power/energy_perf_bias")
+      ),
+      [1]
+    );
+    assert!(
+      state
+        .setting_cpus(&fixture.path("/proc/sys/vm/dirty_ratio"))
+        .is_empty()
     );
   }
 

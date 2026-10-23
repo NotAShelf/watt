@@ -389,12 +389,14 @@ impl WattInterface {
   async fn get_applied_setting_details(
     &self,
   ) -> fdo::Result<Vec<HashMap<String, Value<'_>>>> {
-    let settings = self.state.read().await.applied_settings();
+    let state = self.state.read().await;
+    let settings = state.applied_settings();
     check_snapshot_bound(settings.len())?;
     Ok(
       settings
         .into_iter()
         .map(|setting| {
+          let cpus = state.setting_cpus(&setting.path);
           let mut detail = HashMap::from([
             (
               "path".into(),
@@ -413,6 +415,9 @@ impl WattInterface {
           if let Some(rule) = setting.rule {
             detail.insert("rule".into(), Value::from(rule.name));
             detail.insert("priority".into(), Value::from(rule.priority));
+          }
+          if !cpus.is_empty() {
+            detail.insert("cpus".into(), Value::from(cpus));
           }
           detail
         })
