@@ -275,13 +275,9 @@ Sections without selectors apply globally or to their known supported targets:
 
 Most Watt settings write to Linux sysfs, procfs or device files and require root
 privileges. Unsupported hardware usually appears as a missing sysfs file, an
-unavailable predicate or an apply-time error from the kernel.
-
-
-The NixOS module stores the selected profile under its Watt state directory. A
-manual installation can set `WATT_STATE_PATH` to a profile state file. Only the
-profile preference is persisted; holds and telemetry are not. The file is
-replaced atomically, and unknown schema versions or fields are rejected.
+unavailable predicate or an apply-time error from the kernel. The
+[support matrix](hardware.md#support-matrix) lists which drivers and controls
+the tests cover.
 
 Use availability predicates and ordered alternatives for portable rules:
 
