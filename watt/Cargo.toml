@@ -40,4 +40,5 @@ default = [  ]
 metrics = [ "dep:tiny_http" ]
 
 [dev-dependencies]
-proptest = "1.9.0"
+proptest           = "1.9.0"
+tempfile.workspace = true
