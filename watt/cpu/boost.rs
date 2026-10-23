@@ -24,12 +24,22 @@ const GLOBAL_CONTROLS: [(&str, bool); 4] = [
   ("/sys/devices/system/cpu/cpufreq/boost", false),
 ];
 
-pub(super) struct Boost {
-  paths:    Vec<PathBuf>,
-  inverted: bool,
+#[derive(Debug)]
+pub struct BoostCapabilities {
+  pub paths:    Vec<PathBuf>,
+  pub global:   bool,
+  pub inverted: bool,
 }
 
-impl Boost {
+impl Cpu {
+  pub fn boost_capabilities<'a>(
+    cpus: impl Iterator<Item = &'a Cpu>,
+  ) -> Option<BoostCapabilities> {
+    BoostCapabilities::discover(cpus)
+  }
+}
+
+impl BoostCapabilities {
   pub(super) fn discover<'a>(
     cpus: impl Iterator<Item = &'a Cpu>,
   ) -> Option<Self> {
@@ -39,6 +49,7 @@ impl Boost {
       return Some(Self {
         paths:    vec![PathBuf::from(path)],
         inverted: *inverted,
+        global:   true,
       });
     }
     let paths: BTreeSet<_> = cpus
@@ -49,6 +60,7 @@ impl Boost {
       Self {
         paths:    paths.into_iter().collect(),
         inverted: false,
+        global:   false,
       }
     })
   }
@@ -101,6 +113,10 @@ mod tests {
     for (path, inverted) in GLOBAL_CONTROLS {
       let fixture = SystemFixture::new();
       fixture.write(path, if inverted { "1" } else { "0" });
+      let capability = Cpu::boost_capabilities(iter::empty()).unwrap();
+      assert!(capability.global);
+      assert_eq!(capability.inverted, inverted);
+      assert_eq!(capability.paths, vec![PathBuf::from(path)]);
       assert_eq!(Cpu::turbo(iter::empty()).unwrap(), Some(false));
       Cpu::set_turbo(true, iter::empty()).unwrap();
       assert_eq!(Cpu::turbo(iter::empty()).unwrap(), Some(true));
@@ -130,6 +146,10 @@ mod tests {
     fixture.write(&first, "0");
     fixture.write(&second, "0");
     let cpus = Cpu::all().unwrap();
+    let capability = Cpu::boost_capabilities(cpus.iter()).unwrap();
+    assert!(!capability.global);
+    assert!(!capability.inverted);
+    assert_eq!(capability.paths, vec![first.clone(), second.clone()]);
     fixture.write_result(&first, Err(ErrorKind::PermissionDenied));
     assert!(Cpu::set_turbo(true, cpus.iter()).is_err());
     assert_eq!(fixture.write_count(&first), 1);

@@ -45,12 +45,25 @@ pub struct Cli {
   #[arg(long, env = "WATT_CONFIG")]
   config: Option<PathBuf>,
 
-  /// Check configuration and exit.
-  #[arg(long)]
-  verify_config: bool,
+  /// Check configuration and exit. Hardware mode also checks discovered CPU,
+  /// power-supply and peripheral controls.
+  #[arg(
+    long,
+    value_enum,
+    num_args = 0..=1,
+    default_missing_value = "offline",
+    require_equals = true
+  )]
+  verify_config: Option<VerificationMode>,
 
   #[command(subcommand)]
   command: Option<Command>,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum VerificationMode {
+  Offline,
+  Hardware,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -93,7 +106,7 @@ pub fn main() -> anyhow::Result<()> {
     .format_module_path(false)
     .init();
 
-  if cli.verify_config && cli.command.is_some() {
+  if cli.verify_config.is_some() && cli.command.is_some() {
     bail!("--verify-config cannot be combined with a subcommand");
   }
   if let Some(Command::Config { command }) = cli.command {
@@ -104,8 +117,8 @@ pub fn main() -> anyhow::Result<()> {
   let config = config::DaemonConfig::load_from(config_path.as_deref())
     .context("failed to load daemon config")?;
 
-  if cli.verify_config {
-    return print_output("Configuration valid.");
+  if let Some(mode) = cli.verify_config {
+    return verify_configuration(&config, mode);
   }
 
   log::info!("starting watt daemon");
@@ -119,6 +132,18 @@ pub fn main() -> anyhow::Result<()> {
     .context("failed to build tokio runtime")?;
 
   runtime.block_on(system::run_daemon(config, config_path))
+}
+
+fn verify_configuration(
+  config: &config::DaemonConfig,
+  mode: VerificationMode,
+) -> anyhow::Result<()> {
+  if let VerificationMode::Hardware = mode {
+    for diagnostic in config.verify_hardware()? {
+      log::warn!("{diagnostic}");
+    }
+  }
+  print_output("Configuration valid.")
 }
 
 fn run_config_command(command: ConfigCommand) -> anyhow::Result<()> {
