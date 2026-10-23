@@ -1653,7 +1653,45 @@ mod tests {
   };
 
   use super::*;
-  use crate::test_support::SystemFixture;
+  use crate::{
+    audio,
+    test_support::SystemFixture,
+  };
+
+  #[test]
+  fn shutdown_restores_audio_and_platform_controls() {
+    let fixture = SystemFixture::new();
+    let timeout =
+      fixture.path("/sys/module/snd_hda_intel/parameters/power_save");
+    let reset = fixture
+      .path("/sys/module/snd_hda_intel/parameters/power_save_controller");
+    let profile = fixture.path("/sys/firmware/acpi/platform_profile");
+    fixture.write(&timeout, "0");
+    fixture.write(&reset, "N");
+    fixture.write(&profile, "balanced");
+    fixture.write(
+      "/sys/firmware/acpi/platform_profile_choices",
+      "balanced performance",
+    );
+    {
+      let _managed = fs::manage_settings();
+      fs::begin_settings_iteration();
+      audio::Delta {
+        timeout_seconds:  Some(10),
+        reset_controller: Some(true),
+      }
+      .apply()
+      .unwrap();
+      power_supply::PowerSupply::set_platform_profile("performance").unwrap();
+      assert_eq!(stdfs::read_to_string(&timeout).unwrap(), "10");
+      assert_eq!(stdfs::read_to_string(&reset).unwrap(), "Y");
+      assert_eq!(stdfs::read_to_string(&profile).unwrap(), "performance");
+    }
+    assert_eq!(stdfs::read_to_string(timeout).unwrap(), "0");
+    assert_eq!(stdfs::read_to_string(reset).unwrap(), "N");
+    assert_eq!(stdfs::read_to_string(profile).unwrap(), "balanced");
+    assert!(fs::applied_settings().is_empty());
+  }
 
   #[test]
   fn a_failed_scan_keeps_other_scan_failures_local() {

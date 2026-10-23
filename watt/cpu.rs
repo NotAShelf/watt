@@ -1059,7 +1059,7 @@ mod tests {
   }
 
   #[test]
-  fn clamped_frequency_records_requested_and_observed_values() {
+  fn clamped_frequency_records_readback_and_restores_original() {
     let fixture = SystemFixture::new();
     let policy = fixture.policy(0, &[0], "acpi-cpufreq");
     fixture.cpu_telemetry(&[0]);
@@ -1082,5 +1082,8 @@ mod tests {
     assert_eq!(settings[0].verification(), "clamped");
     assert_eq!(stdfs::read_to_string(&minimum).unwrap(), "900000");
     fixture.clear_io(&minimum);
+    fs::begin_settings_iteration();
+    assert!(fs::restore_unmanaged_settings().is_empty());
+    assert_eq!(stdfs::read_to_string(&minimum).unwrap(), "800000");
   }
 }

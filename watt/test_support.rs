@@ -1,5 +1,6 @@
 use std::{
   cell::RefCell,
+  cmp::Ordering,
   collections::BTreeMap,
   fmt::Write as _,
   fs,
@@ -10,6 +11,7 @@ use std::{
     Path,
     PathBuf,
   },
+  str,
 };
 
 use tempfile::TempDir;
@@ -22,6 +24,7 @@ use crate::fs::{
 #[derive(Default)]
 struct FileBehavior {
   writes:       usize,
+  bound:        Option<(PathBuf, Ordering)>,
   read_error:   Option<io::ErrorKind>,
   write_result: Option<Result<String, io::ErrorKind>>,
 }
@@ -65,6 +68,21 @@ impl SystemFixture {
     fs::create_dir_all(path.parent().expect("fixture path has a parent"))
       .unwrap();
     fs::write(path, value).unwrap();
+  }
+
+  pub(crate) fn enforce_bounds(
+    &self,
+    minimum: impl AsRef<Path>,
+    maximum: impl AsRef<Path>,
+  ) {
+    let minimum = fs::canonicalize(self.path(minimum)).unwrap();
+    let maximum = fs::canonicalize(self.path(maximum)).unwrap();
+    self.configure(&minimum, |behavior| {
+      behavior.bound = Some((maximum.clone(), Ordering::Greater));
+    });
+    self.configure(&maximum, |behavior| {
+      behavior.bound = Some((minimum, Ordering::Less));
+    });
   }
 
   pub(crate) fn write_count(&self, path: impl AsRef<Path>) -> usize {
@@ -186,6 +204,7 @@ pub(crate) fn write_raw(
   value: impl AsRef<[u8]>,
 ) -> io::Result<()> {
   let path = path.as_ref();
+  check_bound(path, value.as_ref())?;
   let result = fs::canonicalize(path).ok().and_then(|path| {
     FILE_BEHAVIORS.with_borrow_mut(|behaviors| {
       let behavior = behaviors.entry(path).or_default();
@@ -198,4 +217,32 @@ pub(crate) fn write_raw(
     Some(Err(error)) => Err(error.into()),
     None => fs::write(path, value),
   }
+}
+
+fn check_bound(path: &Path, value: &[u8]) -> io::Result<()> {
+  let bound = fs::canonicalize(path).ok().and_then(|path| {
+    FILE_BEHAVIORS.with_borrow(|behaviors| {
+      behaviors
+        .get(&path)
+        .and_then(|behavior| behavior.bound.clone())
+    })
+  });
+  let Some((peer, forbidden)) = bound else {
+    return Ok(());
+  };
+  let parse = |value: &str| {
+    value
+      .trim()
+      .parse::<u64>()
+      .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))
+  };
+  let value = parse(
+    str::from_utf8(value)
+      .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?,
+  )?;
+  let peer = parse(&fs::read_to_string(peer)?)?;
+  if value.cmp(&peer) == forbidden {
+    return Err(io::ErrorKind::InvalidInput.into());
+  }
+  Ok(())
 }

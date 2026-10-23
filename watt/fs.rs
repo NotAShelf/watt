@@ -20,7 +20,10 @@ use std::{
   sync::OnceLock,
 };
 
-use anyhow::Context;
+use anyhow::{
+  Context,
+  bail,
+};
 
 #[cfg(test)]
 use crate::test_support::{
@@ -43,6 +46,13 @@ struct ManagedSetting {
   last_written: String,
   observed:     Option<String>,
   generation:   u64,
+}
+
+impl ManagedSetting {
+  fn record_write(&mut self, value: &str) {
+    value.clone_into(&mut self.last_written);
+    self.observed = None;
+  }
 }
 
 #[derive(Debug, Clone)]
@@ -198,8 +208,11 @@ pub fn write(input: impl AsRef<Path>, value: &str) -> anyhow::Result<()> {
     (settings.active, !settings.settings.contains_key(&path))
   });
   let original = (track && capture_original)
-    .then(|| read_raw(&path).ok().map(normalize_value))
-    .flatten();
+    .then(|| read_raw(&path).map(normalize_value))
+    .transpose()
+    .with_context(|| {
+      format!("failed to read original value of '{}'", path.display())
+    })?;
 
   write_raw(&path, value).with_context(|| {
     format!(
@@ -212,7 +225,7 @@ pub fn write(input: impl AsRef<Path>, value: &str) -> anyhow::Result<()> {
     with_managed_settings(|settings| {
       let generation = settings.generation;
       if let Some(setting) = settings.settings.get_mut(&path) {
-        setting.last_written = value.to_owned();
+        setting.record_write(value);
         setting.generation = generation;
       } else if let Some(original) = original {
         settings.settings.insert(path, ManagedSetting {
@@ -318,7 +331,7 @@ fn with_managed_settings<T>(
 fn restore_settings(
   should_restore: impl Fn(&ManagedSetting, u64) -> bool,
 ) -> Vec<RestoreFailure> {
-  let settings = with_managed_settings(|managed| {
+  let mut settings = with_managed_settings(|managed| {
     let generation = managed.generation;
     managed
       .settings
@@ -328,45 +341,32 @@ fn restore_settings(
         (
           path.clone(),
           setting.original.clone(),
-          setting.last_written.clone(),
+          setting
+            .observed
+            .as_ref()
+            .unwrap_or(&setting.last_written)
+            .clone(),
         )
       })
       .collect::<Vec<_>>()
+  });
+  settings.sort_by_key(|(path, original, owned)| {
+    !restoration_expands_bounds(path, original, owned)
   });
 
   let mut restored = Vec::new();
   let failures = settings
     .into_iter()
-    .filter_map(|(path, original, last_written)| {
-      match read_raw(&path) {
-        Ok(current) if equivalent_value(&current, &last_written) => {
-          match write_raw(&path, original) {
-            Ok(()) => {
-              restored.push(path);
-              None
-            },
-            Err(error) => {
-              Some(RestoreFailure {
-                path,
-                message: format!("failed to restore setting: {error}"),
-              })
-            },
-          }
-        },
-        Ok(_) => {
-          log::warn!(
-            "not restoring '{}' because it changed outside Watt",
-            path.display(),
-          );
+    .filter_map(|(path, original, owned)| {
+      match restore_setting(&path, &original, &owned) {
+        Ok(()) => {
           restored.push(path);
           None
         },
         Err(error) => {
           Some(RestoreFailure {
             path,
-            message: format!(
-              "failed to read setting before restoration: {error}"
-            ),
+            message: format!("{error:#}"),
           })
         },
       }
@@ -379,6 +379,57 @@ fn restore_settings(
     }
   });
   failures
+}
+
+fn restoration_expands_bounds(
+  path: &Path,
+  original: &str,
+  owned: &str,
+) -> bool {
+  let (Ok(original), Ok(owned)) =
+    (original.trim().parse::<u64>(), owned.trim().parse::<u64>())
+  else {
+    return false;
+  };
+  match path.file_name().and_then(|name| name.to_str()) {
+    Some("scaling_min_freq" | "min_freq_khz" | "min_perf_pct") => {
+      original < owned
+    },
+    Some("scaling_max_freq" | "max_freq_khz" | "max_perf_pct") => {
+      original > owned
+    },
+    _ => false,
+  }
+}
+
+fn restore_setting(
+  path: &Path,
+  original: &str,
+  owned: &str,
+) -> anyhow::Result<()> {
+  let current =
+    read_raw(path).context("failed to read setting before restoration")?;
+  if !equivalent_value(&current, owned) {
+    log::warn!(
+      "not restoring '{}' because it changed outside Watt",
+      path.display()
+    );
+    return Ok(());
+  }
+
+  write_raw(path, original).context("failed to restore setting")?;
+  with_managed_settings(|managed| {
+    if let Some(setting) = managed.settings.get_mut(path) {
+      setting.record_write(original);
+    }
+  });
+  let observed = read_raw(path).context("failed to verify restored setting")?;
+  let restored = equivalent_value(&observed, original);
+  observe(path, normalize_value(observed));
+  if !restored {
+    bail!("restored setting did not retain '{original}'");
+  }
+  Ok(())
 }
 
 fn normalize_value(value: String) -> String {
@@ -428,6 +479,54 @@ mod tests {
   };
 
   use super::*;
+  use crate::test_support::SystemFixture;
+
+  #[test]
+  fn unreadable_original_prevents_mutation_and_recovers_on_retry() {
+    let fixture = SystemFixture::new();
+    let control = fixture.path("/sys/test/control");
+    fixture.write(&control, "original");
+    let _managed = manage_settings();
+    begin_settings_iteration();
+    fixture.fail_read(&control, io::ErrorKind::PermissionDenied);
+    assert!(write(&control, "requested").is_err());
+    assert_eq!(fixture.write_count(&control), 0);
+    assert!(applied_settings().is_empty());
+    assert_eq!(stdfs::read_to_string(&control).unwrap(), "original");
+    fixture.clear_io(&control);
+    write(&control, "requested").unwrap();
+    begin_settings_iteration();
+    assert!(restore_unmanaged_settings().is_empty());
+    assert_eq!(stdfs::read_to_string(control).unwrap(), "original");
+  }
+
+  #[test]
+  fn restoration_orders_bounds_without_inverting_the_range() {
+    for (low, high, next_low, next_high) in [(10, 20, 30, 40), (30, 40, 10, 20)]
+    {
+      let fixture = SystemFixture::new();
+      let minimum = "/sys/test/scaling_min_freq";
+      let maximum = "/sys/test/scaling_max_freq";
+      fixture.write(minimum, low.to_string());
+      fixture.write(maximum, high.to_string());
+      fixture.enforce_bounds(minimum, maximum);
+      let _settings = manage_settings();
+      begin_settings_iteration();
+      let writes = if next_low > high {
+        [(maximum, next_high), (minimum, next_low)]
+      } else {
+        [(minimum, next_low), (maximum, next_high)]
+      };
+      for (path, value) in writes {
+        write(path, &value.to_string()).unwrap();
+      }
+      begin_settings_iteration();
+      assert!(restore_unmanaged_settings().is_empty());
+      assert_eq!(read(minimum).unwrap(), Some(low.to_string()));
+      assert_eq!(read(maximum).unwrap(), Some(high.to_string()));
+      assert!(applied_settings().is_empty());
+    }
+  }
 
   #[test]
   fn resolves_system_paths_below_configured_root() {
@@ -502,5 +601,51 @@ mod tests {
       ..setting
     };
     assert_eq!(setting.verification(), "mismatch");
+  }
+
+  #[test]
+  fn new_writes_discard_stale_readback_before_restoration() {
+    let fixture = SystemFixture::new();
+    fixture.write("/sys/setting", "original");
+    let _settings = manage_settings();
+    begin_settings_iteration();
+    write("/sys/setting", "first").unwrap();
+    observe("/sys/setting", "first");
+    write("/sys/setting", "second").unwrap();
+    assert!(applied_settings()[0].observed.is_none());
+
+    fixture.write("/sys/setting", "first");
+    begin_settings_iteration();
+    assert!(restore_unmanaged_settings().is_empty());
+    assert_eq!(read("/sys/setting").unwrap().as_deref(), Some("first"));
+  }
+
+  #[test]
+  fn failed_restoration_is_verified_and_retried_independently() {
+    for (result, remaining) in [
+      (Err(io::ErrorKind::PermissionDenied), "watt"),
+      (Ok("clamped"), "clamped"),
+    ] {
+      let fixture = SystemFixture::new();
+      fixture.write("/sys/first", "original");
+      fixture.write("/sys/second", "original");
+      let _settings = manage_settings();
+      begin_settings_iteration();
+      write("/sys/first", "watt").unwrap();
+      write("/sys/second", "watt").unwrap();
+      fixture.write_result("/sys/first", result);
+
+      begin_settings_iteration();
+      let failures = restore_unmanaged_settings();
+      assert_eq!(failures.len(), 1);
+      assert_eq!(failures[0].path, fixture.path("/sys/first"));
+      assert_eq!(read("/sys/first").unwrap().as_deref(), Some(remaining));
+      assert_eq!(read("/sys/second").unwrap().as_deref(), Some("original"));
+
+      fixture.clear_io("/sys/first");
+      assert!(restore_unmanaged_settings().is_empty());
+      assert_eq!(read("/sys/first").unwrap().as_deref(), Some("original"));
+      assert!(applied_settings().is_empty());
+    }
   }
 }
