@@ -219,7 +219,9 @@ manager, or using something like Rustup.
 Run `cargo test --workspace --all-features` as an unprivileged user. Tests that
 touch sysfs or procfs go through `crate::fs`, which `SystemFixture` (in
 `watt/test_support.rs`) redirects into a temporary root for the current test
-thread. The fixture can also inject read and write failures. Process tests under
+thread. The fixture can also inject read and write failures. A unit test that
+resolves an absolute path through `crate::fs` without a fixture or
+`WATT_SYSTEM_ROOT` panics instead of touching the host. Process tests under
 `watt/tests` run the real binary against a private D-Bus and `WATT_SYSTEM_ROOT`,
 and need `dbus-daemon` in `PATH`.
 
