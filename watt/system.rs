@@ -93,17 +93,26 @@ struct PowerSupplyLog {
   charge: f64,
 }
 
+#[derive(Debug, Clone)]
+struct RuntimeFailure {
+  condition:   DegradedCondition,
+  first:       Instant,
+  latest:      Instant,
+  occurrences: u64,
+}
+
+/// A current runtime failure preventing Watt from evaluating or applying
+/// policy.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DegradedCondition {
+  pub context: String,
+  pub message: String,
+}
+
 #[derive(Default, Debug)]
 struct RuntimeFailures {
   errors: HashMap<String, RuntimeFailure>,
   seen:   HashSet<String>,
-}
-
-#[derive(Debug, Clone)]
-struct RuntimeFailure {
-  first:       Instant,
-  latest:      Instant,
-  occurrences: u64,
 }
 
 impl RuntimeFailures {
@@ -115,7 +124,8 @@ impl RuntimeFailures {
     const MAX_FAILURES: usize = 32;
 
     let context = context.into();
-    let key = format!("{context}: {error:#}");
+    let message = format!("{error:#}");
+    let key = format!("{context}: {message}");
     self.seen.insert(key.clone());
 
     if let Some(failure) = self.errors.get_mut(&key) {
@@ -138,6 +148,7 @@ impl RuntimeFailures {
     log::error!("runtime failure: {key}");
     let now = Instant::now();
     self.errors.insert(key, RuntimeFailure {
+      condition:   DegradedCondition { context, message },
       first:       now,
       latest:      now,
       occurrences: 1,
@@ -210,6 +221,16 @@ impl RuntimeFailures {
           failure.occurrences,
         )
       })
+  }
+
+  fn conditions(&self) -> Vec<DegradedCondition> {
+    let mut conditions: Vec<_> = self
+      .errors
+      .values()
+      .map(|failure| failure.condition.clone())
+      .collect();
+    conditions.sort();
+    conditions
   }
 }
 
@@ -1189,11 +1210,23 @@ fn compute_poll_delay(
 }
 
 fn detect_performance_degradation(
-  _system: &System,
+  system: &System,
   failures: &RuntimeFailures,
+  thermal_threshold: Option<u16>,
 ) -> Option<String> {
-  (!failures.errors.is_empty())
-    .then(|| "Watt could not apply one or more requested settings".to_owned())
+  if !failures.errors.is_empty() {
+    return Some("policy-error".to_owned());
+  }
+  thermal_threshold
+    .filter(|threshold| {
+      system
+        .cpu_temperatures
+        .values()
+        .copied()
+        .max_by(f64::total_cmp)
+        .is_some_and(|temperature| temperature >= f64::from(*threshold))
+    })
+    .map(|_| "high-operating-temperature".to_owned())
 }
 
 async fn wait_for_shutdown() -> anyhow::Result<()> {
@@ -1294,6 +1327,8 @@ pub struct DaemonState {
   performance_degraded: Option<String>,
   error_count:          usize,
   latest_error:         Option<String>,
+  recent_errors:        Vec<String>,
+  degraded_conditions:  Vec<DegradedCondition>,
   applied_settings:     Vec<fs::AppliedSetting>,
 }
 
@@ -1308,6 +1343,8 @@ impl DaemonState {
       performance_degraded: None,
       error_count: 0,
       latest_error: None,
+      recent_errors: Vec::new(),
+      degraded_conditions: Vec::new(),
       applied_settings: Vec::new(),
     }
   }
@@ -1333,6 +1370,18 @@ impl DaemonState {
     self.performance_degraded = performance_degraded;
     self.error_count = failures.errors.len();
     self.latest_error = failures.latest_message();
+    self.degraded_conditions = failures.conditions();
+    let mut recent: Vec<_> = failures.errors.iter().collect();
+    recent.sort_by(|(left, left_failure), (right, right_failure)| {
+      right_failure
+        .latest
+        .cmp(&left_failure.latest)
+        .then_with(|| right.cmp(left))
+    });
+    self.recent_errors = recent
+      .into_iter()
+      .map(|(message, _)| message.clone())
+      .collect();
     self.applied_settings = fs::applied_settings();
   }
 
@@ -1441,7 +1490,10 @@ impl DaemonState {
   }
 
   pub fn performance_degraded(&self) -> Option<&str> {
-    self.performance_degraded.as_deref()
+    self
+      .performance_degraded
+      .as_deref()
+      .filter(|_| self.active_profile() == profile::PowerProfile::Performance)
   }
 
   pub fn last_applied_rules(&self) -> Vec<String> {
@@ -1454,6 +1506,14 @@ impl DaemonState {
 
   pub fn latest_error(&self) -> Option<&str> {
     self.latest_error.as_deref()
+  }
+
+  pub fn recent_errors(&self) -> Vec<String> {
+    self.recent_errors.clone()
+  }
+
+  pub fn degraded_conditions(&self) -> &[DegradedCondition] {
+    &self.degraded_conditions
   }
 
   pub fn applied_settings(&self) -> Vec<fs::AppliedSetting> {
@@ -1626,7 +1686,7 @@ impl PollingState {
 
   async fn poll(
     &mut self,
-    rules: &[config::Rule],
+    config: &config::DaemonConfig,
     state: &RwLock<DaemonState>,
     applied_rules_tx: &watch::Sender<Vec<String>>,
   ) -> Duration {
@@ -1657,7 +1717,7 @@ impl PollingState {
     );
 
     let (actions, last_applied_rules) =
-      evaluate_rules(rules, &eval_state, &mut self.runtime_failures);
+      evaluate_rules(&config.rules, &eval_state, &mut self.runtime_failures);
     apply_actions(actions, &mut self.runtime_failures, &mut self.dma_latency);
 
     let delay = compute_poll_delay(
@@ -1668,8 +1728,11 @@ impl PollingState {
     );
     self.last_polling_delay = Some(delay);
     self.runtime_failures.finish_iteration();
-    let performance_degraded =
-      detect_performance_degradation(&self.system, &self.runtime_failures);
+    let performance_degraded = detect_performance_degradation(
+      &self.system,
+      &self.runtime_failures,
+      config.thermal.degradation_threshold_celsius,
+    );
     state.write().await.update_system(
       &self.system,
       last_applied_rules.clone(),
@@ -1814,7 +1877,7 @@ async fn run_polling_loop(
       },
       DaemonEvent::Poll => {},
     }
-    sleep_for = polling.poll(&config.rules, &state, &applied_rules_tx).await;
+    sleep_for = polling.poll(&config, &state, &applied_rules_tx).await;
   }
 
   log::info!("stopping polling loop and shutting down");
@@ -1832,12 +1895,197 @@ mod tests {
     process,
   };
 
+  use futures_util::StreamExt as _;
+  use tokio::{
+    task::yield_now,
+    time::timeout,
+  };
+  use zbus::{
+    Proxy,
+    connection,
+    fdo::DBusProxy,
+    zvariant::OwnedValue,
+  };
+
   use super::*;
   use crate::{
     audio,
+    dbus::test_support::TestBus,
     profile::PowerProfile,
     test_support::SystemFixture,
   };
+
+  #[test]
+  fn thermal_threshold_reports_only_hot_systems() {
+    let mut system = System::default();
+    let failures = RuntimeFailures::default();
+    assert_eq!(
+      detect_performance_degradation(&system, &failures, Some(90)),
+      None
+    );
+    system.cpu_temperatures.insert(0, 95.0);
+    assert_eq!(
+      detect_performance_degradation(&system, &failures, Some(90)).as_deref(),
+      Some("high-operating-temperature")
+    );
+  }
+
+  #[tokio::test]
+  async fn boost_degradation_notifies_clients_and_recovers() {
+    let fixture = SystemFixture::new();
+    let first = fixture.policy(0, &[0], "amd-pstate-epp").join("boost");
+    let second = fixture.policy(1, &[1], "amd-pstate-epp").join("boost");
+    fixture.cpu_telemetry(&[0, 1]);
+    fixture.write(&first, "0");
+    fixture.write(&second, "0");
+    let system = System {
+      cpus: cpu::Cpu::all().unwrap().into_iter().map(Arc::new).collect(),
+      ..System::default()
+    };
+    let bus = TestBus::new();
+    timeout(Duration::from_secs(10), async {
+      let connection = connection::Builder::address(bus.address.as_str())
+        .unwrap()
+        .build()
+        .await
+        .unwrap();
+      let client = connection::Builder::address(bus.address.as_str())
+        .unwrap()
+        .build()
+        .await
+        .unwrap();
+      let closing = connection.clone();
+      let state = Arc::new(RwLock::new(DaemonState::new(String::new(), 0)));
+      let (_updates, applied_rules) = watch::channel(Vec::new());
+      let observe = async {
+        wait_native_service(&client).await;
+        let proxy = Proxy::new(
+          &client,
+          "dev.notashelf.Watt",
+          "/dev/notashelf/Watt",
+          "dev.notashelf.Watt",
+        )
+        .await
+        .unwrap();
+        let mut changes = proxy
+          .receive_property_changed::<Vec<HashMap<String, OwnedValue>>>(
+            "DegradedConditions",
+          )
+          .await;
+        let mut counts =
+          proxy.receive_property_changed::<u32>("ErrorCount").await;
+        let mut errors = proxy
+          .receive_property_changed::<String>("LatestError")
+          .await;
+        assert_eq!(proxy.get_property::<u32>("ErrorCount").await.unwrap(), 0);
+        assert!(
+          proxy
+            .get_property::<String>("LatestError")
+            .await
+            .unwrap()
+            .is_empty()
+        );
+        counts.next().await.unwrap();
+        errors.next().await.unwrap();
+        let ppd = Proxy::new(
+          &client,
+          "net.hadess.PowerProfiles",
+          "/net/hadess/PowerProfiles",
+          "net.hadess.PowerProfiles",
+        )
+        .await
+        .unwrap();
+        let mut ppd_changes = ppd
+          .receive_property_changed::<String>("PerformanceDegraded")
+          .await;
+        let initial_ppd: String =
+          ppd.get_property("PerformanceDegraded").await.unwrap();
+        assert!(initial_ppd.is_empty());
+        ppd_changes.next().await.unwrap();
+        let initial: Vec<HashMap<String, OwnedValue>> =
+          proxy.get_property("DegradedConditions").await.unwrap();
+        assert!(initial.is_empty());
+        // Consume the property cache's initial value before testing signals.
+        changes.next().await.unwrap();
+        let _settings = fs::manage_settings();
+        let mut failures = RuntimeFailures::default();
+        let mut dma_latency = cpu::DmaLatency::default();
+        fixture.write_result(&first, Err(ErrorKind::PermissionDenied));
+        for (expected_conditions, expected_reason) in
+          [(1, "policy-error"), (0, "")]
+        {
+          failures.begin_iteration();
+          let now = Instant::now();
+          let eval =
+            system.eval_state(now, now, PowerProfile::Performance, true);
+          let mut actions = config::EvaluatedRule::empty(&eval);
+          actions.cpu_global.turbo = Some(true);
+          apply_actions(actions, &mut failures, &mut dma_latency);
+          failures.finish_iteration();
+          let degraded =
+            detect_performance_degradation(&system, &failures, None);
+          {
+            let mut state = state.write().await;
+            state.update_system(&system, Vec::new(), degraded, &failures);
+            state.set_active_profile(PowerProfile::PowerSaver);
+            assert!(state.performance_degraded().is_none());
+            state.set_active_profile(PowerProfile::Performance);
+          }
+          assert_eq!(
+            counts.next().await.unwrap().get().await.unwrap(),
+            expected_conditions as u32
+          );
+          let latest = errors.next().await.unwrap().get().await.unwrap();
+          assert_eq!(latest.is_empty(), expected_conditions == 0);
+          assert_eq!(
+            proxy.cached_property::<u32>("ErrorCount").unwrap(),
+            Some(expected_conditions as u32)
+          );
+          assert_eq!(
+            proxy.cached_property::<String>("LatestError").unwrap(),
+            Some(latest)
+          );
+          let conditions = changes.next().await.unwrap().get().await.unwrap();
+          assert_eq!(conditions.len(), expected_conditions);
+          assert_eq!(
+            ppd_changes.next().await.unwrap().get().await.unwrap(),
+            expected_reason,
+          );
+          assert_eq!(stdfs::read_to_string(&second).unwrap(), "1");
+          for condition in &conditions {
+            assert_eq!(
+              <&str>::try_from(&condition["context"]).unwrap(),
+              "global CPU application"
+            );
+            let message = <&str>::try_from(&condition["message"]).unwrap();
+            assert!(message.contains(first.to_str().unwrap()), "{message}");
+          }
+          fixture.clear_io(&first);
+        }
+        assert_eq!(stdfs::read_to_string(&first).unwrap(), "1");
+        closing.close().await.unwrap();
+      };
+      let (result, ()) = tokio::join!(
+        server::run_connection(connection, state.clone(), applied_rules),
+        observe
+      );
+      assert!(result.is_err());
+      client.close().await.unwrap();
+    })
+    .await
+    .expect("boost degradation notification timed out");
+  }
+
+  async fn wait_native_service(connection: &zbus::Connection) {
+    let bus = DBusProxy::new(connection).await.unwrap();
+    while !bus
+      .name_has_owner("dev.notashelf.Watt".try_into().unwrap())
+      .await
+      .unwrap()
+    {
+      yield_now().await;
+    }
+  }
 
   #[test]
   fn renamed_gpu_and_uncore_aliases_keep_restoration_ownership() {
@@ -2135,7 +2383,7 @@ mod tests {
         format!("[[rule]]\nname='test'\npriority=1\n{action}\n"),
       );
       reload_daemon_config(Some(&path), &mut active, &state).await;
-      polling.poll(&active.rules, &state, &applied_rules).await;
+      polling.poll(&active, &state, &applied_rules).await;
       assert_eq!(state.read().await.rule_count(), 1);
       assert_eq!(stdfs::read_to_string(&governor).unwrap(), expected);
     }
@@ -2256,6 +2504,19 @@ priority = 1
 
     assert!(applied);
     assert_eq!(failures.errors.len(), 1);
+  }
+
+  #[test]
+  fn daemon_state_retains_recent_errors_in_latest_first_order() {
+    let mut failures = RuntimeFailures::default();
+    failures.begin_iteration();
+    failures.record("first", anyhow::anyhow!("one"));
+    failures.record("second", anyhow::anyhow!("two"));
+    let mut state = DaemonState::new(String::new(), 0);
+    state.update_system(&System::default(), Vec::new(), None, &failures);
+    assert_eq!(state.recent_errors().len(), 2);
+    assert!(state.recent_errors()[0].contains("second"));
+    assert!(state.recent_errors()[1].contains("first"));
   }
 
   #[test]

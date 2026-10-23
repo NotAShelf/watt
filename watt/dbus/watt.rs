@@ -41,6 +41,50 @@ impl WattInterface {
     state.cpu_count() as u32
   }
 
+  #[zbus(property)]
+  async fn performance_degraded(&self) -> String {
+    self
+      .state
+      .read()
+      .await
+      .performance_degraded()
+      .unwrap_or_default()
+      .to_owned()
+  }
+
+  #[zbus(property)]
+  async fn error_count(&self) -> u32 {
+    self.state.read().await.error_count() as u32
+  }
+
+  #[zbus(property)]
+  async fn degraded_conditions(&self) -> Vec<HashMap<String, Value<'_>>> {
+    self
+      .state
+      .read()
+      .await
+      .degraded_conditions()
+      .iter()
+      .map(|condition| {
+        HashMap::from([
+          ("context".into(), Value::from(condition.context.clone())),
+          ("message".into(), Value::from(condition.message.clone())),
+        ])
+      })
+      .collect()
+  }
+
+  #[zbus(property)]
+  async fn latest_error(&self) -> String {
+    self
+      .state
+      .read()
+      .await
+      .latest_error()
+      .unwrap_or_default()
+      .to_owned()
+  }
+
   async fn get_status(&self) -> HashMap<String, Value<'_>> {
     let state = self.state.read().await;
     let mut status = HashMap::new();
@@ -66,6 +110,11 @@ impl WattInterface {
     status.insert(
       "error-count".to_owned(),
       Value::from(state.error_count() as u64),
+    );
+
+    status.insert(
+      "performance-degraded".to_owned(),
+      Value::from(state.performance_degraded().unwrap_or_default().to_owned()),
     );
 
     if let Some(error) = state.latest_error() {
@@ -96,6 +145,10 @@ impl WattInterface {
   async fn get_applied_rules(&self) -> Vec<String> {
     let state = self.state.read().await;
     state.last_applied_rules()
+  }
+
+  async fn get_recent_errors(&self) -> Vec<String> {
+    self.state.read().await.recent_errors()
   }
 
   async fn get_applied_settings(

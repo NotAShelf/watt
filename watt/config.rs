@@ -1470,12 +1470,23 @@ impl Default for Rule {
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 #[cfg_attr(not(feature = "metrics"), non_exhaustive)]
 pub struct DaemonConfig {
+  pub thermal: ThermalConfig,
+
   #[cfg(feature = "metrics")]
   #[serde(skip_serializing_if = "Option::is_none")]
   pub metrics: Option<MetricsConfig>,
 
   #[serde(rename = "rule")]
   pub rules: Vec<Rule>,
+}
+
+#[derive(
+  Serialize, Deserialize, schemars::JsonSchema, Debug, Clone, PartialEq, Default,
+)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+pub struct ThermalConfig {
+  /// Report thermal performance degradation above this Celsius threshold.
+  pub degradation_threshold_celsius: Option<u16>,
 }
 
 #[cfg(feature = "metrics")]
@@ -1502,6 +1513,7 @@ impl<'de> Deserialize<'de> for DaemonConfig {
     #[derive(Deserialize, Default)]
     #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
     struct RawDaemonConfig {
+      thermal: ThermalConfig,
       metrics: Option<IgnoredAny>,
 
       #[serde(rename = "rule")]
@@ -1516,7 +1528,10 @@ impl<'de> Deserialize<'de> for DaemonConfig {
       ));
     }
 
-    Ok(Self { rules: raw.rules })
+    Ok(Self {
+      thermal: raw.thermal,
+      rules:   raw.rules,
+    })
   }
 }
 
