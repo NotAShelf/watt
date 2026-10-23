@@ -344,7 +344,11 @@ impl Expression {
     }))
   }
 
-  fn calculate_arithmetic(&self, a: f64, b: f64) -> anyhow::Result<f64> {
+  pub(super) fn calculate_arithmetic(
+    &self,
+    a: f64,
+    b: f64,
+  ) -> anyhow::Result<f64> {
     let result = match self {
       Self::Plus { .. } => a + b,
       Self::Minus { .. } => a - b,
@@ -359,7 +363,12 @@ impl Expression {
     Ok(result)
   }
 
-  fn calculate_comparison(&self, a: f64, b: f64, leeway: f64) -> bool {
+  pub(super) fn calculate_comparison(
+    &self,
+    a: f64,
+    b: f64,
+    leeway: f64,
+  ) -> bool {
     match self {
       Self::LessThan { .. } => a < b,
       Self::MoreThan { .. } => a > b,
@@ -368,7 +377,7 @@ impl Expression {
     }
   }
 
-  fn select_extreme(
+  pub(super) fn select_extreme(
     number: f64,
     previous: Option<f64>,
     compare: impl Fn(&f64, &f64) -> Ordering,

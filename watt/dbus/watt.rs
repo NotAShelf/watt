@@ -147,6 +147,45 @@ impl WattInterface {
     state.last_applied_rules()
   }
 
+  async fn get_cpu_capabilities(&self) -> Vec<HashMap<String, Value<'_>>> {
+    let cpus = self.state.read().await.cpu_capabilities();
+    cpus
+      .into_iter()
+      .map(|cpu| {
+        HashMap::from([
+          ("cpu".into(), Value::from(cpu.number)),
+          ("policy".into(), Value::from(cpu.policy.unwrap_or_default())),
+          (
+            "frequency-control".into(),
+            Value::from(cpu.frequency_control),
+          ),
+          ("governors".into(), Value::from(cpu.governors)),
+          ("epp-values".into(), Value::from(cpu.epps)),
+          ("epb-values".into(), Value::from(cpu.epbs)),
+        ])
+      })
+      .collect()
+  }
+
+  async fn get_boost_capabilities(&self) -> HashMap<String, Value<'_>> {
+    let Some(boost) = self.state.read().await.boost_capabilities() else {
+      return HashMap::new();
+    };
+    let paths: Vec<_> = boost
+      .paths
+      .iter()
+      .map(|path| path.display().to_string())
+      .collect();
+    HashMap::from([
+      (
+        "scope".into(),
+        Value::from(if boost.global { "global" } else { "policy" }),
+      ),
+      ("control-paths".into(), Value::from(paths)),
+      ("inverted".into(), Value::from(boost.inverted)),
+    ])
+  }
+
   async fn get_recent_errors(&self) -> Vec<String> {
     self.state.read().await.recent_errors()
   }
@@ -184,4 +223,68 @@ impl WattInterface {
   pub async fn applied_settings_changed(
     emitter: &SignalEmitter<'_>,
   ) -> zbus::Result<()>;
+}
+
+#[cfg(test)]
+mod tests {
+  use std::time::Duration;
+
+  use tokio::time::timeout;
+  use zbus::{
+    Proxy,
+    connection,
+    zvariant::OwnedValue,
+  };
+
+  use super::*;
+  use crate::{
+    dbus::test_support::TestBus,
+    test_support::SystemFixture,
+  };
+
+  #[tokio::test]
+  async fn exported_boost_capabilities_report_selected_global_control() {
+    let fixture = SystemFixture::new();
+    let control = "/sys/devices/system/cpu/intel_pstate/no_turbo";
+    fixture.write(control, "1");
+    let bus = TestBus::new();
+    timeout(Duration::from_secs(10), async {
+      let state = Arc::new(RwLock::new(DaemonState::new(String::new(), 0)));
+      let server = connection::Builder::address(bus.address.as_str())
+        .unwrap()
+        .name("dev.notashelf.Watt")
+        .unwrap()
+        .serve_at("/dev/notashelf/Watt", WattInterface::new(state))
+        .unwrap()
+        .build()
+        .await
+        .unwrap();
+      let client = connection::Builder::address(bus.address.as_str())
+        .unwrap()
+        .build()
+        .await
+        .unwrap();
+      let proxy = Proxy::new(
+        &client,
+        "dev.notashelf.Watt",
+        "/dev/notashelf/Watt",
+        "dev.notashelf.Watt",
+      )
+      .await
+      .unwrap();
+      let result: HashMap<String, OwnedValue> =
+        proxy.call("GetBoostCapabilities", &()).await.unwrap();
+      assert_eq!(<&str>::try_from(&result["scope"]).unwrap(), "global");
+      assert!(bool::try_from(&result["inverted"]).unwrap());
+      let paths =
+        Vec::<String>::try_from(result["control-paths"].try_clone().unwrap())
+          .unwrap();
+      assert_eq!(paths, vec![control.to_owned()]);
+      assert_eq!(fixture.write_count(control), 0);
+      client.close().await.unwrap();
+      server.close().await.unwrap();
+    })
+    .await
+    .unwrap();
+  }
 }

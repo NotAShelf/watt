@@ -81,6 +81,10 @@ impl Gpu {
     iter::once(self.path.as_path()).chain(self.radeon_path.as_deref())
   }
 
+  pub(crate) fn radeon_control_root(&self) -> Option<&Path> {
+    self.radeon_path.as_deref()
+  }
+
   fn panel_power_savings_path(path: &Path) -> PathBuf {
     path.join("amdgpu/panel_power_savings")
   }

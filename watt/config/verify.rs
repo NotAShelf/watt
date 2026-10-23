@@ -14,6 +14,9 @@ use super::{
 };
 use crate::cpu::frequency::Frequency;
 
+mod constants;
+mod hardware;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
@@ -52,6 +55,14 @@ impl Diagnostic {
     message: impl Into<String>,
   ) -> Self {
     Self::new(Severity::Error, rule, field, message)
+  }
+
+  fn warning(
+    rule: &Rule,
+    field: impl Into<String>,
+    message: impl Into<String>,
+  ) -> Self {
+    Self::new(Severity::Warning, rule, field, message)
   }
 }
 

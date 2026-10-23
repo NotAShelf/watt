@@ -30,6 +30,7 @@ use yansi::Paint as _;
 use crate::fs;
 
 mod boost;
+pub use boost::BoostCapabilities;
 pub mod frequency;
 pub mod policy;
 
@@ -610,7 +611,7 @@ impl Cpu {
       && self.available_epps.iter().any(|value| value == observed)
   }
 
-  fn validate_epp(&self, epp: &str) -> anyhow::Result<()> {
+  pub(crate) fn validate_epp(&self, epp: &str) -> anyhow::Result<()> {
     if let Ok(value) = epp.parse::<u16>() {
       let supported = self.policy.as_ref().is_some_and(|policy| {
         matches!(
@@ -737,7 +738,7 @@ impl Cpu {
     on: bool,
     cpus: impl Iterator<Item = &'a Self>,
   ) -> anyhow::Result<()> {
-    boost::Boost::discover(cpus)
+    BoostCapabilities::discover(cpus)
       .context("no supported CPU boost control mechanism found")?
       .write(on)
   }
@@ -749,7 +750,7 @@ impl Cpu {
   pub fn turbo<'a>(
     cpus: impl Iterator<Item = &'a Self>,
   ) -> anyhow::Result<Option<bool>> {
-    boost::Boost::discover(cpus)
+    BoostCapabilities::discover(cpus)
       .map(|boost| boost.read())
       .transpose()
   }

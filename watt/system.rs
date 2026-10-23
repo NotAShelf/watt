@@ -1318,6 +1318,17 @@ fn detect_virtual_machine() -> anyhow::Result<bool> {
   Ok(false)
 }
 
+/// CPU controls discovered during the latest successful scan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CpuCapabilities {
+  pub number:            u32,
+  pub policy:            Option<String>,
+  pub frequency_control: bool,
+  pub governors:         Vec<String>,
+  pub epps:              Vec<String>,
+  pub epbs:              Vec<String>,
+}
+
 #[derive(Debug)]
 pub struct DaemonState {
   config:               String,
@@ -1497,6 +1508,33 @@ impl DaemonState {
       .into_values()
       .cloned()
       .collect()
+  }
+
+  pub fn cpu_capabilities(&self) -> Vec<CpuCapabilities> {
+    let mut capabilities: Vec<_> = self
+      .system
+      .cpus
+      .iter()
+      .map(|cpu| {
+        CpuCapabilities {
+          number:            cpu.number,
+          policy:            cpu
+            .policy
+            .as_ref()
+            .map(|policy| policy.name.clone()),
+          frequency_control: cpu.frequency_control,
+          governors:         cpu.available_governors.clone(),
+          epps:              cpu.available_epps.clone(),
+          epbs:              cpu.available_epbs.clone(),
+        }
+      })
+      .collect();
+    capabilities.sort_unstable_by_key(|cpu| cpu.number);
+    capabilities
+  }
+
+  pub fn boost_capabilities(&self) -> Option<cpu::BoostCapabilities> {
+    cpu::Cpu::boost_capabilities(self.system.cpus.iter().map(AsRef::as_ref))
   }
 
   pub fn latest_cpu_log(&self) -> Option<CpuLog> {
@@ -2689,6 +2727,41 @@ priority = 1
     assert_eq!(policies[0].related_cpus, [0, 1]);
     assert_eq!(policies[1].name, "policy2");
     assert_eq!(policies[1].related_cpus, [2]);
+  }
+
+  #[test]
+  fn capabilities_include_per_cpu_controls_without_cpufreq() {
+    let fixture = SystemFixture::new();
+    let policy = fixture.policy(0, &[0, 1], "acpi-cpufreq");
+    fixture.cpu_telemetry(&[0, 1, 2]);
+    fixture.write(
+      policy.join("scaling_available_governors"),
+      "powersave performance",
+    );
+    fixture.write("/sys/devices/system/cpu/cpu2/power/energy_perf_bias", "6");
+    fixture.write(
+      policy.join("energy_performance_preference"),
+      "balance_power",
+    );
+    fixture.write(
+      policy.join("energy_performance_available_preferences"),
+      "performance balance_power power",
+    );
+    let mut state = DaemonState::new(String::new(), 0);
+    state.system.scan_cpus().unwrap();
+    let cpus = state.cpu_capabilities();
+    assert_eq!(cpus.iter().map(|cpu| cpu.number).collect::<Vec<_>>(), [
+      0, 1, 2
+    ]);
+    assert_eq!(cpus[0].policy, cpus[1].policy);
+    assert_eq!(cpus[0].governors, ["powersave", "performance"]);
+    assert_eq!(cpus[0].governors, cpus[1].governors);
+    assert_eq!(cpus[0].epps, ["performance", "balance_power", "power"]);
+    assert_eq!(cpus[0].epps, cpus[1].epps);
+    assert!(cpus[2].policy.is_none());
+    assert!(!cpus[2].frequency_control);
+    assert!(cpus[2].governors.is_empty());
+    assert!(!cpus[2].epbs.is_empty());
   }
 
   fn apply_rules(system: &System, rules: &[config::Rule]) {
