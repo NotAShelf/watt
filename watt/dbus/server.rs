@@ -264,7 +264,7 @@ mod tests {
       let state = Arc::new(RwLock::new(DaemonState::new(String::new(), 0)));
       {
         let mut state = state.write().await;
-        state.set_active_profile(PowerProfile::Performance);
+        state.set_active_profile(PowerProfile::Performance).unwrap();
         state.add_profile_hold(
           PowerProfile::Performance,
           "local".into(),
