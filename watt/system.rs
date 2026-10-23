@@ -519,113 +519,103 @@ impl System {
 
   fn scan_temperatures(&mut self) -> anyhow::Result<()> {
     log::debug!("scanning CPU temperatures...");
-
-    const PATH: &str = "/sys/class/hwmon";
-
     let mut temperatures = HashMap::new();
+    Self::scan_hwmon_temperatures(&mut temperatures)?;
+    if temperatures.is_empty() {
+      Self::scan_thermal_zones(&mut temperatures)?;
+    }
+    self.cpu_temperatures = temperatures;
+    Ok(())
+  }
 
+  fn scan_hwmon_temperatures(
+    temperatures: &mut HashMap<u32, f64>,
+  ) -> anyhow::Result<()> {
+    const PATH: &str = "/sys/class/hwmon";
     for entry in fs::read_dir(PATH)
       .context("failed to read hardware information")?
       .with_context(|| format!("'{PATH}' doesn't exist, are you on linux?"))?
     {
       let entry =
         entry.with_context(|| format!("failed to read entry of '{PATH}'"))?;
+      Self::read_hwmon_temperatures(&entry.path(), temperatures)?;
+    }
+    Ok(())
+  }
 
-      let entry_path = entry.path();
+  fn read_hwmon_temperatures(
+    device_path: &Path,
+    temperatures: &mut HashMap<u32, f64>,
+  ) -> anyhow::Result<()> {
+    let Some(name) = fs::read(device_path.join("name")).with_context(|| {
+      format!(
+        "failed to read name of hardware entry at '{}'",
+        device_path.display()
+      )
+    })?
+    else {
+      return Ok(());
+    };
+    if matches!(
+      name.as_str(),
+      "coretemp" | "k10temp" | "zenpower" | "amdgpu"
+    ) || name.contains("cpu")
+      || name.contains("temp")
+    {
+      Self::get_temperatures(device_path, temperatures)?;
+    }
+    Ok(())
+  }
 
-      let Some(name) =
-        fs::read(entry_path.join("name")).with_context(|| {
-          format!(
-            "failed to read name of hardware entry at '{path}'",
-            path = entry_path.display(),
-          )
-        })?
-      else {
+  fn scan_thermal_zones(
+    temperatures: &mut HashMap<u32, f64>,
+  ) -> anyhow::Result<()> {
+    const PATH: &str = "/sys/devices/virtual/thermal";
+    log::trace!("no hwmon CPU temperatures, checking '{PATH}'");
+    let Some(zones) =
+      fs::read_dir(PATH).context("failed to read thermal information")?
+    else {
+      return Ok(());
+    };
+    let mut counter = 0;
+    for entry in zones {
+      let entry =
+        entry.with_context(|| format!("failed to read entry of '{PATH}'"))?;
+      if !entry
+        .file_name()
+        .to_string_lossy()
+        .starts_with("thermal_zone")
+      {
+        continue;
+      }
+      let Some(temperature) = Self::read_thermal_zone(&entry.path())? else {
         continue;
       };
-
-      match &*name {
-        // TODO: 'zenergy' can also report those stats, I think?
-        "coretemp" | "k10temp" | "zenpower" | "amdgpu" => {
-          Self::get_temperatures(&entry_path, &mut temperatures)?;
-        },
-
-        // Other CPU temperature drivers.
-        _ if name.contains("cpu") || name.contains("temp") => {
-          Self::get_temperatures(&entry_path, &mut temperatures)?;
-        },
-
-        _ => {},
-      }
+      temperatures.insert(777 + counter, temperature);
+      counter += 1;
     }
-
-    if temperatures.is_empty() {
-      const PATH: &str = "/sys/devices/virtual/thermal";
-
-      log::warn!(
-        "failed to get CPU temperature information by using hwmon, falling \
-         back to '{PATH}'"
-      );
-
-      let Some(thermal_zones) =
-        fs::read_dir(PATH).context("failed to read thermal information")?
-      else {
-        return Ok(());
-      };
-
-      let mut counter = 0;
-
-      for entry in thermal_zones {
-        let entry =
-          entry.with_context(|| format!("failed to read entry of '{PATH}'"))?;
-
-        let entry_path = entry.path();
-
-        let entry_name = entry.file_name();
-        let entry_name = entry_name.to_string_lossy();
-
-        if !entry_name.starts_with("thermal_zone") {
-          continue;
-        }
-
-        let Some(entry_type) =
-          fs::read(entry_path.join("type")).with_context(|| {
-            format!(
-              "failed to read type of zone at '{path}'",
-              path = entry_path.display(),
-            )
-          })?
-        else {
-          continue;
-        };
-
-        if !entry_type.contains("cpu")
-          && !entry_type.contains("x86")
-          && !entry_type.contains("core")
-        {
-          continue;
-        }
-
-        let Some(temperature_mc) = fs::read_n::<i64>(entry_path.join("temp"))
-          .with_context(|| {
-          format!(
-            "failed to read temperature of zone at '{path}'",
-            path = entry_path.display(),
-          )
-        })?
-        else {
-          continue;
-        };
-
-        // Magic value to see that it is from the thermal zones.
-        temperatures.insert(777 + counter, temperature_mc as f64 / 1000.0);
-        counter += 1;
-      }
-    }
-
-    self.cpu_temperatures = temperatures;
-
     Ok(())
+  }
+
+  fn read_thermal_zone(zone_path: &Path) -> anyhow::Result<Option<f64>> {
+    let Some(kind) = fs::read(zone_path.join("type")).with_context(|| {
+      format!("failed to read type of zone at '{}'", zone_path.display())
+    })?
+    else {
+      return Ok(None);
+    };
+    if !kind.contains("cpu") && !kind.contains("x86") && !kind.contains("core")
+    {
+      return Ok(None);
+    }
+    fs::read_n::<i64>(zone_path.join("temp"))
+      .with_context(|| {
+        format!(
+          "failed to read temperature of zone at '{}'",
+          zone_path.display()
+        )
+      })
+      .map(|temperature| temperature.map(|value| value as f64 / 1000.0))
   }
 
   fn get_temperatures(
@@ -1780,6 +1770,29 @@ mod tests {
       system.cpus.iter().next().unwrap().governor.as_deref(),
       Some("performance"),
     );
+  }
+
+  #[test]
+  fn thermal_fallback_clears_readings_when_sensor_inventory_disappears() {
+    let fixture = SystemFixture::new();
+    stdfs::create_dir_all(fixture.path("/sys/class/hwmon")).unwrap();
+    let root = fixture.path("/sys/devices/virtual/thermal/thermal_zone0");
+    fixture.write(root.join("type"), "x86_pkg_temp");
+    fixture.write(root.join("temp"), "53300");
+    let mut system = System::default();
+    system.scan_temperatures().unwrap();
+    assert_eq!(
+      system
+        .cpu_temperatures
+        .values()
+        .copied()
+        .collect::<Vec<_>>(),
+      [53.3]
+    );
+    stdfs::remove_dir_all(fixture.path("/sys/devices/virtual/thermal"))
+      .unwrap();
+    system.scan_temperatures().unwrap();
+    assert!(system.cpu_temperatures.is_empty());
   }
 }
 
