@@ -13,6 +13,7 @@ use std::{
     VecDeque,
   },
   fs,
+  mem,
   path::Path,
   sync::Arc,
 };
@@ -154,136 +155,139 @@ pub struct CpusDelta {
 
 impl CpusDelta {
   pub fn eval(&self, state: &EvalState<'_, '_>) -> CpuEvalResult {
-    log::debug!("evaluating CPU deltas...");
+    let cpus = self.selected_cpus(state)?;
+    let mut deltas = HashMap::with_capacity(cpus.len());
+    for cpu in cpus {
+      let delta = self.eval_cpu(&state.in_context(EvalContext::Cpu(&cpu)))?;
+      Self::resolve_policy(&mut deltas, &cpu, &delta, state);
+    }
+    Ok((deltas, self.eval_global(state)?))
+  }
 
-    let cpus = match &self.for_ {
-      Some(numbers) => {
-        let numbers = numbers
+  fn resolve_policy(
+    deltas: &mut CpuDeltas,
+    selected: &Arc<cpu::Cpu>,
+    delta: &cpu::Delta,
+    state: &EvalState<'_, '_>,
+  ) {
+    let local = deltas.entry(Arc::clone(selected)).or_default();
+    *local = mem::take(local).or(&delta.cpu_settings());
+    let shared = delta.policy_settings();
+    for cpu in state.cpus {
+      let same_policy = selected
+        .policy
+        .as_ref()
+        .zip(cpu.policy.as_ref())
+        .is_some_and(|(selected, candidate)| selected.path == candidate.path);
+      if cpu.number == selected.number || same_policy {
+        let resolved = deltas.entry(Arc::clone(cpu)).or_default();
+        *resolved = mem::take(resolved).or(&shared);
+      }
+    }
+  }
+
+  fn selected_cpus(
+    &self,
+    state: &EvalState<'_, '_>,
+  ) -> anyhow::Result<Vec<Arc<cpu::Cpu>>> {
+    let mut cpus: Vec<_> = match &self.for_ {
+      Some(expression) => {
+        let numbers = expression
           .eval(state)?
-          .context("`cpu.for` resolved to undefined")?;
-        let numbers = numbers
+          .context("`cpu.for` resolved to undefined")?
           .try_into_list()
-          .context("`cpu.for` was not a list")?;
-
-        let mut cpus = Vec::with_capacity(numbers.len());
-
-        for number in numbers {
-          let number = number
-            .try_into_number()
-            .context("`cpu.for` item was not a number")?;
-
-          if number.fract() != 0.0 {
-            bail!("invalid CPU in `cpu.for`: {number}");
-          }
-
-          cpus.push(number as u32);
-        }
-
+          .context("`cpu.for` was not a list")?
+          .into_iter()
+          .map(Self::cpu_number)
+          .collect::<anyhow::Result<HashSet<_>>>()?;
         state
           .cpus
           .iter()
-          .filter(|cpu| cpus.contains(&cpu.number))
+          .filter(|cpu| numbers.contains(&cpu.number))
           .cloned()
           .collect()
       },
-      None => state.cpus.clone(),
+      None => state.cpus.iter().cloned().collect(),
     };
+    cpus.sort_by_key(|cpu| cpu.number);
+    Ok(cpus)
+  }
 
-    let mut deltas = HashMap::with_capacity(cpus.len());
-
-    log::trace!("filtering CPUs by number: {cpus:?}");
-
-    for cpu in cpus {
-      let state = state.in_context(EvalContext::Cpu(&cpu));
-      let mut delta = cpu::Delta::default();
-
-      if let Some(governor) = &self.governor
-        && let Some(governor) = governor.eval(&state)?
-      {
-        let governor = governor
-          .try_into_string()
-          .context("`cpu.governor` was not a string")?;
-
-        delta.governor = Some(governor);
-      }
-
-      if let Some(energy_performance_preference) =
-        &self.energy_performance_preference
-        && let Some(energy_performance_preference) =
-          energy_performance_preference.eval(&state)?
-      {
-        let energy_performance_preference = energy_performance_preference
-          .try_into_string()
-          .context("`cpu.energy-performance-preference` was not a string")?;
-
-        delta.energy_performance_preference =
-          Some(energy_performance_preference);
-      }
-
-      if let Some(energy_perf_bias) = &self.energy_perf_bias
-        && let Some(energy_perf_bias) = energy_perf_bias.eval(&state)?
-      {
-        let energy_perf_bias = energy_perf_bias
-          .try_into_string()
-          .context("`cpu.energy-perf-bias` was not a string")?;
-
-        delta.energy_perf_bias = Some(energy_perf_bias);
-      }
-
-      delta.frequency_minimum = eval_frequency(
-        &self.frequency_mhz_minimum,
-        &state,
-        "cpu.frequency-mhz-minimum",
-      )?;
-      delta.frequency_maximum = eval_frequency(
-        &self.frequency_mhz_maximum,
-        &state,
-        "cpu.frequency-mhz-maximum",
-      )?;
-
-      if let Some(pm_qos_resume_latency_us) = &self.pm_qos_resume_latency_us
-        && let Some(pm_qos_resume_latency_us) =
-          pm_qos_resume_latency_us.eval(&state)?
-      {
-        delta.pm_qos_resume_latency_us = Some(match pm_qos_resume_latency_us {
-          Expression::String(value) if value == "n/a" => value,
-          Expression::String(value) => {
-            bail!(
-              "invalid `cpu.pm-qos-resume-latency-us`: {value}; expected a \
-               non-negative integer or \"n/a\""
-            );
-          },
-          value => {
-            let value = value.try_into_number().context(
-              "`cpu.pm-qos-resume-latency-us` was not a number or string",
-            )?;
-
-            if value.fract() != 0.0 || value < 0.0 || value > u64::MAX as f64 {
-              bail!("invalid `cpu.pm-qos-resume-latency-us`: {value}");
-            }
-
-            (value as u64).to_string()
-          },
-        });
-      }
-
-      deltas.insert(Arc::clone(&cpu), delta);
+  fn cpu_number(expression: Expression) -> anyhow::Result<u32> {
+    let number = expression
+      .try_into_number()
+      .context("`cpu.for` item was not a number")?;
+    if number.fract() != 0.0 || !(0.0..=f64::from(u32::MAX)).contains(&number) {
+      bail!("invalid CPU in `cpu.for`: {number}");
     }
+    Ok(number as u32)
+  }
 
-    let turbo = if let Some(turbo) = &self.turbo
-      && let Some(turbo) = turbo.eval(state)?
-    {
-      let turbo = turbo
-        .try_into_boolean()
-        .context("`cpu.turbo` was not a boolean")?;
+  fn eval_cpu(&self, state: &EvalState<'_, '_>) -> anyhow::Result<cpu::Delta> {
+    Ok(cpu::Delta {
+      governor:                      eval_string(
+        &self.governor,
+        state,
+        "cpu.governor",
+      )?,
+      energy_performance_preference: eval_string(
+        &self.energy_performance_preference,
+        state,
+        "cpu.energy-performance-preference",
+      )?,
+      energy_perf_bias:              eval_string(
+        &self.energy_perf_bias,
+        state,
+        "cpu.energy-perf-bias",
+      )?,
+      frequency_minimum:             eval_frequency(
+        &self.frequency_mhz_minimum,
+        state,
+        "cpu.frequency-mhz-minimum",
+      )?,
+      frequency_maximum:             eval_frequency(
+        &self.frequency_mhz_maximum,
+        state,
+        "cpu.frequency-mhz-maximum",
+      )?,
+      pm_qos_resume_latency_us:      self.eval_resume_latency(state)?,
+    })
+  }
 
-      Some(turbo)
-    } else {
-      None
+  fn eval_resume_latency(
+    &self,
+    state: &EvalState<'_, '_>,
+  ) -> anyhow::Result<Option<String>> {
+    let Some(expression) = &self.pm_qos_resume_latency_us else {
+      return Ok(None);
     };
+    let Some(value) = expression.eval(state)? else {
+      return Ok(None);
+    };
+    match value {
+      Expression::String(value) if value == "n/a" => Ok(Some(value)),
+      value => {
+        let value = value.try_into_number().context(
+          "`cpu.pm-qos-resume-latency-us` was not a number or \"n/a\"",
+        )?;
+        if value.fract() != 0.0 || value < 0.0 || value >= u64::MAX as f64 {
+          bail!("invalid `cpu.pm-qos-resume-latency-us`: {value}");
+        }
+        Ok(Some((value as u64).to_string()))
+      },
+    }
+  }
 
-    let global = cpu::GlobalDelta {
-      turbo,
+  fn eval_global(
+    &self,
+    state: &EvalState<'_, '_>,
+  ) -> anyhow::Result<cpu::GlobalDelta> {
+    Ok(cpu::GlobalDelta {
+      turbo:                          eval_bool(
+        &self.turbo,
+        state,
+        "cpu.turbo",
+      )?,
       pstate_min_performance_percent: eval_percent(
         &self.pstate_min_performance_percent,
         state,
@@ -294,14 +298,12 @@ impl CpusDelta {
         state,
         "cpu.pstate-max-performance-percent",
       )?,
-      dma_latency_us: eval_i32(
+      dma_latency_us:                 eval_i32(
         &self.dma_latency_us,
         state,
         "cpu.dma-latency-us",
       )?,
-    };
-
-    Ok((deltas, global))
+    })
   }
 }
 
@@ -1367,7 +1369,9 @@ impl<'peripherals> EvalState<'peripherals, '_> {
     match self.context {
       EvalContext::Cpu(cpu) => supports(cpu),
       EvalContext::PowerSupply(_) => false,
-      EvalContext::WidestPossible => self.cpus.iter().any(|cpu| supports(cpu)),
+      EvalContext::WidestPossible => {
+        !self.cpus.is_empty() && self.cpus.iter().all(|cpu| supports(cpu))
+      },
     }
   }
 
@@ -1575,6 +1579,7 @@ mod tests {
       // share CPU state across tests
       let cpu = Arc::new(cpu::Cpu {
         number: 0,
+        policy: None,
         has_cpufreq: true,
         frequency_control: true,
         available_governors: vec![],
@@ -1682,6 +1687,7 @@ mod tests {
   fn test_rounding() {
     let cpu = Arc::new(cpu::Cpu {
       number:              0,
+      policy:              None,
       has_cpufreq:         true,
       frequency_control:   true,
       available_governors: vec![],
@@ -1776,6 +1782,7 @@ mod tests {
   fn test_volatility_expressions_with_insufficient_data() {
     let cpu = Arc::new(cpu::Cpu {
       number:              0,
+      policy:              None,
       has_cpufreq:         true,
       frequency_control:   true,
       available_governors: vec![],
@@ -1851,9 +1858,10 @@ mod tests {
   }
 
   #[test]
-  fn first_available_governor_selects_first_supported_value() {
+  fn cpu_capabilities_follow_the_current_evaluation_scope() {
     let cpu = Arc::new(cpu::Cpu {
       number:              0,
+      policy:              None,
       has_cpufreq:         true,
       frequency_control:   true,
       available_governors: vec!["powersave".to_owned(), "schedutil".to_owned()],
@@ -1861,9 +1869,9 @@ mod tests {
       frequency:           Some(frequency_mhz(3333)),
       frequency_minimum:   Some(frequency_mhz(1000)),
       frequency_maximum:   Some(frequency_mhz(3333)),
-      available_epps:      vec![],
+      available_epps:      vec!["balance_power".into(), "power".into()],
       epp:                 None,
-      available_epbs:      vec![],
+      available_epbs:      vec!["balance-power".into(), "power".into()],
       epb:                 None,
       stat:                cpu::CpuStat::default(),
       previous_stat:       None,
@@ -1872,6 +1880,12 @@ mod tests {
 
     let mut cpus = HashSet::new();
     cpus.insert(cpu.clone());
+    let mut other_cpu = (*cpu).clone();
+    other_cpu.number = 1;
+    other_cpu.available_governors = vec!["powersave".to_owned()];
+    other_cpu.available_epps = vec!["power".into()];
+    other_cpu.available_epbs = vec!["power".into()];
+    cpus.insert(Arc::new(other_cpu));
 
     let power_supplies = HashSet::new();
     let uncores = HashSet::new();
@@ -1920,6 +1934,64 @@ mod tests {
     .unwrap();
 
     assert_eq!(result, Some(Expression::String("schedutil".to_owned())));
+
+    let alternatives = Expression::FirstAvailableGovernor {
+      values: vec![
+        Expression::String("schedutil".to_owned()),
+        Expression::String("powersave".to_owned()),
+      ],
+    };
+    let global = state.in_context(EvalContext::WidestPossible);
+    for (predicate, exclusive, common) in [
+      ("is-governor-available", "schedutil", "powersave"),
+      (
+        "is-energy-performance-preference-available",
+        "balance_power",
+        "power",
+      ),
+      ("is-energy-perf-bias-available", "balance-power", "power"),
+    ] {
+      let exclusive: Expression =
+        toml::from_str(&format!("{predicate} = {exclusive:?}")).unwrap();
+      assert_eq!(
+        exclusive.eval(&state).unwrap(),
+        Some(Expression::Boolean(true))
+      );
+      assert_eq!(
+        exclusive.eval(&global).unwrap(),
+        Some(Expression::Boolean(false))
+      );
+      let common: Expression =
+        toml::from_str(&format!("{predicate} = {common:?}")).unwrap();
+      assert_eq!(
+        common.eval(&global).unwrap(),
+        Some(Expression::Boolean(true))
+      );
+      assert_eq!(
+        common
+          .eval(&EvalState {
+            cpus: &HashSet::new(),
+            context: EvalContext::WidestPossible,
+            ..global
+          })
+          .unwrap(),
+        Some(Expression::Boolean(false)),
+      );
+    }
+    assert_eq!(
+      alternatives.eval(&global).unwrap(),
+      Some(Expression::String("powersave".to_owned())),
+    );
+    let empty_cpus = HashSet::new();
+    assert_eq!(
+      alternatives
+        .eval(&EvalState {
+          cpus: &empty_cpus,
+          ..global
+        })
+        .unwrap(),
+      None,
+    );
 
     let result = Expression::FirstAvailableGovernor {
       values: vec![

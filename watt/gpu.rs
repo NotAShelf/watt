@@ -1,6 +1,8 @@
 use std::{
   fmt,
+  fs::DirEntry,
   hash,
+  iter,
   path::{
     Path,
     PathBuf,
@@ -17,8 +19,9 @@ use crate::fs;
 
 #[derive(Debug, Clone)]
 pub struct Gpu {
-  pub name: String,
-  pub path: PathBuf,
+  pub name:    String,
+  pub path:    PathBuf,
+  radeon_path: Option<PathBuf>,
 }
 
 impl PartialEq for Gpu {
@@ -51,28 +54,41 @@ impl Gpu {
 
     for entry in entries {
       let entry = entry.context("failed to read DRM device entry")?;
-      let name = entry.file_name().to_string_lossy().to_string();
-      if !name.starts_with("card") {
-        continue;
-      }
-
-      let path = entry.path();
-      if Self::panel_power_savings_path(&path).exists()
-        || Self::radeon_power_method_path(&path).exists()
-      {
-        gpus.push(Self { name, path });
+      if let Some(gpu) = Self::scan(entry)? {
+        gpus.push(gpu);
       }
     }
 
     Ok(gpus)
   }
 
-  fn panel_power_savings_path(path: &Path) -> PathBuf {
-    path.join("amdgpu/panel_power_savings")
+  fn scan(entry: DirEntry) -> anyhow::Result<Option<Self>> {
+    let name = entry.file_name().to_string_lossy().into_owned();
+    if !name.starts_with("card") {
+      return Ok(None);
+    }
+    let Some(path) = fs::canonicalize(entry.path())? else {
+      return Ok(None);
+    };
+    let radeon_path = fs::canonicalize(path.join("device"))?
+      .filter(|device| device.join("power_method").exists());
+    if !Self::panel_power_savings_path(&path).exists() && radeon_path.is_none()
+    {
+      return Ok(None);
+    }
+    Ok(Some(Self {
+      name,
+      path,
+      radeon_path,
+    }))
   }
 
-  fn radeon_power_method_path(path: &Path) -> PathBuf {
-    path.join("device/power_method")
+  pub(crate) fn control_roots(&self) -> impl Iterator<Item = &Path> {
+    iter::once(self.path.as_path()).chain(self.radeon_path.as_deref())
+  }
+
+  fn panel_power_savings_path(path: &Path) -> PathBuf {
+    path.join("amdgpu/panel_power_savings")
   }
 
   pub fn set_panel_power_savings(&self, value: u8) -> anyhow::Result<()> {
@@ -91,17 +107,17 @@ impl Gpu {
   }
 
   pub fn set_radeon_powersave(&self, value: &str) -> anyhow::Result<()> {
-    let method = Self::radeon_power_method_path(&self.path);
-    if !method.exists() {
+    let Some(path) = &self.radeon_path else {
       log::debug!("{self} does not support Radeon power profiles");
       return Ok(());
-    }
+    };
+    let method = path.join("power_method");
 
     match value {
       "default" | "auto" | "low" | "mid" | "high" => {
         fs::write(&method, "profile")
           .with_context(|| format!("failed to set power method for {self}"))?;
-        fs::write(self.path.join("device/power_profile"), value)
+        fs::write(path.join("power_profile"), value)
           .with_context(|| format!("failed to set power profile for {self}"))?;
       },
       "dynpm" => {
@@ -112,7 +128,7 @@ impl Gpu {
         fs::write(&method, "dpm")
           .with_context(|| format!("failed to set power method for {self}"))?;
         fs::write(
-          self.path.join("device/power_dpm_state"),
+          path.join("power_dpm_state"),
           value.trim_start_matches("dpm-"),
         )
         .with_context(|| format!("failed to set DPM state for {self}"))?;

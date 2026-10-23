@@ -1,5 +1,8 @@
 use std::{
-  cell::OnceCell,
+  cell::{
+    OnceCell,
+    RefCell,
+  },
   collections::HashMap,
   fmt,
   fs::{
@@ -9,7 +12,10 @@ use std::{
   hash,
   io::Write,
   mem,
-  path::Path,
+  path::{
+    Path,
+    PathBuf,
+  },
   string::ToString,
   sync::Arc,
 };
@@ -24,13 +30,33 @@ use yansi::Paint as _;
 use crate::fs;
 
 pub mod frequency;
+pub mod policy;
 
 use frequency::Frequency;
+use policy::Policy;
 
 #[derive(Default, Debug, Clone, PartialEq)]
 struct CpuScanCache {
-  stat: OnceCell<HashMap<u32, CpuStat>>,
-  info: OnceCell<HashMap<u32, Arc<HashMap<String, String>>>>,
+  policies: RefCell<HashMap<PathBuf, Arc<Policy>>>,
+  stat:     OnceCell<HashMap<u32, CpuStat>>,
+  info:     OnceCell<HashMap<u32, Arc<HashMap<String, String>>>>,
+}
+
+impl CpuScanCache {
+  fn policy(&self, number: u32) -> anyhow::Result<Option<Arc<Policy>>> {
+    let Some(path) =
+      fs::canonicalize(format!("/sys/devices/system/cpu/cpu{number}/cpufreq"))?
+    else {
+      return Ok(None);
+    };
+    let mut policies = self.policies.borrow_mut();
+    if let Some(policy) = policies.get(&path) {
+      return Ok(Some(Arc::clone(policy)));
+    }
+    let policy = Arc::new(Policy::scan(path.clone(), number)?);
+    policies.insert(path, Arc::clone(&policy));
+    Ok(Some(policy))
+  }
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq)]
@@ -78,6 +104,9 @@ impl CpuStat {
 #[derive(Default, Debug, Clone)]
 pub struct Cpu {
   pub number: u32,
+
+  /// Shared cpufreq policy, when the CPU exposes frequency controls.
+  pub policy: Option<Arc<Policy>>,
 
   pub has_cpufreq:       bool,
   pub frequency_control: bool,
@@ -223,8 +252,8 @@ impl Cpu {
       bail!("{self} does not exist");
     }
 
-    self.has_cpufreq =
-      fs::exists(format!("/sys/devices/system/cpu/cpu{number}/cpufreq"));
+    self.policy = cache.policy(*number)?;
+    self.has_cpufreq = self.policy.is_some();
     self.frequency_control = [
       "scaling_min_freq",
       "scaling_max_freq",
@@ -232,11 +261,7 @@ impl Cpu {
       "cpuinfo_max_freq",
     ]
     .iter()
-    .all(|name| {
-      fs::exists(format!(
-        "/sys/devices/system/cpu/cpu{number}/cpufreq/{name}"
-      ))
-    });
+    .all(|name| fs::exists(self.cpufreq_path(name)));
 
     log::trace!(
       "CPU {number} has cpufreq: {has_cpufreq}",
@@ -257,25 +282,31 @@ impl Cpu {
     Ok(())
   }
 
+  pub(crate) fn cpufreq_path(&self, attribute: &str) -> PathBuf {
+    match &self.policy {
+      Some(policy) => policy.path.join(attribute),
+      None => {
+        fs::path(format!(
+          "/sys/devices/system/cpu/cpu{number}/cpufreq/{attribute}",
+          number = self.number,
+        ))
+      },
+    }
+  }
+
   fn scan_governor(&mut self) -> anyhow::Result<()> {
     log::trace!("scanning governor for CPU {number}", number = self.number);
 
-    let Self { number, .. } = *self;
-
-    self.governor = fs::read(format!(
-      "/sys/devices/system/cpu/cpu{number}/cpufreq/scaling_governor"
-    ))
-    .with_context(|| format!("failed to read {self} scaling governor"))?;
+    self.governor = fs::read(self.cpufreq_path("scaling_governor"))
+      .with_context(|| format!("failed to read {self} scaling governor"))?;
 
     if self.governor.is_some() {
       self.available_governors = 'available_governors: {
-        let Some(content) = fs::read(format!(
-          "/sys/devices/system/cpu/cpu{number}/cpufreq/\
-           scaling_available_governors"
-        ))
-        .with_context(|| {
-          format!("failed to read {self} available governors")
-        })?
+        let Some(content) =
+          fs::read(self.cpufreq_path("scaling_available_governors"))
+            .with_context(|| {
+              format!("failed to read {self} available governors")
+            })?
         else {
           break 'available_governors Vec::new();
         };
@@ -293,20 +324,14 @@ impl Cpu {
   fn scan_epp(&mut self) -> anyhow::Result<()> {
     log::trace!("scanning EPP for CPU {number}", number = self.number);
 
-    let Self { number, .. } = *self;
-
-    self.epp = fs::read(format!(
-      "/sys/devices/system/cpu/cpu{number}/cpufreq/\
-       energy_performance_preference"
-    ))
-    .with_context(|| format!("failed to read {self} EPP"))?;
+    self.epp = fs::read(self.cpufreq_path("energy_performance_preference"))
+      .with_context(|| format!("failed to read {self} EPP"))?;
 
     if self.epp.is_some() {
       self.available_epps = 'available_epps: {
-        let Some(content) = fs::read(format!(
-          "/sys/devices/system/cpu/cpu{number}/cpufreq/\
-           energy_performance_available_preferences"
-        ))
+        let Some(content) = fs::read(
+          self.cpufreq_path("energy_performance_available_preferences"),
+        )
         .with_context(|| format!("failed to read {self} available EPPs"))?
         else {
           break 'available_epps Vec::new();
@@ -477,9 +502,7 @@ impl Cpu {
 
   pub fn set_governor(&mut self, governor: &str) -> anyhow::Result<()> {
     self.validate_governor(governor)?;
-    let number = self.number;
-    let path =
-      format!("/sys/devices/system/cpu/cpu{number}/cpufreq/scaling_governor");
+    let path = self.cpufreq_path("scaling_governor");
 
     write_verified(&path, governor, "CPU governor").with_context(|| {
       format!(
@@ -516,11 +539,7 @@ impl Cpu {
 
   pub fn set_epp(&mut self, epp: &str) -> anyhow::Result<()> {
     self.validate_epp(epp)?;
-    let number = self.number;
-    let path = format!(
-      "/sys/devices/system/cpu/cpu{number}/cpufreq/\
-       energy_performance_preference"
-    );
+    let path = self.cpufreq_path("energy_performance_preference");
 
     write_verified(&path, epp, "CPU EPP").with_context(|| {
       format!(
@@ -746,6 +765,24 @@ pub struct Delta {
 }
 
 impl Delta {
+  pub fn policy_settings(&self) -> Self {
+    Self {
+      governor: self.governor.clone(),
+      energy_performance_preference: self.energy_performance_preference.clone(),
+      frequency_minimum: self.frequency_minimum,
+      frequency_maximum: self.frequency_maximum,
+      ..Self::default()
+    }
+  }
+
+  pub fn cpu_settings(&self) -> Self {
+    Self {
+      energy_perf_bias: self.energy_perf_bias.clone(),
+      pm_qos_resume_latency_us: self.pm_qos_resume_latency_us.clone(),
+      ..Self::default()
+    }
+  }
+
   pub fn is_some(&self) -> bool {
     self.governor.is_some()
       && self.energy_performance_preference.is_some()
@@ -1143,5 +1180,65 @@ mod tests {
     fs::begin_settings_iteration();
     assert!(fs::restore_unmanaged_settings().is_empty());
     assert_eq!(stdfs::read_to_string(&minimum).unwrap(), "800000");
+  }
+
+  #[test]
+  fn shared_policy_writes_keep_one_original_value() {
+    let fixture = SystemFixture::new();
+    let policy_path = fixture.policy(0, &[0, 1], "intel_pstate");
+    fixture.cpu_telemetry(&[0, 1]);
+    let _settings = fs::manage_settings();
+    fs::begin_settings_iteration();
+    let mut cpus = Cpu::all().unwrap();
+    cpus.sort_by_key(|cpu| cpu.number);
+    assert_eq!(cpus.len(), 2);
+    let policy = cpus[0].policy.as_ref().unwrap();
+    assert_eq!(policy.related_cpus, [0, 1]);
+    assert_eq!(policy.driver.as_deref(), Some("intel_pstate"));
+    cpus[0].set_governor("performance").unwrap();
+    cpus[1].set_governor("powersave").unwrap();
+
+    let settings = fs::applied_settings();
+    assert_eq!(settings.len(), 1);
+    assert_eq!(settings[0].path, policy_path.join("scaling_governor"));
+    fs::begin_settings_iteration();
+    assert!(fs::restore_unmanaged_settings().is_empty());
+    assert_eq!(
+      stdfs::read_to_string(policy_path.join("scaling_governor")).unwrap(),
+      "powersave"
+    );
+  }
+
+  #[test]
+  fn legacy_cpufreq_directories_remain_writable() {
+    let fixture = SystemFixture::new();
+    let policy = fixture.policy(0, &[0], "acpi-cpufreq");
+    fixture.cpu_telemetry(&[0]);
+    let legacy = fixture.path("/sys/devices/system/cpu/cpu0/cpufreq");
+    stdfs::remove_file(&legacy).unwrap();
+    stdfs::rename(&policy, &legacy).unwrap();
+    let mut cpu = Cpu::all().unwrap().pop().unwrap();
+    assert_eq!(cpu.policy.as_ref().unwrap().name, "cpu0");
+    cpu.set_governor("performance").unwrap();
+    assert_eq!(
+      stdfs::read_to_string(legacy.join("scaling_governor")).unwrap(),
+      "performance"
+    );
+  }
+
+  #[test]
+  fn policy_discovery_falls_back_to_affected_cpus_and_rejects_invalid_lists() {
+    let fixture = SystemFixture::new();
+    let policy = fixture.policy(0, &[0, 1], "acpi-cpufreq");
+    fixture.cpu_telemetry(&[0, 1]);
+    stdfs::remove_file(policy.join("related_cpus")).unwrap();
+    let cpu = Cpu::all().unwrap().pop().unwrap();
+    assert_eq!(cpu.policy.as_ref().unwrap().related_cpus, [0, 1]);
+
+    fixture.write(policy.join("affected_cpus"), "invalid");
+    assert!(Cpu::all().is_err());
+    fixture.write(policy.join("affected_cpus"), "1 0 1");
+    let cpu = Cpu::all().unwrap().pop().unwrap();
+    assert_eq!(cpu.policy.as_ref().unwrap().related_cpus, [0, 1]);
   }
 }

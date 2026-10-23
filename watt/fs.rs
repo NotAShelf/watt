@@ -142,6 +142,22 @@ pub fn path(path: impl AsRef<Path>) -> PathBuf {
   root.join(path.strip_prefix("/").expect("absolute path has a root"))
 }
 
+/// Resolves a system path and follows its symlinks, or returns `None` if
+/// absent.
+pub fn canonicalize(
+  input: impl AsRef<Path>,
+) -> anyhow::Result<Option<PathBuf>> {
+  let path = path(input);
+  match fs::canonicalize(&path) {
+    Ok(path) => Ok(Some(path)),
+    Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+    Err(error) => {
+      Err(error)
+        .with_context(|| format!("failed to resolve '{}'", path.display()))
+    },
+  }
+}
+
 pub fn exists(input: impl AsRef<Path>) -> bool {
   path(input).exists()
 }

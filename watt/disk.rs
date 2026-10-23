@@ -1,5 +1,6 @@
 use std::{
   fmt,
+  fs::DirEntry,
   hash,
   path::{
     Path,
@@ -54,20 +55,26 @@ impl Disk {
 
     for entry in entries {
       let entry = entry.context("failed to read block device entry")?;
-      let path = entry.path();
-      let name = entry.file_name().to_string_lossy().to_string();
-
-      if !path.join("queue").exists() || name.starts_with("loop") {
-        continue;
+      if let Some(disk) = Self::scan(entry)? {
+        disks.push(disk);
       }
-      if fs::read_n::<u64>(path.join("removable"))?.unwrap_or(0) == 1 {
-        continue;
-      }
-
-      disks.push(Self { name, path });
     }
 
     Ok(disks)
+  }
+
+  fn scan(entry: DirEntry) -> anyhow::Result<Option<Self>> {
+    let name = entry.file_name().to_string_lossy().into_owned();
+    let Some(path) = fs::canonicalize(entry.path())? else {
+      return Ok(None);
+    };
+    if !path.join("queue").exists() || name.starts_with("loop") {
+      return Ok(None);
+    }
+    if fs::read_n::<u64>(path.join("removable"))?.unwrap_or(0) == 1 {
+      return Ok(None);
+    }
+    Ok(Some(Self { name, path }))
   }
 
   pub fn set_scheduler(&self, value: &str) -> anyhow::Result<()> {
@@ -111,7 +118,9 @@ pub fn set_alpm(policy: &str) -> anyhow::Result<()> {
 
   for entry in entries {
     let entry = entry.context("failed to read SCSI host entry")?;
-    let host_path = entry.path();
+    let Some(host_path) = fs::canonicalize(entry.path())? else {
+      continue;
+    };
     let policy_path = host_path.join("link_power_management_policy");
 
     if is_external_sata_port(&host_path)? {
@@ -220,5 +229,67 @@ impl GlobalDelta {
     }
 
     Ok(())
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use std::{
+    fs as stdfs,
+    os::unix::fs::symlink,
+  };
+
+  use super::*;
+  use crate::test_support::SystemFixture;
+
+  #[test]
+  fn alpm_alias_rename_preserves_restoration_and_skips_external_ports() {
+    let fixture = SystemFixture::new();
+    let host = fixture.path("/sys/devices/ata1/host0");
+    let policy = host.join("link_power_management_policy");
+    fixture.write(&policy, "max_performance");
+    let aliases = fixture.path("/sys/class/scsi_host");
+    stdfs::create_dir_all(&aliases).unwrap();
+    let alias = aliases.join("host0");
+    symlink(&host, &alias).unwrap();
+    let external = aliases.join("host1");
+    let external_policy = external.join("link_power_management_policy");
+    fixture.write(&external_policy, "max_performance");
+    fixture.write(external.join("ahci_port_cmd"), "0x200000");
+    let _managed = fs::manage_settings();
+    fs::begin_settings_iteration();
+    set_alpm("min_power").unwrap();
+    stdfs::rename(&alias, aliases.join("host2")).unwrap();
+    fs::begin_settings_iteration();
+    set_alpm("med_power_with_dipm").unwrap();
+    assert_eq!(fs::applied_settings().len(), 1);
+    assert_eq!(fixture.write_count(&external_policy), 0);
+    fs::begin_settings_iteration();
+    assert!(fs::restore_unmanaged_settings().is_empty());
+    assert_eq!(stdfs::read_to_string(policy).unwrap(), "max_performance");
+  }
+
+  #[test]
+  fn disk_aliases_preserve_the_original_readahead_value() {
+    let fixture = SystemFixture::new();
+    let device = fixture.path("/sys/devices/block/sda");
+    let readahead = device.join("queue/read_ahead_kb");
+    fixture.write(&readahead, "128");
+    fixture.write(device.join("removable"), "0");
+    let aliases = fixture.path(BLOCK_PATH);
+    stdfs::create_dir_all(&aliases).unwrap();
+    symlink(&device, aliases.join("sda")).unwrap();
+    symlink(&device, aliases.join("alias")).unwrap();
+    let disks = Disk::all().unwrap();
+    assert_eq!(disks.len(), 2);
+    let _managed = fs::manage_settings();
+    fs::begin_settings_iteration();
+    for disk in disks {
+      disk.set_readahead_kib(256).unwrap();
+    }
+    assert_eq!(fs::applied_settings().len(), 1);
+    fs::begin_settings_iteration();
+    assert!(fs::restore_unmanaged_settings().is_empty());
+    assert_eq!(stdfs::read_to_string(readahead).unwrap(), "128");
   }
 }

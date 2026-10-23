@@ -75,6 +75,24 @@ impl WattInterface {
     status
   }
 
+  async fn get_cpu_policies(&self) -> Vec<(String, String, Vec<u32>, String)> {
+    self
+      .state
+      .read()
+      .await
+      .cpu_policies()
+      .into_iter()
+      .map(|policy| {
+        (
+          policy.name.clone(),
+          policy.path.display().to_string(),
+          policy.related_cpus.clone(),
+          policy.driver.clone().unwrap_or_default(),
+        )
+      })
+      .collect()
+  }
+
   async fn get_applied_rules(&self) -> Vec<String> {
     let state = self.state.read().await;
     state.last_applied_rules()

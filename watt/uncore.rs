@@ -63,7 +63,9 @@ impl Uncore {
     for entry in entries {
       let entry = entry
         .with_context(|| format!("failed to read entry of '{UNCORE_PATH}'"))?;
-      let path = entry.path();
+      let Some(path) = fs::canonicalize(entry.path())? else {
+        continue;
+      };
 
       if !path.is_dir() || !path.join("min_freq_khz").exists() {
         continue;
