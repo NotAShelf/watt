@@ -110,7 +110,12 @@ impl PowerProfilesInterface {
     let signal_emitter =
       SignalEmitter::new(connection, "/net/hadess/PowerProfiles")?;
 
-    let released = self.state.write().await.set_active_profile(profile);
+    let released = self
+      .state
+      .write()
+      .await
+      .set_active_profile(profile)
+      .map_err(|error| fdo::Error::Failed(error.to_string()))?;
     self.notify_holds_changed(&signal_emitter, &released).await;
 
     log::info!(
