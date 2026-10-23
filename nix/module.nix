@@ -46,9 +46,11 @@ in {
     systemd.services.watt = {
       wantedBy = ["multi-user.target"];
       conflicts = map (service: "${service}.service") conflictingServices;
+      reloadTriggers = [cfgFile];
       serviceConfig = {
         WorkingDirectory = "";
         ExecStart = getExe cfg.package;
+        ExecReload = "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
         Restart = "on-failure";
 
         RuntimeDirectory = "watt";
