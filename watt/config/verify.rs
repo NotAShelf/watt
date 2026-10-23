@@ -100,6 +100,28 @@ impl fmt::Display for Diagnostic {
   }
 }
 
+/// Logs warning diagnostics and fails with every error diagnostic.
+pub fn report(diagnostics: Vec<Diagnostic>) -> anyhow::Result<()> {
+  let (errors, warnings): (Vec<_>, Vec<_>) = diagnostics
+    .into_iter()
+    .partition(|diagnostic| diagnostic.severity == Severity::Error);
+
+  for warning in warnings {
+    log::warn!("{warning}");
+  }
+
+  ensure!(
+    errors.is_empty(),
+    "{}",
+    errors
+      .iter()
+      .map(ToString::to_string)
+      .collect::<Vec<_>>()
+      .join("\n")
+  );
+  Ok(())
+}
+
 impl DaemonConfig {
   /// Checks rule names, priorities, expression types, and constant action
   /// bounds.
@@ -1284,6 +1306,23 @@ cpu.turbo=true"#,
     )
     .verify_static();
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
+  }
+
+  #[test]
+  fn reporting_fails_only_on_error_diagnostics() {
+    let config = rule_config("");
+    let rule = &config.rules[0];
+    let warning = Diagnostic::warning(rule, "cpu.turbo", "unsupported");
+    report(vec![warning.clone()]).unwrap();
+
+    let error = report(vec![
+      warning,
+      Diagnostic::error(rule, "cpu.governor", "unavailable"),
+    ])
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("cpu.governor: unavailable"), "{error}");
+    assert!(!error.contains("cpu.turbo"), "{error}");
   }
 
   #[test]

@@ -28,7 +28,6 @@ use serde::{
   Deserialize,
   Serialize,
 };
-use verify::Severity;
 
 use crate::{
   audio,
@@ -1559,25 +1558,7 @@ impl DaemonConfig {
       )
     })?;
 
-    let (errors, warnings): (Vec<_>, Vec<_>) = config
-      .verify_static()
-      .into_iter()
-      .partition(|diagnostic| matches!(diagnostic.severity, Severity::Error));
-
-    for warning in warnings {
-      log::warn!("{warning}");
-    }
-
-    if !errors.is_empty() {
-      bail!(
-        "{}",
-        errors
-          .iter()
-          .map(ToString::to_string)
-          .collect::<Vec<_>>()
-          .join("\n")
-      );
-    }
+    verify::report(config.verify_static())?;
 
     // This is just for debug traces.
     if log::max_level() >= log::LevelFilter::Debug {
