@@ -30,6 +30,8 @@ pub mod dbus;
 #[cfg(feature = "metrics")] pub mod metrics;
 pub mod profile;
 
+#[cfg(test)] mod test_support;
+
 #[derive(clap::Parser, Debug)]
 #[command(version, about)]
 pub struct Cli {
@@ -94,7 +96,7 @@ pub fn main() -> anyhow::Result<()> {
 
   log::info!("starting watt daemon");
 
-  let lock_path = PathBuf::from("/run/watt/lock");
+  let lock_path = fs::path("/run/watt/lock");
   let _lock = lock::LockFile::acquire(&lock_path)?;
 
   let runtime = RuntimeBuilder::new_multi_thread()

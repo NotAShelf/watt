@@ -90,7 +90,7 @@ impl Disk {
 }
 
 fn run_hdparm(disk: &Disk, option: String) -> anyhow::Result<()> {
-  let device = format!("/dev/{name}", name = disk.name);
+  let device = fs::path(format!("/dev/{name}", name = disk.name));
   let status = Command::new("hdparm")
     .arg(option)
     .arg(&device)
