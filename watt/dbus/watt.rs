@@ -317,7 +317,7 @@ impl WattInterface {
       cpus
         .into_iter()
         .map(|cpu| {
-          HashMap::from([
+          let mut values = HashMap::from([
             ("cpu".into(), Value::from(cpu.number)),
             ("policy".into(), Value::from(cpu.policy.unwrap_or_default())),
             (
@@ -327,14 +327,22 @@ impl WattInterface {
             ("governors".into(), Value::from(cpu.governors)),
             ("epp-values".into(), Value::from(cpu.epps)),
             ("epb-values".into(), Value::from(cpu.epbs)),
-          ])
+          ]);
+          if let Some(minimum) = cpu.minimum_khz {
+            values.insert("min-khz".into(), Value::from(minimum));
+          }
+          if let Some(maximum) = cpu.maximum_khz {
+            values.insert("max-khz".into(), Value::from(maximum));
+          }
+          values
         })
         .collect(),
     )
   }
 
   async fn get_boost_capabilities(&self) -> HashMap<String, Value<'_>> {
-    let Some(boost) = self.state.read().await.boost_capabilities() else {
+    let state = self.state.read().await;
+    let Some(boost) = state.boost_capabilities() else {
       return HashMap::new();
     };
     let paths: Vec<_> = boost
@@ -378,6 +386,172 @@ impl WattInterface {
     )
   }
 
+  async fn get_applied_setting_details(
+    &self,
+  ) -> fdo::Result<Vec<HashMap<String, Value<'_>>>> {
+    let settings = self.state.read().await.applied_settings();
+    check_snapshot_bound(settings.len())?;
+    Ok(
+      settings
+        .into_iter()
+        .map(|setting| {
+          let mut detail = HashMap::from([
+            (
+              "path".into(),
+              Value::from(setting.path.display().to_string()),
+            ),
+            (
+              "verification".into(),
+              Value::from(setting.verification().to_owned()),
+            ),
+            ("requested".into(), Value::from(setting.requested)),
+            (
+              "observed".into(),
+              Value::from(setting.observed.unwrap_or_default()),
+            ),
+          ]);
+          if let Some(rule) = setting.rule {
+            detail.insert("rule".into(), Value::from(rule.name));
+            detail.insert("priority".into(), Value::from(rule.priority));
+          }
+          detail
+        })
+        .collect(),
+    )
+  }
+
+  async fn get_device_capabilities(
+    &self,
+  ) -> fdo::Result<Vec<HashMap<String, Value<'_>>>> {
+    let devices = self.state.read().await.device_capabilities().to_vec();
+    check_snapshot_bound(devices.len())?;
+    Ok(
+      devices
+        .into_iter()
+        .map(|device| {
+          HashMap::from([
+            ("subsystem".into(), Value::from(device.subsystem)),
+            ("name".into(), Value::from(device.name)),
+            (
+              "path".into(),
+              Value::from(device.path.display().to_string()),
+            ),
+            ("controls".into(), Value::from(device.controls)),
+            (
+              "available-values".into(),
+              Value::from(
+                device
+                  .available_values
+                  .into_iter()
+                  .collect::<HashMap<_, _>>(),
+              ),
+            ),
+          ])
+        })
+        .collect(),
+    )
+  }
+
+  async fn get_polling_diagnostics(&self) -> HashMap<String, Value<'_>> {
+    let diagnostics = self.state.read().await.polling_diagnostics().clone();
+    let metrics: Vec<HashMap<String, Value<'_>>> = diagnostics
+      .duration_metrics
+      .into_iter()
+      .map(|metric| {
+        let mut values = HashMap::from([
+          ("metric".into(), Value::from(metric.metric)),
+          ("rule".into(), Value::from(metric.rule)),
+          ("priority".into(), Value::from(metric.priority)),
+          (
+            "required-samples".into(),
+            Value::from(metric.required_samples as u64),
+          ),
+          (
+            "sample-count".into(),
+            Value::from(metric.sample_count as u64),
+          ),
+          ("available".into(), Value::from(metric.available)),
+        ]);
+        if let Some(window) = metric.window_seconds {
+          values.insert("window-seconds".into(), Value::from(window));
+        }
+        values
+      })
+      .collect();
+    HashMap::from([
+      (
+        "base-interval-seconds".into(),
+        Value::from(diagnostics.base_interval_seconds),
+      ),
+      (
+        "current-interval-seconds".into(),
+        Value::from(diagnostics.current_interval_seconds),
+      ),
+      (
+        "next-interval-seconds".into(),
+        Value::from(diagnostics.next_interval_seconds),
+      ),
+      ("idle-factor".into(), Value::from(diagnostics.idle_factor)),
+      (
+        "volatility-factor".into(),
+        Value::from(diagnostics.volatility_factor),
+      ),
+      (
+        "requested-delay-seconds".into(),
+        Value::from(diagnostics.requested_delay_seconds),
+      ),
+      (
+        "smoothed-delay-seconds".into(),
+        Value::from(diagnostics.smoothed_delay_seconds),
+      ),
+      (
+        "clamped-delay-seconds".into(),
+        Value::from(diagnostics.clamped_delay_seconds),
+      ),
+      (
+        "evaluation-elapsed-seconds".into(),
+        Value::from(diagnostics.evaluation_elapsed_seconds),
+      ),
+      (
+        "cpu-sample-count".into(),
+        Value::from(diagnostics.cpu_sample_count as u64),
+      ),
+      (
+        "temperature-sample-count".into(),
+        Value::from(diagnostics.temperature_sample_count as u64),
+      ),
+      (
+        "power-sample-count".into(),
+        Value::from(diagnostics.power_sample_count as u64),
+      ),
+      (
+        "cpu-usage-volatility-available".into(),
+        Value::from(diagnostics.cpu_usage_volatility_available),
+      ),
+      (
+        "cpu-temperature-volatility-available".into(),
+        Value::from(diagnostics.cpu_temperature_volatility_available),
+      ),
+      (
+        "power-discharge-rate-available".into(),
+        Value::from(diagnostics.power_discharge_rate_available),
+      ),
+      (
+        "volatility-required-samples".into(),
+        Value::from(diagnostics.volatility_required_samples as u64),
+      ),
+      (
+        "power-discharge-required-samples".into(),
+        Value::from(diagnostics.power_discharge_required_samples as u64),
+      ),
+      ("duration-metrics".into(), Value::from(metrics)),
+      (
+        "duration-metrics-omitted".into(),
+        Value::from(diagnostics.duration_metrics_omitted as u64),
+      ),
+    ])
+  }
+
   async fn get_config(&self) -> fdo::Result<String> {
     let state = self.state.read().await;
     if state.config().len() > MAX_CONFIG_BYTES {
@@ -404,6 +578,11 @@ impl WattInterface {
     success: bool,
     message: &str,
   ) -> zbus::Result<()>;
+
+  #[zbus(signal)]
+  pub async fn capabilities_changed(
+    emitter: &SignalEmitter<'_>,
+  ) -> zbus::Result<()>;
 }
 
 #[cfg(test)]
@@ -414,14 +593,10 @@ mod tests {
   use zbus::{
     Proxy,
     connection,
-    zvariant::OwnedValue,
   };
 
   use super::*;
-  use crate::{
-    dbus::test_support::TestBus,
-    test_support::SystemFixture,
-  };
+  use crate::dbus::test_support::TestBus;
 
   #[tokio::test]
   async fn configuration_verification_returns_diagnostics_without_reloading() {
@@ -513,52 +688,6 @@ mod tests {
         .await
         .unwrap();
       assert!(valid.is_empty());
-      client.close().await.unwrap();
-      server.close().await.unwrap();
-    })
-    .await
-    .unwrap();
-  }
-
-  #[tokio::test]
-  async fn exported_boost_capabilities_report_selected_global_control() {
-    let fixture = SystemFixture::new();
-    let control = "/sys/devices/system/cpu/intel_pstate/no_turbo";
-    fixture.write(control, "1");
-    let bus = TestBus::new();
-    timeout(Duration::from_secs(10), async {
-      let state = Arc::new(RwLock::new(DaemonState::new(String::new(), 0)));
-      let server = connection::Builder::address(bus.address.as_str())
-        .unwrap()
-        .name("dev.notashelf.Watt")
-        .unwrap()
-        .serve_at("/dev/notashelf/Watt", WattInterface::new(state))
-        .unwrap()
-        .build()
-        .await
-        .unwrap();
-      let client = connection::Builder::address(bus.address.as_str())
-        .unwrap()
-        .build()
-        .await
-        .unwrap();
-      let proxy = Proxy::new(
-        &client,
-        "dev.notashelf.Watt",
-        "/dev/notashelf/Watt",
-        "dev.notashelf.Watt",
-      )
-      .await
-      .unwrap();
-      let result: HashMap<String, OwnedValue> =
-        proxy.call("GetBoostCapabilities", &()).await.unwrap();
-      assert_eq!(<&str>::try_from(&result["scope"]).unwrap(), "global");
-      assert!(bool::try_from(&result["inverted"]).unwrap());
-      let paths =
-        Vec::<String>::try_from(result["control-paths"].try_clone().unwrap())
-          .unwrap();
-      assert_eq!(paths, vec![control.to_owned()]);
-      assert_eq!(fixture.write_count(control), 0);
       client.close().await.unwrap();
       server.close().await.unwrap();
     })

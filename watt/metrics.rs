@@ -69,6 +69,7 @@ fn serve(server: Server, state: Arc<RwLock<DaemonState>>) {
 fn render_metrics(state: &RwLock<DaemonState>) -> String {
   let state = state.blocking_read();
   let mut metrics = String::new();
+  render_daemon_health(&mut metrics, &state);
 
   metric_help(
     &mut metrics,
@@ -146,6 +147,101 @@ fn render_metrics(state: &RwLock<DaemonState>) -> String {
   }
 
   metrics
+}
+
+fn render_daemon_health(metrics: &mut String, state: &DaemonState) {
+  let polling = state.polling_diagnostics();
+  for (name, help, value) in [
+    (
+      "watt_runtime_error_count",
+      "Active runtime failure count, limited to 32.",
+      state.error_count() as f64,
+    ),
+    (
+      "watt_healthy",
+      "Whether the latest evaluation has no active runtime failures.",
+      u8::from(state.error_count() == 0) as f64,
+    ),
+    (
+      "watt_poll_base_interval_seconds",
+      "Power-source base polling interval.",
+      polling.base_interval_seconds,
+    ),
+    (
+      "watt_poll_current_interval_seconds",
+      "Previous requested polling interval.",
+      polling.current_interval_seconds,
+    ),
+    (
+      "watt_poll_next_interval_seconds",
+      "Next bounded polling interval.",
+      polling.next_interval_seconds,
+    ),
+    (
+      "watt_poll_idle_factor",
+      "Idle scaling applied to the base interval.",
+      polling.idle_factor,
+    ),
+    (
+      "watt_poll_volatility_factor",
+      "Volatility scaling applied to the idle-adjusted interval.",
+      polling.volatility_factor,
+    ),
+    (
+      "watt_poll_requested_delay_seconds",
+      "Adaptive polling delay before smoothing.",
+      polling.requested_delay_seconds,
+    ),
+    (
+      "watt_poll_smoothed_delay_seconds",
+      "Polling delay before final bounds.",
+      polling.smoothed_delay_seconds,
+    ),
+    (
+      "watt_poll_clamped_delay_seconds",
+      "Adaptive polling delay after final bounds.",
+      polling.clamped_delay_seconds,
+    ),
+    (
+      "watt_evaluation_elapsed_seconds",
+      "Latest scan, evaluation and application elapsed time.",
+      polling.evaluation_elapsed_seconds,
+    ),
+    (
+      "watt_cpu_sample_count",
+      "Recent CPU samples used for polling diagnostics.",
+      polling.cpu_sample_count as f64,
+    ),
+    (
+      "watt_duration_metrics_available",
+      "Available configured duration metric count, limited to 32.",
+      polling
+        .duration_metrics
+        .iter()
+        .filter(|metric| metric.available)
+        .count() as f64,
+    ),
+    (
+      "watt_duration_metrics_omitted",
+      "Configured duration requirement occurrences omitted from the snapshot.",
+      polling.duration_metrics_omitted as f64,
+    ),
+  ] {
+    metric_help(metrics, name, help);
+    metric_type(metrics, name, "gauge");
+    metric(metrics, name, value);
+  }
+  metric_help(
+    metrics,
+    "watt_evaluations_total",
+    "Completed daemon evaluations including degraded evaluations.",
+  );
+  metric_type(metrics, "watt_evaluations_total", "counter");
+  metric(
+    metrics,
+    "watt_evaluations_total",
+    state.evaluation_count() as f64,
+  );
 }
 
 fn metric_help(metrics: &mut String, name: &str, help: &str) {

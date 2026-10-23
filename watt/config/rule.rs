@@ -1,3 +1,4 @@
+mod provenance;
 use std::{
   collections::{
     HashMap,
@@ -9,6 +10,7 @@ use std::{
 };
 
 use anyhow::Context as _;
+use provenance::Attribution;
 
 use super::{
   CpuDeltas,
@@ -34,17 +36,18 @@ use crate::{
 /// Actions from one matching rule, available only after complete evaluation.
 #[derive(Default)]
 pub struct EvaluatedRule {
-  pub cpu:              CpuDeltas,
-  pub cpu_global:       cpu::GlobalDelta,
-  pub uncore:           UncoreDeltas,
-  pub vm:               vm::Delta,
-  pub disk:             DiskDeltas,
-  pub disk_global:      disk::GlobalDelta,
-  pub usb:              UsbDeltas,
-  pub audio:            audio::Delta,
-  pub gpu:              GpuDeltas,
-  pub power:            PowerSupplyDeltas,
-  pub platform_profile: Option<String>,
+  pub cpu:                CpuDeltas,
+  pub cpu_global:         cpu::GlobalDelta,
+  pub uncore:             UncoreDeltas,
+  pub vm:                 vm::Delta,
+  pub disk:               DiskDeltas,
+  pub disk_global:        disk::GlobalDelta,
+  pub usb:                UsbDeltas,
+  pub audio:              audio::Delta,
+  pub gpu:                GpuDeltas,
+  pub power:              PowerSupplyDeltas,
+  pub platform_profile:   Option<String>,
+  pub(crate) attribution: Attribution,
 }
 
 impl EvaluatedRule {
@@ -61,6 +64,7 @@ impl EvaluatedRule {
   }
 
   pub(crate) fn merge(&mut self, lower: Self) {
+    self.attribution.merge(lower.attribution);
     merge_deltas(&mut self.cpu, lower.cpu, cpu::Delta::or);
     merge_deltas(&mut self.uncore, lower.uncore, uncore::Delta::or);
     merge_deltas(&mut self.disk, lower.disk, disk::Delta::or);
@@ -136,7 +140,7 @@ impl Rule {
     let gpu = self.gpu.eval(state).context("GPU actions")?;
     let (power, platform_profile) =
       self.power.eval(state).context("power actions")?;
-    Ok(Some(EvaluatedRule {
+    let mut actions = EvaluatedRule {
       cpu,
       cpu_global,
       uncore,
@@ -148,7 +152,10 @@ impl Rule {
       gpu,
       power,
       platform_profile,
-    }))
+      attribution: Attribution::default(),
+    };
+    actions.attribution = Attribution::capture(&actions, self);
+    Ok(Some(actions))
   }
 }
 
