@@ -818,50 +818,29 @@ impl Delta {
     }
   }
 
-  pub fn validate(&self, cpu: &Cpu) -> anyhow::Result<()> {
-    if let Some(governor) = &self.governor {
-      cpu.validate_governor(governor)?;
-    }
-    if let Some(epp) = &self.energy_performance_preference {
-      cpu.validate_epp(epp)?;
-    }
-    if let Some(epb) = &self.energy_perf_bias {
-      cpu.validate_epb(epb)?;
-    }
-    if self.pm_qos_resume_latency_us.is_some() {
-      cpu.validate_pm_qos_resume_latency()?;
-    }
-
-    cpu
-      .frequency_transition(self.frequency_minimum, self.frequency_maximum)
-      .map(|_| ())
-  }
-
   pub fn apply(&self, cpu: &mut Cpu) -> anyhow::Result<()> {
-    let frequency = cpu
-      .frequency_transition(self.frequency_minimum, self.frequency_maximum)?;
-
-    if let Some(governor) = &self.governor {
-      cpu.set_governor(governor)?;
-    }
-
-    if let Some(epp) = &self.energy_performance_preference {
-      cpu.set_epp(epp)?;
-    }
-
-    if let Some(epb) = &self.energy_perf_bias {
-      cpu.set_epb(epb)?;
-    }
-
-    if let Some(frequency) = frequency {
-      cpu.apply_frequency_transition(frequency)?;
-    }
-
-    if let Some(latency) = &self.pm_qos_resume_latency_us {
-      cpu.set_pm_qos_resume_latency_us(latency)?;
-    }
-
-    Ok(())
+    combine_failures([
+      self
+        .governor
+        .as_ref()
+        .map(|governor| cpu.set_governor(governor)),
+      self
+        .energy_performance_preference
+        .as_ref()
+        .map(|epp| cpu.set_epp(epp)),
+      self.energy_perf_bias.as_ref().map(|epb| cpu.set_epb(epb)),
+      cpu
+        .frequency_transition(self.frequency_minimum, self.frequency_maximum)
+        .transpose()
+        .map(|transition| {
+          transition
+            .and_then(|transition| cpu.apply_frequency_transition(transition))
+        }),
+      self
+        .pm_qos_resume_latency_us
+        .as_ref()
+        .map(|latency| cpu.set_pm_qos_resume_latency_us(latency)),
+    ])
   }
 }
 
@@ -902,22 +881,31 @@ impl GlobalDelta {
     cpus: impl Iterator<Item = &'a Cpu>,
     dma_latency: &mut DmaLatency,
   ) -> anyhow::Result<()> {
-    if let Some(percent) = self.pstate_min_performance_percent {
-      Cpu::set_pstate_min_performance_percent(percent)?;
-    }
-
-    if let Some(percent) = self.pstate_max_performance_percent {
-      Cpu::set_pstate_max_performance_percent(percent)?;
-    }
-
-    if let Some(turbo) = self.turbo {
-      Cpu::set_turbo(turbo, cpus)?;
-    }
-
-    dma_latency.apply(self.dma_latency_us)?;
-
-    Ok(())
+    combine_failures([
+      self
+        .pstate_min_performance_percent
+        .map(Cpu::set_pstate_min_performance_percent),
+      self
+        .pstate_max_performance_percent
+        .map(Cpu::set_pstate_max_performance_percent),
+      self.turbo.map(|turbo| Cpu::set_turbo(turbo, cpus)),
+      Some(dma_latency.apply(self.dma_latency_us)),
+    ])
   }
+}
+
+fn combine_failures(
+  results: impl IntoIterator<Item = Option<anyhow::Result<()>>>,
+) -> anyhow::Result<()> {
+  let failures: Vec<_> = results
+    .into_iter()
+    .flatten()
+    .filter_map(|result| result.err().map(|error| format!("{error:#}")))
+    .collect();
+  if !failures.is_empty() {
+    bail!("{}", failures.join("; "));
+  }
+  Ok(())
 }
 
 #[derive(Default, Debug)]
@@ -963,6 +951,7 @@ mod tests {
       Error,
       ErrorKind,
     },
+    iter,
   };
 
   use super::{
@@ -971,6 +960,7 @@ mod tests {
     Delta,
     DmaLatency,
     Frequency,
+    GlobalDelta,
   };
   use crate::{
     fs,
@@ -998,7 +988,6 @@ mod tests {
       energy_perf_bias: Some("0".into()),
       ..Delta::default()
     };
-    delta.validate(&cpu).unwrap();
     delta.apply(&mut cpu).unwrap();
     assert_eq!(stdfs::read_to_string(fixture.path(epb)).unwrap(), "0");
     assert_eq!(cpu.epb.as_deref(), Some("0"));
@@ -1244,6 +1233,65 @@ mod tests {
     request.apply(None).unwrap();
     assert!(request.file.is_none());
     assert_eq!(request.current, None);
+  }
+
+  #[test]
+  fn one_failed_cpu_setting_does_not_skip_the_others() {
+    let fixture = SystemFixture::new();
+    let policy = fixture.policy(0, &[0], "intel_pstate");
+    fixture.cpu_telemetry(&[0]);
+    let epb = "/sys/devices/system/cpu/cpu0/power/energy_perf_bias";
+    fixture.write(epb, "6");
+    let governor = policy.join("scaling_governor");
+    let epp = policy.join("energy_performance_preference");
+    fixture.write_result(&governor, Err(ErrorKind::PermissionDenied));
+    let mut cpu = Cpu::all().unwrap().remove(0);
+    let error = Delta {
+      governor: Some("performance".into()),
+      energy_performance_preference: Some("missing".into()),
+      energy_perf_bias: Some("0".into()),
+      frequency_minimum: Some(Frequency::from_khz(1_000_000).unwrap()),
+      ..Delta::default()
+    }
+    .apply(&mut cpu)
+    .unwrap_err();
+    let message = format!("{error:#}");
+    assert!(message.contains("changing governors"));
+    assert!(message.contains("EPP value 'missing' is not available"));
+    assert_eq!(fixture.write_count(&governor), 1);
+    assert_eq!(fixture.write_count(&epp), 0);
+    assert_eq!(stdfs::read_to_string(fixture.path(epb)).unwrap(), "0");
+    assert_eq!(
+      stdfs::read_to_string(policy.join("scaling_min_freq")).unwrap(),
+      "1000000"
+    );
+  }
+
+  #[test]
+  fn one_failed_global_cpu_setting_does_not_skip_the_others() {
+    let fixture = SystemFixture::new();
+    let minimum = "/sys/devices/system/cpu/intel_pstate/min_perf_pct";
+    let maximum = "/sys/devices/system/cpu/intel_pstate/max_perf_pct";
+    let no_turbo = "/sys/devices/system/cpu/intel_pstate/no_turbo";
+    fixture.write(minimum, "10");
+    fixture.write(maximum, "100");
+    fixture.write(no_turbo, "0");
+    fixture.write("/dev/cpu_dma_latency", []);
+    fixture.write_result(minimum, Err(ErrorKind::PermissionDenied));
+    let mut dma_latency = DmaLatency::default();
+    let error = GlobalDelta {
+      turbo:                          Some(false),
+      pstate_min_performance_percent: Some(20),
+      pstate_max_performance_percent: Some(80),
+      dma_latency_us:                 Some(100),
+    }
+    .apply(iter::empty(), &mut dma_latency)
+    .unwrap_err();
+    assert!(format!("{error:#}").contains("minimum performance"));
+    assert_eq!(stdfs::read_to_string(fixture.path(minimum)).unwrap(), "10");
+    assert_eq!(stdfs::read_to_string(fixture.path(maximum)).unwrap(), "80");
+    assert_eq!(stdfs::read_to_string(fixture.path(no_turbo)).unwrap(), "1");
+    assert_eq!(dma_latency.current, Some(100));
   }
 
   #[test]

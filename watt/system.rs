@@ -217,14 +217,9 @@ impl RuntimeFailures {
     if *delta == cpu::Delta::default() {
       return;
     }
-    if self
-      .attempt(format!("CPU validation for {cpu}"), || delta.validate(cpu))
-      .is_some()
-    {
-      self.attempt(format!("CPU application for {cpu}"), || {
-        delta.apply(&mut cpu.clone())
-      });
-    }
+    self.attempt(format!("CPU application for {cpu}"), || {
+      delta.apply(&mut cpu.clone())
+    });
   }
 
   fn finish_iteration(&mut self) {
