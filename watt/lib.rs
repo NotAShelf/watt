@@ -214,9 +214,7 @@ fn verify_configuration(
   mode: VerificationMode,
 ) -> anyhow::Result<()> {
   if let VerificationMode::Hardware = mode {
-    for diagnostic in config.verify_hardware()? {
-      log::warn!("{diagnostic}");
-    }
+    config::verify::report(config.verify_hardware()?)?;
   }
   print_output("Configuration valid.")
 }
