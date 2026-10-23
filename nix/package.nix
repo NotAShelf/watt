@@ -2,6 +2,7 @@
   lib,
   stdenv,
   rustPlatform,
+  dbus,
   versionCheckHook,
 }:
 rustPlatform.buildRustPackage (finalAttrs: {
@@ -29,6 +30,8 @@ rustPlatform.buildRustPackage (finalAttrs: {
   cargoLock.lockFile = "${finalAttrs.src}/Cargo.lock";
   enableParallelBuilding = true;
   useNextest = true;
+
+  nativeCheckInputs = [dbus];
 
   # xtask doesn't support passing --target
   # but nix hooks expect the folder structure from when it's set

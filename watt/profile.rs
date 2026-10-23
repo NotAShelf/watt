@@ -73,12 +73,34 @@ impl fmt::Display for InvalidPowerProfile {
 
 impl Error for InvalidPowerProfile {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReleaseHoldError {
+  NotOwner,
+  NotFound(u32),
+}
+
+impl fmt::Display for ReleaseHoldError {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match self {
+      Self::NotOwner => {
+        f.write_str("profile hold belongs to another D-Bus owner")
+      },
+      Self::NotFound(cookie) => {
+        write!(f, "hold with cookie {cookie} not found")
+      },
+    }
+  }
+}
+
+impl Error for ReleaseHoldError {}
+
 #[derive(Debug, Clone)]
 pub struct ProfileHold {
   pub cookie:         u32,
   pub profile:        PowerProfile,
   pub reason:         String,
   pub application_id: String,
+  pub owner:          String,
   pub timestamp:      Instant,
 }
 
@@ -104,6 +126,16 @@ impl ProfileState {
     reason: String,
     application_id: String,
   ) -> u32 {
+    self.add_hold_for(profile, reason, application_id, String::new())
+  }
+
+  pub fn add_hold_for(
+    &mut self,
+    profile: PowerProfile,
+    reason: String,
+    application_id: String,
+    owner: String,
+  ) -> u32 {
     // Find an unused cookie, we'll want to handle wrap-around collision
     let mut cookie = self.next_cookie;
     while self.holds.contains_key(&cookie) {
@@ -116,6 +148,7 @@ impl ProfileState {
       profile,
       reason,
       application_id,
+      owner,
       timestamp: Instant::now(),
     };
 
@@ -129,16 +162,43 @@ impl ProfileState {
   }
 
   pub fn release_hold(&mut self, cookie: u32) -> anyhow::Result<()> {
+    self.release_hold_for(cookie, "").map_err(Into::into)
+  }
+
+  pub fn release_hold_for(
+    &mut self,
+    cookie: u32,
+    owner: &str,
+  ) -> Result<(), ReleaseHoldError> {
+    if self
+      .holds
+      .get(&cookie)
+      .is_some_and(|hold| hold.owner != owner)
+    {
+      return Err(ReleaseHoldError::NotOwner);
+    }
     self
       .holds
       .remove(&cookie)
-      .ok_or_else(|| anyhow::anyhow!("hold with cookie {cookie} not found"))?;
+      .ok_or(ReleaseHoldError::NotFound(cookie))?;
 
     log::info!("profile hold released: cookie={cookie}");
     Ok(())
   }
 
-  pub fn set_preference(&mut self, profile: PowerProfile) {
+  pub fn release_owner(&mut self, owner: &str) -> Vec<u32> {
+    self
+      .holds
+      .extract_if(|_, hold| hold.owner == owner)
+      .map(|(cookie, _)| cookie)
+      .collect()
+  }
+
+  pub fn release_bus_holds(&mut self) {
+    self.holds.retain(|_, hold| hold.owner.is_empty());
+  }
+
+  pub fn set_preference(&mut self, profile: PowerProfile) -> Vec<u32> {
     if self.preferred_profile != profile {
       log::info!(
         "profile preference changed: {old:?} -> {new:?}",
@@ -148,6 +208,7 @@ impl ProfileState {
       self.preferred_profile = profile;
     }
 
+    let removed = self.holds.keys().copied().collect();
     if !self.holds.is_empty() {
       log::info!(
         "clearing {count} profile holds after manual profile change",
@@ -155,6 +216,7 @@ impl ProfileState {
       );
       self.holds.clear();
     }
+    removed
   }
 
   pub fn get_preference(&self) -> PowerProfile {
@@ -223,6 +285,32 @@ mod tests {
     state.set_preference(PowerProfile::Balanced);
 
     assert_eq!(state.get_effective_profile(), PowerProfile::Balanced);
+    assert!(state.get_holds().is_empty());
+  }
+
+  #[test]
+  fn owners_cannot_release_each_others_holds() {
+    let mut state = ProfileState::new();
+    let cookie = state.add_hold_for(
+      PowerProfile::Performance,
+      "work".into(),
+      "app".into(),
+      ":1.10".into(),
+    );
+    assert!(state.release_hold_for(cookie, ":1.11").is_err());
+    assert!(state.release_hold_for(cookie, "").is_err());
+    assert!(state.release_hold(cookie).is_err());
+    assert_eq!(state.get_holds().len(), 1);
+    state.release_hold_for(cookie, ":1.10").unwrap();
+    assert!(state.get_holds().is_empty());
+
+    state.add_hold_for(
+      PowerProfile::PowerSaver,
+      "battery".into(),
+      "app".into(),
+      ":1.12".into(),
+    );
+    assert_eq!(state.release_owner(":1.12").len(), 1);
     assert!(state.get_holds().is_empty());
   }
 }
