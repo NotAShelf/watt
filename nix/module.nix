@@ -41,8 +41,6 @@ in {
     services.dbus.packages = [cfg.package];
     security.polkit.enable = mkDefault true;
 
-    # This is necessary for the Watt CLI. The environment variable
-    # passed to the systemd service will take priority in read order.
     environment.etc."watt.toml".source = cfgFile;
 
     systemd.services.watt = {
@@ -56,7 +54,10 @@ in {
         RuntimeDirectory = "watt";
         RuntimeDirectoryMode = "0755";
         StateDirectory = "watt";
-        Environment = "WATT_STATE_PATH=%S/watt/profile.toml";
+        Environment = [
+          "WATT_CONFIG=/etc/watt.toml"
+          "WATT_STATE_PATH=%S/watt/profile.toml"
+        ];
       };
     };
 
