@@ -1152,9 +1152,13 @@ impl System {
   }
 
   fn is_discharging(&self) -> bool {
-    self.power_supplies.iter().any(|power_supply| {
-      power_supply.charge_state.as_deref() == Some("Discharging")
-    })
+    self
+      .power_supplies
+      .iter()
+      .filter(|power_supply| !power_supply.is_from_peripheral)
+      .any(|power_supply| {
+        power_supply.charge_state.as_deref() == Some("Discharging")
+      })
   }
 
   /// Fraction of battery capacity discharged per hour during the latest
