@@ -282,6 +282,20 @@ impl PowerSupply {
     self.capacity_ratio("charge_full", "charge_full_design")
   }
 
+  fn peripheral_name(name: &str) -> bool {
+    [
+      "mouse",
+      "keyboard",
+      "trackpad",
+      "gamepad",
+      "controller",
+      "headset",
+      "headphone",
+    ]
+    .into_iter()
+    .any(|word| name.contains(word))
+  }
+
   fn scan(&mut self) -> anyhow::Result<()> {
     log::trace!("scanning power supply '{name}'", name = self.name);
 
@@ -311,14 +325,7 @@ impl PowerSupply {
       );
 
       // Common peripheral battery names.
-      if name_lower.contains("mouse")
-        || name_lower.contains("keyboard")
-        || name_lower.contains("trackpad")
-        || name_lower.contains("gamepad")
-        || name_lower.contains("controller")
-        || name_lower.contains("headset")
-        || name_lower.contains("headphone")
-      {
+      if Self::peripheral_name(&name_lower) {
         break 'is_from_peripheral true;
       }
 
@@ -343,6 +350,7 @@ impl PowerSupply {
         let model_name_lower = model_name.to_lowercase();
         if model_name_lower.contains("bluetooth")
           || model_name_lower.contains("wireless")
+          || Self::peripheral_name(&model_name_lower)
         {
           break 'is_from_peripheral true;
         }
@@ -350,6 +358,11 @@ impl PowerSupply {
 
       false
     };
+    log::debug!(
+      "supply {name} is_from_peripheral: {}",
+      self.is_from_peripheral,
+      name = self.name,
+    );
 
     if self.type_ == "Battery" {
       self.charge_state = fs::read(self.path.join("status"))
