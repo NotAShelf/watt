@@ -14,8 +14,5 @@ name = "xtask"
 path = "main.rs"
 
 [dependencies]
-watt.workspace = true
-
-clap.workspace                  = true
-clap_complete.workspace         = true
-clap_complete_nushell.workspace = true
+caress.workspace = true
+pound.workspace  = true
