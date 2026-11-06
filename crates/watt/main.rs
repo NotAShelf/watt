@@ -1,4 +1,5 @@
 use std::{
+  error::Error,
   fmt::Write as _,
   process,
 };
@@ -14,7 +15,7 @@ fn main() {
     .iter()
     .rev()
     .map(ToString::to_string)
-    .chain(error.chain().map(ToString::to_string))
+    .chain(error.chain().map(format_error))
     .enumerate()
   {
     message.clear();
@@ -43,4 +44,14 @@ fn main() {
   }
 
   process::exit(1);
+}
+
+fn format_error(error: &(dyn Error + 'static)) -> String {
+  if let Some(error) = error.downcast_ref::<dbus::Error>()
+    && let Some(name) = error.name()
+  {
+    format!("{name}: {error}")
+  } else {
+    error.to_string()
+  }
 }

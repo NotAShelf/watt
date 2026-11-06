@@ -1,5 +1,4 @@
 use std::{
-  collections::HashMap,
   fs,
   io::{
     BufRead as _,
@@ -11,17 +10,18 @@ use std::{
     Command,
     Stdio,
   },
+  sync::Arc,
 };
 
-use serde::Serialize;
-use zbus::zvariant::Type;
-
-#[derive(Serialize, Type)]
-pub(super) struct AuthorizationResult {
-  pub authorized: bool,
-  pub challenge:  bool,
-  pub details:    HashMap<String, String>,
-}
+use dbus::{
+  channel::Channel,
+  nonblock::SyncConnection,
+};
+use dbus_tokio::connection::{
+  self as tokio_dbus,
+  IOResource,
+};
+use tokio::task::JoinHandle;
 
 fn bus_config(runtime: &Path) -> String {
   format!(
@@ -69,11 +69,41 @@ impl TestBus {
     assert!(!bus.address.is_empty(), "dbus-daemon did not start");
     bus
   }
+
+  pub fn raw_connection(
+    &self,
+  ) -> (IOResource<SyncConnection>, Arc<SyncConnection>) {
+    let mut channel = Channel::open_private(&self.address).unwrap();
+    channel.register().unwrap();
+    tokio_dbus::from_channel(channel).unwrap()
+  }
+
+  pub fn connect(&self) -> TestConnection {
+    let (resource, connection) = self.raw_connection();
+    let resource = tokio::spawn(async move {
+      let _ = resource.await;
+    });
+    TestConnection {
+      connection,
+      resource,
+    }
+  }
 }
 
 impl Drop for TestBus {
   fn drop(&mut self) {
     let _ = self.child.kill();
     let _ = self.child.wait();
+  }
+}
+
+pub(crate) struct TestConnection {
+  pub connection: Arc<SyncConnection>,
+  resource:       JoinHandle<()>,
+}
+
+impl Drop for TestConnection {
+  fn drop(&mut self) {
+    self.resource.abort();
   }
 }

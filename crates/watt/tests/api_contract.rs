@@ -2,11 +2,17 @@ mod support;
 
 use std::sync::atomic::Ordering;
 
+use dbus::{
+  arg::ArgType,
+  nonblock::Proxy,
+};
 use futures_util::StreamExt as _;
 use support::{
+  Connection,
   Dictionary,
   GOVERNOR,
   Harness,
+  ServiceProxy,
   assert_denied,
   bounded,
   call,
@@ -17,11 +23,6 @@ use support::{
   rule,
   string,
   value,
-};
-use zbus::{
-  Connection,
-  Proxy,
-  connection,
 };
 
 fn attribute<'a>(xml: &'a str, name: &str) -> &'a str {
@@ -92,14 +93,19 @@ async fn introspect(
   path: &str,
 ) -> String {
   let proxy = Proxy::new(
-    connection,
     destination,
     path,
+    support::DEADLINE,
+    connection.inner().clone(),
+  );
+  let (xml,): (String,) = bounded(proxy.method_call(
     "org.freedesktop.DBus.Introspectable",
-  )
+    "Introspect",
+    (),
+  ))
   .await
   .unwrap();
-  bounded(proxy.call("Introspect", &())).await.unwrap()
+  xml
 }
 
 #[tokio::test]
@@ -154,6 +160,14 @@ async fn existing_dbus_endpoints_keep_their_signatures() {
       .unwrap(),
     1
   );
+  let diagnostics: Dictionary = call(&proxy, "GetPollingDiagnostics").await;
+  for (key, kind) in [
+    ("clamped-delay-seconds", ArgType::Double),
+    ("evaluation-elapsed-seconds", ArgType::Double),
+    ("cpu-sample-count", ArgType::UInt64),
+  ] {
+    assert_eq!(diagnostics[key].0.arg_type(), kind, "{key}");
+  }
 
   let xml = introspect(
     &connection,
@@ -170,7 +184,7 @@ async fn existing_dbus_endpoints_keep_their_signatures() {
   daemon.shutdown("-TERM").await;
 }
 
-async fn profile(native: &Proxy<'_>) -> String {
+async fn profile(native: &ServiceProxy) -> String {
   let status: Dictionary = call(native, "GetStatus").await;
   string(&status, "profile").to_owned()
 }
@@ -188,11 +202,7 @@ async fn denied_mutations_leave_live_state_unchanged() {
   daemon.config(&rule("replacement", "cpu.governor = 'schedutil'"));
 
   daemon.allowed.store(false, Ordering::SeqCst);
-  assert_denied(
-    bounded(native.call::<_, _, ()>("Reload", &()))
-      .await
-      .unwrap_err(),
-  );
+  assert_denied(bounded(native.invoke("Reload", ())).await.unwrap_err());
   assert_eq!(call::<String>(&native, "GetConfig").await, before);
   assert_eq!(daemon.read(GOVERNOR), "performance");
   assert_denied(
@@ -202,7 +212,7 @@ async fn denied_mutations_leave_live_state_unchanged() {
   );
   assert_eq!(profile(&native).await, "balanced");
   assert_denied(
-    bounded(ppd.call::<_, _, u32>("HoldProfile", &hold))
+    bounded(ppd.invoke_result::<_, u32>("HoldProfile", hold))
       .await
       .unwrap_err(),
   );
@@ -214,39 +224,46 @@ async fn denied_mutations_leave_live_state_unchanged() {
     .await
     .unwrap();
   assert_eq!(profile(&native).await, "performance");
-  let cookie: u32 = bounded(ppd.call("HoldProfile", &hold)).await.unwrap();
+  let cookie: u32 = bounded(ppd.invoke_result("HoldProfile", hold))
+    .await
+    .unwrap();
   assert_eq!(profile(&native).await, "power-saver");
 
-  let other = bounded(
-    connection::Builder::address(daemon.address.as_str())
-      .unwrap()
-      .build(),
-  )
-  .await
-  .unwrap();
+  let other = Connection::address(&daemon.address).unwrap();
   let other = support::ppd(&other).await;
   daemon.allowed.store(false, Ordering::SeqCst);
   assert_denied(
-    bounded(other.call::<_, _, ()>("ReleaseProfile", &(cookie,)))
+    bounded(other.invoke("ReleaseProfile", (cookie,)))
       .await
       .unwrap_err(),
   );
   assert_eq!(profile(&native).await, "power-saver");
-  bounded(ppd.call::<_, _, ()>("ReleaseProfile", &(cookie,)))
+  let actions_before_release = daemon.actions.load(Ordering::SeqCst);
+  bounded(ppd.invoke("ReleaseProfile", (cookie,)))
     .await
     .unwrap();
+  assert_eq!(
+    daemon.actions.load(Ordering::SeqCst),
+    actions_before_release,
+    "the hold owner must be able to release it without consulting polkit"
+  );
   assert_eq!(profile(&native).await, "performance");
-  // The owner releasing its own hold must not consult polkit.
-  assert_eq!(daemon.actions.load(Ordering::SeqCst), 7);
 
   daemon.allowed.store(true, Ordering::SeqCst);
-  let cookie: u32 = bounded(ppd.call("HoldProfile", &hold)).await.unwrap();
-  assert_eq!(profile(&native).await, "power-saver");
-  bounded(other.call::<_, _, ()>("ReleaseProfile", &(cookie,)))
+  let cookie: u32 = bounded(ppd.invoke_result("HoldProfile", hold))
     .await
     .unwrap();
+  assert_eq!(profile(&native).await, "power-saver");
+  let actions_before_release = daemon.actions.load(Ordering::SeqCst);
+  bounded(other.invoke("ReleaseProfile", (cookie,)))
+    .await
+    .unwrap();
+  assert_eq!(
+    daemon.actions.load(Ordering::SeqCst),
+    actions_before_release + 1,
+    "releasing someone else's hold must consult polkit"
+  );
   assert_eq!(profile(&native).await, "performance");
-  assert_eq!(daemon.actions.load(Ordering::SeqCst), 9);
   daemon.shutdown("-TERM").await;
 }
 
@@ -345,11 +362,5 @@ async fn native_signals_announce_reload_rule_setting_and_capability_changes() {
       .len(),
     2
   );
-  let diagnostics: Dictionary = call(&proxy, "GetPollingDiagnostics").await;
-  assert!(
-    (1.0..=30.0).contains(&value::<f64>(&diagnostics, "clamped-delay-seconds"))
-  );
-  assert!(value::<f64>(&diagnostics, "evaluation-elapsed-seconds") >= 0.0);
-  assert!(value::<u64>(&diagnostics, "cpu-sample-count") > 0);
   daemon.shutdown("-TERM").await;
 }

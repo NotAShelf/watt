@@ -8,7 +8,10 @@ use std::{
   },
   env,
   future::Future,
-  iter::{from_fn, once},
+  iter::{
+    from_fn,
+    once,
+  },
   path::{
     Path,
     PathBuf,
@@ -1370,7 +1373,7 @@ pub struct DaemonState {
 }
 
 impl DaemonState {
-  pub(crate) fn new(config: String, rule_count: usize) -> Self {
+  pub(crate) fn new(config: String, rules: &[config::Rule]) -> Self {
     let profile_state_path = env::var_os("WATT_STATE_PATH").map(PathBuf::from);
     let mut profile = profile::ProfileState::new();
     if let Some(path) = &profile_state_path {
@@ -1382,10 +1385,10 @@ impl DaemonState {
         Err(error) => log::warn!("failed to load active profile: {error}"),
       }
     }
-    Self {
-      config,
+    let mut state = Self {
+      config: String::new(),
       system: System::default(),
-      rule_count,
+      rule_count: 0,
       profile,
       profile_state_path,
       last_applied_rules: Vec::new(),
@@ -1399,7 +1402,9 @@ impl DaemonState {
       duration_requirements: diagnostics::DurationRequirements::default(),
       rule_metadata: Vec::new(),
       evaluation_count: 0,
-    }
+    };
+    state.set_config(config, rules);
+    state
   }
 
   pub fn config(&self) -> &str {
@@ -1779,7 +1784,6 @@ fn apply_actions(
     gpu: gpu_deltas,
     power: power_deltas,
     platform_profile: power_platform_profile,
-    ..
   } = actions;
 
   runtime_failures.apply_cpu_deltas(&cpu_deltas);
@@ -1871,7 +1875,8 @@ fn apply_actions(
 
   if let Some(platform_profile) = power_platform_profile {
     runtime_failures.attempt("platform profile application", || {
-      platform_profile.apply(|value| power_supply::PowerSupply::set_platform_profile(value))
+      platform_profile
+        .apply(|value| power_supply::PowerSupply::set_platform_profile(value))
     });
   }
 
@@ -2075,8 +2080,7 @@ pub async fn run_daemon(
 
   let serialized_config = toml::to_string_pretty(&config)
     .context("failed to serialize daemon config")?;
-  let mut daemon_state = DaemonState::new(String::new(), 0);
-  daemon_state.set_config(serialized_config, &config.rules);
+  let daemon_state = DaemonState::new(serialized_config, &config.rules);
   let state = Arc::new(RwLock::new(daemon_state));
   let (applied_rules_tx, applied_rules_rx) = watch::channel(Vec::new());
   let (reload_tx, reload_rx) = mpsc::channel(1);
@@ -2185,6 +2189,7 @@ fn link_shared_radeon_cards(drm: &Path, device: &Path) {
 #[cfg(test)]
 mod tests {
   use std::{
+    collections::HashSet,
     env,
     fs as stdfs,
     future::pending,
@@ -2193,6 +2198,20 @@ mod tests {
     process,
   };
 
+  use dbus::{
+    Message,
+    arg::{
+      PropMap,
+      prop_cast,
+    },
+    message::MatchRule,
+    nonblock::{
+      Proxy,
+      SyncConnection,
+      stdintf::org_freedesktop_dbus::Properties as _,
+    },
+  };
+  use futures_channel::mpsc::UnboundedReceiver;
   use futures_util::StreamExt as _;
   use tokio::{
     task::{
@@ -2201,17 +2220,18 @@ mod tests {
     },
     time::timeout,
   };
-  use zbus::{
-    Proxy,
-    connection,
-    fdo::DBusProxy,
-    zvariant::OwnedValue,
-  };
 
   use super::*;
   use crate::{
     audio,
-    dbus::test_support::TestBus,
+    dbus::{
+      ppd,
+      test_support::{
+        TestBus,
+        TestConnection,
+      },
+      watt,
+    },
     profile::PowerProfile,
     test_support::SystemFixture,
   };
@@ -2269,7 +2289,7 @@ mod tests {
     let policy = fixture.policy(0, &[0, 1], "intel_pstate");
     fixture.cpu_telemetry(&[0, 1]);
     let system = fixture_cpu_system();
-    let mut state = DaemonState::new(String::new(), 0);
+    let mut state = DaemonState::new(String::new(), &[]);
     state.update_system(&system, Vec::new(), None, &RuntimeFailures::default());
     assert_eq!(state.setting_cpus(&policy.join("scaling_governor")), [0, 1]);
     assert_eq!(
@@ -2305,7 +2325,13 @@ mod tests {
       }
       failures.begin_iteration();
       let now = Instant::now();
-      let eval = system.eval_state(now, now, PowerProfile::Performance, true, &system.cpu_history(now));
+      let eval = system.eval_state(
+        now,
+        now,
+        PowerProfile::Performance,
+        true,
+        &system.cpu_history(now),
+      );
       let mut actions = config::EvaluatedRule::empty(&eval);
       actions.cpu_global.turbo = turbo.map(Into::into);
       apply_actions(actions, &mut failures, &mut dma_latency);
@@ -2330,188 +2356,233 @@ mod tests {
     fixture.cpu_telemetry(&[0, 1]);
     fixture.write(&first, "0");
     fixture.write(&second, "0");
-    let system = System {
-      cpus: cpu::Cpu::all().unwrap().into_iter().map(Arc::new).collect(),
-      ..System::default()
-    };
+    let system = fixture_cpu_system();
     let bus = TestBus::new();
     timeout(Duration::from_secs(10), async {
-      let connection = connection::Builder::address(bus.address.as_str())
-        .unwrap()
-        .build()
-        .await
-        .unwrap();
-      let client = connection::Builder::address(bus.address.as_str())
-        .unwrap()
-        .build()
-        .await
-        .unwrap();
-      let closing = connection.clone();
-      let state = Arc::new(RwLock::new(DaemonState::new(String::new(), 0)));
-      let (_updates, applied_rules) = watch::channel(Vec::new());
-      let observe = async {
-        wait_native_service(&client).await;
-        let proxy = Proxy::new(
-          &client,
-          "dev.notashelf.Watt",
-          "/dev/notashelf/Watt",
-          "dev.notashelf.Watt",
-        )
-        .await
-        .unwrap();
-        let mut changes = proxy
-          .receive_property_changed::<Vec<HashMap<String, OwnedValue>>>(
-            "DegradedConditions",
-          )
-          .await;
-        let mut counts =
-          proxy.receive_property_changed::<u32>("ErrorCount").await;
-        let mut errors = proxy
-          .receive_property_changed::<String>("LatestError")
-          .await;
-        assert_eq!(proxy.get_property::<u32>("ErrorCount").await.unwrap(), 0);
-        assert!(
-          proxy
-            .get_property::<String>("LatestError")
-            .await
-            .unwrap()
-            .is_empty()
-        );
-        counts.next().await.unwrap();
-        errors.next().await.unwrap();
-        let ppd = Proxy::new(
-          &client,
-          "net.hadess.PowerProfiles",
-          "/net/hadess/PowerProfiles",
-          "net.hadess.PowerProfiles",
-        )
-        .await
-        .unwrap();
-        let mut ppd_changes = ppd
-          .receive_property_changed::<String>("PerformanceDegraded")
-          .await;
-        let initial_ppd: String =
-          ppd.get_property("PerformanceDegraded").await.unwrap();
-        assert!(initial_ppd.is_empty());
-        ppd_changes.next().await.unwrap();
-        let initial: Vec<HashMap<String, OwnedValue>> =
-          proxy.get_property("DegradedConditions").await.unwrap();
-        assert!(initial.is_empty());
-        // Consume the property cache's initial value before testing signals.
-        changes.next().await.unwrap();
-        let _settings = fs::manage_settings();
-        let mut failures = RuntimeFailures::default();
-        let mut dma_latency = cpu::DmaLatency::default();
-        fixture.write_result(&first, Err(ErrorKind::PermissionDenied));
-        for (expected_conditions, expected_reason) in
-          [(1, "policy-error"), (0, "")]
-        {
-          failures.begin_iteration();
-          let now = Instant::now();
-          let eval = system.eval_state(
-            now,
-            now,
-            PowerProfile::Performance,
-            true,
-            &system.cpu_history(now),
-          );
-          let mut actions = config::EvaluatedRule::empty(&eval);
-          actions.cpu_global.turbo = Some(true.into());
-          apply_actions(actions, &mut failures, &mut dma_latency);
-          failures.finish_iteration();
-          let degraded =
-            detect_performance_degradation(&system, &failures, None);
-          {
-            let mut state = state.write().await;
-            state.update_system(&system, Vec::new(), degraded, &failures);
-            state.set_active_profile(PowerProfile::PowerSaver).unwrap();
-            assert!(state.performance_degraded().is_none());
-            state.set_active_profile(PowerProfile::Performance).unwrap();
-          }
-          assert_eq!(
-            counts.next().await.unwrap().get().await.unwrap(),
-            expected_conditions as u32
-          );
-          let latest = errors.next().await.unwrap().get().await.unwrap();
-          assert_eq!(latest.is_empty(), expected_conditions == 0);
-          assert_eq!(
-            proxy.cached_property::<u32>("ErrorCount").unwrap(),
-            Some(expected_conditions as u32)
-          );
-          assert_eq!(
-            proxy.cached_property::<String>("LatestError").unwrap(),
-            Some(latest)
-          );
-          let conditions = changes.next().await.unwrap().get().await.unwrap();
-          assert_eq!(conditions.len(), expected_conditions);
-          assert_eq!(
-            ppd_changes.next().await.unwrap().get().await.unwrap(),
-            expected_reason,
-          );
-          assert_eq!(stdfs::read_to_string(&second).unwrap(), "1");
-          for condition in &conditions {
-            assert_eq!(
-              <&str>::try_from(&condition["context"]).unwrap(),
-              "global CPU application"
-            );
-            let message = <&str>::try_from(&condition["message"]).unwrap();
-            assert!(message.contains(first.to_str().unwrap()), "{message}");
-          }
-          fixture.clear_io(&first);
-        }
-        assert_eq!(stdfs::read_to_string(&first).unwrap(), "1");
-        closing.close().await.unwrap();
-      };
-      let (_reload_results_tx, reload_results_rx) = broadcast::channel(64);
-      let (result, ()) = tokio::join!(
-        server::run_connection(
-          connection,
-          state.clone(),
-          applied_rules,
-          mpsc::channel(1).0,
-          reload_results_rx,
-        ),
-        observe
+      let state = Arc::new(RwLock::new(DaemonState::new(String::new(), &[])));
+      let (server, client, proxy) = start_watt_server(&bus, &state).await;
+      let ppd = Proxy::new(
+        "net.hadess.PowerProfiles",
+        "/net/hadess/PowerProfiles",
+        Duration::from_secs(5),
+        client.connection.clone(),
       );
-      assert!(result.is_err());
-      client.close().await.unwrap();
+      let property_match = client
+        .connection
+        .add_match(MatchRule::new_signal(
+          "org.freedesktop.DBus.Properties",
+          "PropertiesChanged",
+        ))
+        .await
+        .unwrap();
+      let (_property_match, mut property_changes) = property_match.msg_stream();
+      assert_eq!(
+        proxy
+          .get::<u32>(watt::INTERFACE, "ErrorCount")
+          .await
+          .unwrap(),
+        0
+      );
+      assert!(
+        proxy
+          .get::<String>(watt::INTERFACE, "LatestError")
+          .await
+          .unwrap()
+          .is_empty()
+      );
+      assert!(
+        ppd
+          .get::<String>(ppd::INTERFACE, "PerformanceDegraded")
+          .await
+          .unwrap()
+          .is_empty()
+      );
+      let initial: Vec<PropMap> = proxy
+        .get(watt::INTERFACE, "DegradedConditions")
+        .await
+        .unwrap();
+      assert!(initial.is_empty());
+
+      let _settings = fs::manage_settings();
+      let mut failures = RuntimeFailures::default();
+      let mut dma_latency = cpu::DmaLatency::default();
+      fixture.write_result(&first, Err(ErrorKind::PermissionDenied));
+      for (expected_conditions, expected_reason) in
+        [(1, "policy-error"), (0, "")]
+      {
+        failures.begin_iteration();
+        let now = Instant::now();
+        let eval = system.eval_state(
+          now,
+          now,
+          PowerProfile::Performance,
+          true,
+          &system.cpu_history(now),
+        );
+        let mut actions = config::EvaluatedRule::empty(&eval);
+        actions.cpu_global.turbo = Some(true.into());
+        apply_actions(actions, &mut failures, &mut dma_latency);
+        failures.finish_iteration();
+        let degraded = detect_performance_degradation(&system, &failures, None);
+        {
+          let mut state = state.write().await;
+          state.update_system(&system, Vec::new(), degraded, &failures);
+          state.set_active_profile(PowerProfile::PowerSaver).unwrap();
+          assert!(state.performance_degraded().is_none());
+          state.set_active_profile(PowerProfile::Performance).unwrap();
+        }
+        wait_property_changes(&mut property_changes, &[
+          (watt::INTERFACE, "ErrorCount"),
+          (watt::INTERFACE, "LatestError"),
+          (watt::INTERFACE, "PerformanceDegraded"),
+          (watt::INTERFACE, "DegradedConditions"),
+          (ppd::INTERFACE, "PerformanceDegraded"),
+        ])
+        .await;
+        assert_eq!(
+          proxy
+            .get::<u32>(watt::INTERFACE, "ErrorCount")
+            .await
+            .unwrap(),
+          expected_conditions as u32
+        );
+        let latest = proxy
+          .get::<String>(watt::INTERFACE, "LatestError")
+          .await
+          .unwrap();
+        assert_eq!(latest.is_empty(), expected_conditions == 0);
+        let conditions: Vec<PropMap> = proxy
+          .get(watt::INTERFACE, "DegradedConditions")
+          .await
+          .unwrap();
+        assert_eq!(conditions.len(), expected_conditions);
+        assert_eq!(
+          ppd
+            .get::<String>(ppd::INTERFACE, "PerformanceDegraded")
+            .await
+            .unwrap(),
+          expected_reason,
+        );
+        assert_eq!(stdfs::read_to_string(&second).unwrap(), "1");
+        for condition in &conditions {
+          assert_eq!(
+            prop_cast::<String>(condition, "context").unwrap(),
+            "global CPU application"
+          );
+          let message = prop_cast::<String>(condition, "message").unwrap();
+          assert!(message.contains(first.to_str().unwrap()), "{message}");
+        }
+        fixture.clear_io(&first);
+      }
+      assert_eq!(stdfs::read_to_string(&first).unwrap(), "1");
+      server.abort();
     })
     .await
     .expect("boost degradation notification timed out");
   }
 
-  async fn wait_native_service(connection: &zbus::Connection) {
-    let bus = DBusProxy::new(connection).await.unwrap();
-    while !bus
-      .name_has_owner("dev.notashelf.Watt".try_into().unwrap())
+  async fn start_watt_server(
+    bus: &TestBus,
+    state: &Arc<RwLock<DaemonState>>,
+  ) -> (
+    JoinHandle<Result<(), dbus::Error>>,
+    TestConnection,
+    Proxy<'static, Arc<SyncConnection>>,
+  ) {
+    let (resource, connection) = bus.raw_connection();
+    let client = bus.connect();
+    let state = state.clone();
+    let server = tokio::spawn(async move {
+      // Keep the notification channels open for the lifetime of the server.
+      let (_updates, applied_rules) = watch::channel(Vec::new());
+      let (_reloads, reload_results) = broadcast::channel(64);
+      server::run_connection(
+        connection,
+        state,
+        applied_rules,
+        mpsc::channel(1).0,
+        reload_results,
+        resource,
+      )
       .await
-      .unwrap()
-    {
+    });
+    wait_native_service(&client.connection).await;
+    let proxy = Proxy::new(
+      watt::INTERFACE,
+      watt::PATH,
+      Duration::from_secs(5),
+      client.connection.clone(),
+    );
+    (server, client, proxy)
+  }
+
+  async fn wait_native_service(connection: &Arc<SyncConnection>) {
+    let bus = Proxy::new(
+      "org.freedesktop.DBus",
+      "/org/freedesktop/DBus",
+      Duration::from_secs(5),
+      connection.clone(),
+    );
+    loop {
+      let (owned,): (bool,) = bus
+        .method_call(
+          "org.freedesktop.DBus",
+          "NameHasOwner",
+          ("dev.notashelf.Watt",),
+        )
+        .await
+        .unwrap();
+      if owned {
+        return;
+      }
       yield_now().await;
     }
   }
 
+  async fn wait_property_changes(
+    changes: &mut UnboundedReceiver<Message>,
+    expected: &[(&str, &str)],
+  ) {
+    let mut remaining: HashSet<_> = expected
+      .iter()
+      .map(|(interface, property)| {
+        ((*interface).to_owned(), (*property).to_owned())
+      })
+      .collect();
+    while !remaining.is_empty() {
+      let message = changes.next().await.unwrap();
+      let (interface, changed, invalidated): (String, PropMap, Vec<String>) =
+        message.read3().unwrap();
+      for property in changed.keys().chain(&invalidated) {
+        remaining.remove(&(interface.clone(), property.clone()));
+      }
+    }
+  }
+
   async fn assert_selected_boost(
-    proxy: &Proxy<'_>,
+    proxy: &Proxy<'_, Arc<SyncConnection>>,
     expected: Option<(&str, bool, &str)>,
   ) {
-    let boost: HashMap<String, OwnedValue> =
-      proxy.call("GetBoostCapabilities", &()).await.unwrap();
-    let devices: Vec<HashMap<String, OwnedValue>> =
-      proxy.call("GetDeviceCapabilities", &()).await.unwrap();
+    let (boost,): (PropMap,) = proxy
+      .method_call(watt::INTERFACE, "GetBoostCapabilities", ())
+      .await
+      .unwrap();
+    let (devices,): (Vec<PropMap>,) = proxy
+      .method_call(watt::INTERFACE, "GetDeviceCapabilities", ())
+      .await
+      .unwrap();
     let paths: Vec<_> = devices
       .iter()
-      .filter(|device| <&str>::try_from(&device["name"]).unwrap() == "boost")
-      .map(|device| <&str>::try_from(&device["path"]).unwrap())
+      .filter(|device| prop_cast::<String>(device, "name").unwrap() == "boost")
+      .map(|device| prop_cast::<String>(device, "path").unwrap().clone())
       .collect();
     match expected {
       Some((scope, inverted, path)) => {
-        assert_eq!(<&str>::try_from(&boost["scope"]).unwrap(), scope);
-        assert_eq!(bool::try_from(&boost["inverted"]).unwrap(), inverted);
+        assert_eq!(prop_cast::<String>(&boost, "scope").unwrap(), scope);
+        assert_eq!(*prop_cast::<bool>(&boost, "inverted").unwrap(), inverted);
         assert_eq!(
-          Vec::<String>::try_from(boost["control-paths"].try_clone().unwrap())
-            .unwrap(),
-          [path]
+          prop_cast::<Vec<String>>(&boost, "control-paths").unwrap(),
+          &[path]
         );
         assert_eq!(paths, [path]);
       },
@@ -2523,7 +2594,7 @@ mod tests {
   }
 
   #[tokio::test]
-  async fn selected_boost_capabilities_change_only_with_completed_snapshots() {
+  async fn boost_capabilities_track_published_snapshots() {
     let fixture = SystemFixture::new();
     let policy = fixture.policy(0, &[0], "amd-pstate-epp").join("boost");
     let global = "/sys/devices/system/cpu/intel_pstate/no_turbo";
@@ -2533,95 +2604,60 @@ mod tests {
     let mut system = System::default();
     let mut failures = RuntimeFailures::default();
     system.scan(&mut failures);
-    let state = Arc::new(RwLock::new(DaemonState::new(String::new(), 0)));
+    let state = Arc::new(RwLock::new(DaemonState::new(String::new(), &[])));
     state
       .write()
       .await
       .update_system(&system, Vec::new(), None, &failures);
     let bus = TestBus::new();
     timeout(Duration::from_secs(10), async {
-      let connection = connection::Builder::address(bus.address.as_str())
+      let (server, client, proxy) = start_watt_server(&bus, &state).await;
+      let mut rule =
+        MatchRule::new_signal(watt::INTERFACE, "CapabilitiesChanged");
+      rule.path = Some(watt::PATH.into());
+      let (_signal_match, mut changes) = client
+        .connection
+        .add_match(rule)
+        .await
         .unwrap()
-        .build()
-        .await
-        .unwrap();
-      let client = connection::Builder::address(bus.address.as_str())
-        .unwrap()
-        .build()
-        .await
-        .unwrap();
-      let closing = connection.clone();
-      let (_updates, applied_rules) = watch::channel(Vec::new());
-      let (_reloads, reload_results) = broadcast::channel(64);
-      let observe = async {
-        wait_native_service(&client).await;
-        let proxy = Proxy::new(
-          &client,
-          "dev.notashelf.Watt",
-          "/dev/notashelf/Watt",
-          "dev.notashelf.Watt",
-        )
-        .await
-        .unwrap();
-        let mut changes =
-          proxy.receive_signal("CapabilitiesChanged").await.unwrap();
-        let policy_path = policy.to_str().unwrap();
-        let global_path = global;
-        let mut previous = Some(("global", true, global_path));
-        assert_selected_boost(&proxy, previous).await;
-        for selected in [
-          Some(("policy", false, policy_path)),
-          None,
-          Some(("global", true, global_path)),
-        ] {
-          match selected {
-            Some(("policy", ..)) => {
-              stdfs::remove_file(fixture.path(global)).unwrap();
-            },
-            None => {
-              stdfs::remove_file(&policy).unwrap();
-            },
-            Some(_) => fixture.write(global, "0"),
-          }
-          // Hardware mutations are not visible until the next published scan.
-          assert_selected_boost(&proxy, previous).await;
-          failures.begin_iteration();
-          system.scan(&mut failures);
-          failures.finish_iteration();
-          state.write().await.update_system(
-            &system,
-            Vec::new(),
-            None,
-            &failures,
-          );
-          changes
-            .next()
-            .await
-            .unwrap()
-            .body()
-            .deserialize::<()>()
-            .unwrap();
-          assert_selected_boost(&proxy, selected).await;
-          let cpus: Vec<HashMap<String, OwnedValue>> =
-            proxy.call("GetCpuCapabilities", &()).await.unwrap();
-          assert_eq!(cpus.len(), 1);
-          previous = selected;
+        .msg_stream();
+      let policy_path = policy.to_str().unwrap();
+      let mut previous = Some(("global", true, global));
+      assert_selected_boost(&proxy, previous).await;
+      for selected in [
+        Some(("policy", false, policy_path)),
+        None,
+        Some(("global", true, global)),
+      ] {
+        match selected {
+          Some(("policy", ..)) => {
+            stdfs::remove_file(fixture.path(global)).unwrap();
+          },
+          None => {
+            stdfs::remove_file(&policy).unwrap();
+          },
+          Some(_) => fixture.write(global, "0"),
         }
-        assert_eq!(fixture.write_count(global), 0);
-        closing.close().await.unwrap();
-      };
-      let (result, ()) = tokio::join!(
-        server::run_connection(
-          connection,
-          state.clone(),
-          applied_rules,
-          mpsc::channel(1).0,
-          reload_results
-        ),
-        observe
-      );
-      assert!(result.is_err());
-      client.close().await.unwrap();
+        // Hardware mutations are not visible until the next published scan.
+        assert_selected_boost(&proxy, previous).await;
+        failures.begin_iteration();
+        system.scan(&mut failures);
+        failures.finish_iteration();
+        state
+          .write()
+          .await
+          .update_system(&system, Vec::new(), None, &failures);
+        changes.next().await.unwrap();
+        assert_selected_boost(&proxy, selected).await;
+        let (cpus,): (Vec<PropMap>,) = proxy
+          .method_call(watt::INTERFACE, "GetCpuCapabilities", ())
+          .await
+          .unwrap();
+        assert_eq!(cpus.len(), 1);
+        previous = selected;
+      }
+      assert_eq!(fixture.write_count(global), 0);
+      server.abort();
     })
     .await
     .expect("boost snapshot notification timed out");
@@ -2632,7 +2668,7 @@ mod tests {
     let directory = tempfile::tempdir().unwrap();
     let parent = directory.path().join("not-a-directory");
     stdfs::write(&parent, "occupied").unwrap();
-    let mut state = DaemonState::new(String::new(), 0);
+    let mut state = DaemonState::new(String::new(), &[]);
     state.profile_state_path = Some(parent.join("profile.toml"));
     state.profile.set_preference(PowerProfile::Performance);
     let cookie = state.add_profile_hold(
@@ -2908,7 +2944,7 @@ mod tests {
   async fn builtin_reload_succeeds_without_changing_the_config() {
     let mut active = config::DaemonConfig::load_from(None).unwrap();
     let original = active.clone();
-    let state = RwLock::new(DaemonState::new("loaded".to_owned(), 0));
+    let state = RwLock::new(DaemonState::new("loaded".to_owned(), &[]));
     reload_daemon_config(None, &mut active, &state)
       .await
       .unwrap();
@@ -2925,7 +2961,7 @@ mod tests {
     let path = fixture.path("config.toml");
     let _managed = fs::manage_settings();
     let mut active = config::DaemonConfig::load_from(None).unwrap();
-    let state = RwLock::new(DaemonState::new(String::new(), 0));
+    let state = RwLock::new(DaemonState::new(String::new(), &[]));
     let mut polling = PollingState::new();
     let (applied_rules, _receiver) = watch::channel(Vec::new());
 
@@ -2993,8 +3029,8 @@ priority = 1
       .into_iter()
       .map(|cpu| {
         (Arc::new(cpu), cpu::Delta {
-          governor: Some("performance".into().into()),
-          pm_qos_resume_latency_us: Some("100".into().into()),
+          governor: Some("performance".into()),
+          pm_qos_resume_latency_us: Some("100".into()),
           ..cpu::Delta::default()
         })
       })
@@ -3041,7 +3077,7 @@ priority = 1
     failures.begin_iteration();
     failures.record("first", misstep::report!("one"));
     failures.record("second", misstep::report!("two"));
-    let mut state = DaemonState::new(String::new(), 0);
+    let mut state = DaemonState::new(String::new(), &[]);
     state.update_system(&System::default(), Vec::new(), None, &failures);
     assert_eq!(state.recent_errors().len(), 2);
     assert!(state.recent_errors()[0].contains("second"));
@@ -3146,7 +3182,7 @@ priority = 1
     fs::write(latency, "100").unwrap();
     fs::observe(latency, "100");
 
-    let mut state = DaemonState::new(String::new(), 0);
+    let mut state = DaemonState::new(String::new(), &[]);
     let mut failures = RuntimeFailures::default();
     let mut publish_cpu_scan =
       |system: &mut System, state: &mut DaemonState| {
@@ -3180,7 +3216,7 @@ priority = 1
     fixture.policy(2, &[2], "acpi-cpufreq");
     fixture.cpu_telemetry(&[0, 1, 2]);
 
-    let mut state = DaemonState::new(String::new(), 0);
+    let mut state = DaemonState::new(String::new(), &[]);
     state.system.scan_cpus().unwrap();
     let policies = state.cpu_policies();
     assert_eq!(policies.len(), 2);
@@ -3209,7 +3245,7 @@ priority = 1
       "performance balance_power power",
     );
 
-    let mut state = DaemonState::new(String::new(), 0);
+    let mut state = DaemonState::new(String::new(), &[]);
     state.system.scan_cpus().unwrap();
     let cpus = state.cpu_capabilities();
     let cpu_numbers: Vec<_> = cpus.iter().map(|cpu| cpu.number).collect();

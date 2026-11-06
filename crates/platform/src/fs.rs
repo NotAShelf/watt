@@ -23,7 +23,10 @@ use std::{
     PathBuf,
   },
   str,
-  sync::{Arc, OnceLock},
+  sync::{
+    Arc,
+    OnceLock,
+  },
 };
 
 use misstep::{
@@ -836,7 +839,7 @@ mod tests {
   }
 
   #[test]
-  fn resolves_system_paths_below_configured_root() {
+  fn path_rebases_absolute_paths_into_the_test_root() {
     let root = PathBuf::from("/tmp/watt-test-root");
     let _root = set_system_root_for_tests(&root);
 
@@ -852,7 +855,7 @@ mod tests {
   }
 
   #[test]
-  fn restores_only_settings_watt_still_owns() {
+  fn restore_requires_an_unmanaged_setting_watt_still_owns() {
     let fixture = SystemFixture::new();
     let root = fixture.path("/sys/devices/test");
     let setting = root.join("setting");
@@ -897,7 +900,7 @@ mod tests {
   }
 
   #[test]
-  fn distinguishes_frequency_clamping_from_a_mismatch() {
+  fn verification_reports_frequency_mismatches_as_clamping() {
     let setting = AppliedSetting {
       path:          PathBuf::from("/sys/cpu/scaling_min_freq"),
       requested:     "1000".into(),

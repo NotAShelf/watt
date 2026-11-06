@@ -336,7 +336,7 @@ fn snapshots_keep_capabilities_after_policy_removal() {
   let mut system = fixture_cpu_system();
   system.device_capabilities =
     capabilities::snapshot(&system, &mut RuntimeFailures::default());
-  let mut state = DaemonState::new(String::new(), 0);
+  let mut state = DaemonState::new(String::new(), &[]);
   state.update_system(&system, Vec::new(), None, &RuntimeFailures::default());
   let before = state.device_capabilities().to_vec();
   stdfs::remove_dir_all(policy).unwrap();

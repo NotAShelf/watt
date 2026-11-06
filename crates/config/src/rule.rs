@@ -10,10 +10,10 @@ use std::{
 
 use misstep::ResultExt as _;
 use watt_platform::{
-  fs,
   audio,
   cpu,
   disk,
+  fs,
   gpu,
   power_supply,
   uncore,
@@ -182,7 +182,10 @@ mod tests {
       assert!(format!("{error}").contains("audio"));
       rule.audio = Default::default();
       let result = rule.evaluate(state).unwrap().unwrap();
-      assert_eq!(result.cpu_global.turbo.map(|setting| setting.value), Some(true));
+      assert_eq!(
+        result.cpu_global.turbo.map(|setting| setting.value),
+        Some(true)
+      );
     });
   }
 

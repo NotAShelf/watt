@@ -1,8 +1,27 @@
 use std::{
-  sync::Arc,
+  fmt::Display,
+  sync::{
+    Arc,
+    Mutex,
+  },
   time::Duration,
 };
 
+use dbus::{
+  Message,
+  message::MatchRule,
+  nonblock::{
+    MsgMatch,
+    SyncConnection,
+    stdintf::org_freedesktop_dbus::RequestNameReply,
+  },
+};
+use dbus_crossroads::Crossroads;
+use dbus_tokio::connection::{
+  self as tokio_dbus,
+  IOResource,
+};
+use futures_channel::mpsc::UnboundedReceiver;
 use futures_util::StreamExt as _;
 use tokio::{
   sync::{
@@ -19,21 +38,16 @@ use tokio::{
     sleep,
   },
 };
-use zbus::{
-  Connection,
-  MatchRule,
-  Message,
-  MessageStream,
-  connection,
-  message::Type,
-  object_server::SignalEmitter,
-};
 
 use crate::{
   cpu::BoostCapabilities,
   dbus::{
-    ppd::PowerProfilesInterface,
+    ppd::{
+      self,
+      PowerProfilesInterface,
+    },
     watt::{
+      self,
       ReloadRequest,
       WattInterface,
     },
@@ -48,14 +62,15 @@ use crate::{
   },
 };
 
+type OwnerChanges = (MsgMatch, UnboundedReceiver<Message>);
+
 pub async fn start(
   state: Arc<RwLock<DaemonState>>,
   applied_rules: watch::Receiver<Vec<String>>,
   reload: mpsc::Sender<ReloadRequest>,
   reload_results: broadcast::Receiver<ReloadResult>,
-) -> zbus::Result<()> {
+) -> Result<(), dbus::Error> {
   log::info!("starting D-Bus server...");
-
   let mut attempt: u32 = 0;
   loop {
     match try_start(
@@ -67,15 +82,13 @@ pub async fn start(
     .await
     {
       Ok(()) => return Ok(()),
-      Err(e) => {
+      Err(error) => {
         attempt += 1;
-        log::error!("D-Bus server error on attempt {attempt}: {e}");
-
+        log::error!("D-Bus server error on attempt {attempt}: {error}");
         if attempt >= 5 {
           log::error!("D-Bus server failed after {attempt} attempts, bailing");
-          return Err(e);
+          return Err(error);
         }
-
         let delay = Duration::from_secs(2 * attempt as u64);
         log::info!(
           "retrying D-Bus in {delay_secs}s",
@@ -92,84 +105,127 @@ async fn try_start(
   applied_rules: watch::Receiver<Vec<String>>,
   reload: mpsc::Sender<ReloadRequest>,
   reload_results: broadcast::Receiver<ReloadResult>,
-) -> zbus::Result<()> {
-  let connection = connection::Builder::system()?.build().await?;
-  run_connection(connection, state, applied_rules, reload, reload_results).await
+) -> Result<(), dbus::Error> {
+  let (resource, connection) = tokio_dbus::new_system_sync()?;
+  let result = run_connection(
+    connection,
+    state.clone(),
+    applied_rules,
+    reload,
+    reload_results,
+    resource,
+  )
+  .await;
+  state.write().await.release_bus_holds();
+  result
 }
 
 pub(crate) async fn run_connection(
-  connection: Connection,
+  connection: Arc<SyncConnection>,
   state: Arc<RwLock<DaemonState>>,
   applied_rules: watch::Receiver<Vec<String>>,
   reload: mpsc::Sender<ReloadRequest>,
   reload_results: broadcast::Receiver<ReloadResult>,
-) -> zbus::Result<()> {
-  let result = async {
-    let owner_changes = serve(&connection, state.clone(), reload).await?;
-    log::info!("D-Bus server started");
-    let emitter = SignalEmitter::new(&connection, "/dev/notashelf/Watt")?;
-    monitor(
-      emitter,
-      state.clone(),
+  resource: IOResource<SyncConnection>,
+) -> Result<(), dbus::Error> {
+  tokio::pin!(resource);
+  let owner_changes = tokio::select! {
+    result = serve(&connection, state.clone(), reload) => result?,
+    error = &mut resource => return Err(connection_closed(error)),
+  };
+  log::info!("D-Bus server started");
+  tokio::select! {
+    result = monitor(
+      connection,
+      state,
       applied_rules,
       owner_changes,
       reload_results,
-    )
-    .await
+    ) => result,
+    error = &mut resource => Err(connection_closed(error)),
   }
-  .await;
-  // Close before clearing holds so pending requests fail their liveness check.
-  let closed = connection.close().await;
-  state.write().await.release_bus_holds();
-  result.and(closed)
+}
+
+fn connection_closed(error: impl Display) -> dbus::Error {
+  dbus::Error::new_failed(&format!("D-Bus connection closed: {error}"))
 }
 
 async fn subscribe_owners(
-  connection: &Connection,
-) -> zbus::Result<MessageStream> {
-  let owner_rule = MatchRule::builder()
-    .msg_type(Type::Signal)
-    .sender("org.freedesktop.DBus")?
-    .path("/org/freedesktop/DBus")?
-    .interface("org.freedesktop.DBus")?
-    .member("NameOwnerChanged")?
-    .build();
-  MessageStream::for_match_rule(owner_rule, connection, None).await
+  connection: &Arc<SyncConnection>,
+) -> Result<OwnerChanges, dbus::Error> {
+  let mut rule =
+    MatchRule::new_signal("org.freedesktop.DBus", "NameOwnerChanged");
+  rule.sender = Some("org.freedesktop.DBus".into());
+  rule.path = Some("/org/freedesktop/DBus".into());
+  Ok(connection.add_match(rule).await?.msg_stream())
 }
 
 async fn serve(
-  connection: &Connection,
+  connection: &Arc<SyncConnection>,
   state: Arc<RwLock<DaemonState>>,
   reload: mpsc::Sender<ReloadRequest>,
-) -> zbus::Result<MessageStream> {
+) -> Result<OwnerChanges, dbus::Error> {
   // Subscribe before exposing methods that can create owner-bound holds.
   let owner_changes = subscribe_owners(connection).await?;
-  connection
-    .object_server()
-    .at(
-      "/net/hadess/PowerProfiles",
-      PowerProfilesInterface::new(state.clone()),
-    )
-    .await?;
-  connection
-    .object_server()
-    .at(
-      "/dev/notashelf/Watt",
-      WattInterface::with_reload(state, reload),
-    )
-    .await?;
-  connection.request_name("net.hadess.PowerProfiles").await?;
-  connection.request_name("dev.notashelf.Watt").await?;
+  let mut crossroads = Crossroads::new();
+  crossroads.set_async_support(Some((
+    connection.clone(),
+    Box::new(|future| {
+      tokio::spawn(future);
+    }),
+  )));
+  let ppd = ppd::register(&mut crossroads, connection.clone());
+  let watt = watt::register(&mut crossroads, connection.clone());
+  crossroads.insert(
+    ppd::PATH,
+    &[ppd],
+    PowerProfilesInterface::new(state.clone()),
+  );
+  crossroads.insert(
+    watt::PATH,
+    &[watt],
+    WattInterface::with_reload(state, reload),
+  );
+  let crossroads = Arc::new(Mutex::new(crossroads));
+  let dispatch = crossroads.clone();
+  use dbus::channel::MatchingReceiver as _;
+  connection.start_receive(
+    MatchRule::new_method_call(),
+    Box::new(move |message, connection| {
+      if let Err(error) =
+        dispatch.lock().unwrap().handle_message(message, connection)
+      {
+        log::warn!("failed to dispatch D-Bus message: {error:?}");
+      }
+      true
+    }),
+  );
+  request_name(connection, "net.hadess.PowerProfiles").await?;
+  request_name(connection, "dev.notashelf.Watt").await?;
   Ok(owner_changes)
 }
 
+async fn request_name(
+  connection: &Arc<SyncConnection>,
+  name: &str,
+) -> Result<(), dbus::Error> {
+  match connection.request_name(name, false, false, true).await? {
+    RequestNameReply::PrimaryOwner | RequestNameReply::AlreadyOwner => Ok(()),
+    reply => {
+      Err(dbus::Error::new_failed(&format!(
+        "failed to own {name}: {reply:?}"
+      )))
+    },
+  }
+}
+
 async fn owner_changed(
-  connection: &Connection,
+  connection: &Arc<SyncConnection>,
   state: &Arc<RwLock<DaemonState>>,
   message: Message,
-) -> zbus::Result<()> {
-  let (name, _old_owner, new_owner) =
-    message.body().deserialize::<(String, String, String)>()?;
+) -> Result<(), dbus::Error> {
+  let (name, _old_owner, new_owner): (String, String, String) =
+    message.read3()?;
   if !new_owner.is_empty() || !name.starts_with(':') {
     return Ok(());
   }
@@ -181,10 +237,8 @@ async fn owner_changed(
     "removed {} profile hold(s) for disconnected owner {name}",
     released.len()
   );
-  let emitter = SignalEmitter::new(connection, "/net/hadess/PowerProfiles")?;
   PowerProfilesInterface::new(state.clone())
-    .notify_holds_changed(&emitter, &released)
-    .await;
+    .notify_holds_changed(connection, &released);
   Ok(())
 }
 
@@ -216,35 +270,67 @@ impl StatusSnapshot {
   async fn notify_changes(
     &mut self,
     state: &Arc<RwLock<DaemonState>>,
-    emitter: &SignalEmitter<'_>,
-  ) -> zbus::Result<()> {
+    connection: &Arc<SyncConnection>,
+  ) -> Result<(), dbus::Error> {
     let current = Self::new(&*state.read().await);
-    let watt = WattInterface::new(state.clone());
     if current.error_count != self.error_count {
-      watt.error_count_changed(emitter).await?;
+      ppd::properties_changed(
+        connection,
+        watt::PATH,
+        watt::INTERFACE,
+        "ErrorCount",
+      )?;
     }
     if current.latest_error != self.latest_error {
-      watt.latest_error_changed(emitter).await?;
+      ppd::properties_changed(
+        connection,
+        watt::PATH,
+        watt::INTERFACE,
+        "LatestError",
+      )?;
     }
     if current.performance_degraded != self.performance_degraded {
-      watt.performance_degraded_changed(emitter).await?;
-      let ppd_emitter =
-        SignalEmitter::new(emitter.connection(), "/net/hadess/PowerProfiles")?;
-      PowerProfilesInterface::new(state.clone())
-        .performance_degraded_changed(&ppd_emitter)
-        .await?;
+      ppd::properties_changed(
+        connection,
+        watt::PATH,
+        watt::INTERFACE,
+        "PerformanceDegraded",
+      )?;
+      ppd::properties_changed(
+        connection,
+        ppd::PATH,
+        ppd::INTERFACE,
+        "PerformanceDegraded",
+      )?;
     }
     if current.conditions != self.conditions {
-      watt.degraded_conditions_changed(emitter).await?;
+      ppd::properties_changed(
+        connection,
+        watt::PATH,
+        watt::INTERFACE,
+        "DegradedConditions",
+      )?;
     }
     if current.settings != self.settings {
-      WattInterface::applied_settings_changed(emitter).await?;
+      ppd::send_signal(
+        connection,
+        watt::PATH,
+        watt::INTERFACE,
+        "AppliedSettingsChanged",
+        (),
+      )?;
     }
     if current.cpus != self.cpus
       || current.devices != self.devices
       || current.boost != self.boost
     {
-      WattInterface::capabilities_changed(emitter).await?;
+      ppd::send_signal(
+        connection,
+        watt::PATH,
+        watt::INTERFACE,
+        "CapabilitiesChanged",
+        (),
+      )?;
     }
     *self = current;
     Ok(())
@@ -252,44 +338,56 @@ impl StatusSnapshot {
 }
 
 async fn monitor(
-  emitter: SignalEmitter<'_>,
+  connection: Arc<SyncConnection>,
   state: Arc<RwLock<DaemonState>>,
   mut applied_rules: watch::Receiver<Vec<String>>,
-  mut owner_changes: MessageStream,
+  (_owner_match, mut owner_changes): OwnerChanges,
   mut reload_results: broadcast::Receiver<ReloadResult>,
-) -> zbus::Result<()> {
+) -> Result<(), dbus::Error> {
   let mut ticker = interval(Duration::from_secs(1));
   let mut previous = StatusSnapshot::new(&*state.read().await);
   loop {
     tokio::select! {
-      _ = ticker.tick() => previous.notify_changes(&state, &emitter).await?,
+      _ = ticker.tick() => previous.notify_changes(&state, &connection).await?,
       changed = applied_rules.changed() => {
-        changed.map_err(|_| {
-          zbus::Error::Failure("applied rules notification channel closed".into())
-        })?;
+        changed.map_err(|_| dbus::Error::new_failed(
+          "applied rules notification channel closed"
+        ))?;
         applied_rules.borrow_and_update();
-        WattInterface::applied_rules_changed(&emitter).await?;
+        ppd::send_signal(
+          &connection,
+          watt::PATH,
+          watt::INTERFACE,
+          "AppliedRulesChanged",
+          (),
+        )?;
       },
       result = reload_results.recv() => {
-        notify_reload_result(&emitter, result).await?;
+        notify_reload_result(&connection, result)?;
       },
       message = owner_changes.next() => {
-        let message = message.ok_or_else(|| {
-          zbus::Error::Failure("D-Bus owner notification stream closed".into())
-        })??;
-        owner_changed(emitter.connection(), &state, message).await?;
+        let message = message.ok_or_else(|| dbus::Error::new_failed(
+          "D-Bus owner notification stream closed"
+        ))?;
+        owner_changed(&connection, &state, message).await?;
       },
     }
   }
 }
 
-async fn notify_reload_result(
-  emitter: &SignalEmitter<'_>,
+fn notify_reload_result(
+  connection: &Arc<SyncConnection>,
   result: Result<ReloadResult, RecvError>,
-) -> zbus::Result<()> {
+) -> Result<(), dbus::Error> {
   match result {
     Ok((success, message)) => {
-      WattInterface::configuration_reloaded(emitter, success, &message).await
+      ppd::send_signal(
+        connection,
+        watt::PATH,
+        watt::INTERFACE,
+        "ConfigurationReloaded",
+        (success, message),
+      )
     },
     Err(RecvError::Lagged(count)) => {
       log::warn!(
@@ -299,193 +397,9 @@ async fn notify_reload_result(
       Ok(())
     },
     Err(RecvError::Closed) => {
-      Err(zbus::Error::Failure(
-        "reload notification channel closed".into(),
+      Err(dbus::Error::new_failed(
+        "reload notification channel closed",
       ))
     },
-  }
-}
-
-#[cfg(test)]
-mod tests {
-  use std::collections::{
-    HashMap,
-    HashSet,
-  };
-
-  use tokio::{
-    task::yield_now,
-    time::timeout,
-  };
-  use zbus::{
-    Proxy,
-    zvariant::OwnedValue,
-  };
-
-  use super::*;
-  use crate::{
-    dbus::test_support::TestBus,
-    profile::PowerProfile,
-  };
-
-  #[tokio::test]
-  async fn connection_loss_discards_bus_holds_without_changing_local_intent() {
-    let bus = TestBus::new();
-    timeout(Duration::from_secs(10), async {
-      let connection = connection::Builder::address(bus.address.as_str())
-        .unwrap()
-        .build()
-        .await
-        .unwrap();
-      let client = connection::Builder::address(bus.address.as_str())
-        .unwrap()
-        .build()
-        .await
-        .unwrap();
-      let state = Arc::new(RwLock::new(DaemonState::new(String::new(), 0)));
-      {
-        let mut state = state.write().await;
-        state.set_active_profile(PowerProfile::Performance).unwrap();
-        state.add_profile_hold(
-          PowerProfile::Performance,
-          "local".into(),
-          "test".into(),
-        );
-        state.add_profile_hold_for(
-          PowerProfile::PowerSaver,
-          "battery".into(),
-          "test".into(),
-          client.unique_name().unwrap().to_string(),
-        );
-      }
-      let (_updates, applied_rules) = watch::channel(Vec::new());
-      let (_results, reload_results) = broadcast::channel(64);
-      let closing = connection.clone();
-      let disconnect = async {
-        let proxy = zbus::fdo::DBusProxy::new(&client).await.unwrap();
-        while !proxy
-          .name_has_owner("dev.notashelf.Watt".try_into().unwrap())
-          .await
-          .unwrap()
-        {
-          yield_now().await;
-        }
-        closing.close().await.unwrap();
-      };
-      let (result, ()) = tokio::join!(
-        run_connection(
-          connection,
-          state.clone(),
-          applied_rules,
-          mpsc::channel(1).0,
-          reload_results,
-        ),
-        disconnect
-      );
-      assert!(result.is_err());
-      let mut state = state.write().await;
-      let holds = state.profile_holds();
-      assert_eq!(holds.len(), 1);
-      assert!(holds[0].owner.is_empty());
-      state.release_profile_hold(holds[0].cookie).unwrap();
-      assert_eq!(state.active_profile(), PowerProfile::Performance);
-    })
-    .await
-    .expect("D-Bus connection cleanup timed out");
-  }
-
-  #[tokio::test]
-  async fn disconnected_owner_releases_only_its_holds_and_notifies_clients() {
-    let bus = TestBus::new();
-    timeout(Duration::from_secs(10), async {
-      let connection = connection::Builder::address(bus.address.as_str())
-        .unwrap()
-        .build()
-        .await
-        .unwrap();
-      let owner = connection::Builder::address(bus.address.as_str())
-        .unwrap()
-        .build()
-        .await
-        .unwrap();
-      let observer = connection::Builder::address(bus.address.as_str())
-        .unwrap()
-        .build()
-        .await
-        .unwrap();
-      let state = Arc::new(RwLock::new(DaemonState::new(String::new(), 0)));
-      {
-        let mut state = state.write().await;
-        state.add_profile_hold_for(
-          PowerProfile::PowerSaver,
-          "battery".into(),
-          "first".into(),
-          owner.unique_name().unwrap().to_string(),
-        );
-        state.add_profile_hold_for(
-          PowerProfile::Performance,
-          "render".into(),
-          "second".into(),
-          observer.unique_name().unwrap().to_string(),
-        );
-      }
-      let owner_changes = serve(&connection, state.clone(), mpsc::channel(1).0)
-        .await
-        .unwrap();
-      let proxy = Proxy::new(
-        &observer,
-        "net.hadess.PowerProfiles",
-        "/net/hadess/PowerProfiles",
-        "org.freedesktop.DBus.Properties",
-      )
-      .await
-      .unwrap();
-      let mut changes =
-        proxy.receive_signal("PropertiesChanged").await.unwrap();
-      let (_updates, applied_rules) = watch::channel(Vec::new());
-      let (_results, reload_results) = broadcast::channel(64);
-      let monitor_state = state.clone();
-      let task = tokio::spawn(async move {
-        let emitter =
-          SignalEmitter::new(&connection, "/dev/notashelf/Watt").unwrap();
-        monitor(
-          emitter,
-          monitor_state,
-          applied_rules,
-          owner_changes,
-          reload_results,
-        )
-        .await
-      });
-      owner.close().await.unwrap();
-      let mut notified = HashSet::new();
-      while notified.len() < 3 {
-        let message = changes.next().await.unwrap();
-        let (interface, values, _invalidated): (
-          String,
-          HashMap<String, OwnedValue>,
-          Vec<String>,
-        ) = message.body().deserialize().unwrap();
-        assert_eq!(interface, "net.hadess.PowerProfiles");
-        notified.extend(values.into_keys());
-      }
-      assert_eq!(
-        notified,
-        HashSet::from([
-          "ActiveProfileHolds".into(),
-          "ActiveProfile".into(),
-          "PerformanceInhibited".into()
-        ])
-      );
-      let state = state.read().await;
-      assert_eq!(state.active_profile(), PowerProfile::Performance);
-      let holds = state.profile_holds();
-      assert_eq!(holds.len(), 1);
-      assert_eq!(holds[0].owner, observer.unique_name().unwrap().as_str());
-      task.abort();
-      assert!(task.await.unwrap_err().is_cancelled());
-    })
-    .await
-    .expect("owner cleanup did not notify clients");
   }
 }

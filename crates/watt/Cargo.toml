@@ -19,6 +19,10 @@ path = "main.rs"
 
 [dependencies]
 caress.workspace              = true
+dbus.workspace                = true
+dbus-crossroads.workspace     = true
+dbus-tokio.workspace          = true
+futures-channel.workspace      = true
 env_logger.workspace          = true
 misstep.workspace             = true
 pound.workspace               = true
@@ -35,7 +39,6 @@ toml.workspace                = true
 watt-config.workspace         = true
 watt-platform.workspace       = true
 yansi.workspace               = true
-zbus.workspace                = true
 
 [dev-dependencies]
 watt-platform = { workspace = true, features = [ "test-support" ] }

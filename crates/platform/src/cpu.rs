@@ -62,6 +62,33 @@ impl CpuScanCache {
   }
 }
 
+fn parse_cpu_info(content: &str) -> HashMap<u32, Arc<HashMap<String, String>>> {
+  let mut info = HashMap::new();
+  let mut current_number = None;
+  let mut current_data = HashMap::new();
+
+  let fields = content.lines().filter_map(|line| line.split_once(':'));
+  for (key, value) in fields {
+    let key = key.trim();
+    let value = value.trim();
+    if key != "processor" {
+      current_data.insert(key.to_owned(), value.to_owned());
+      continue;
+    }
+
+    // Without a valid processor number, keep the fields for the next record.
+    if let Some(number) = current_number {
+      info.insert(number, Arc::new(mem::take(&mut current_data)));
+    }
+    current_number = value.parse::<u32>().ok();
+  }
+
+  if let Some(number) = current_number {
+    info.insert(number, Arc::new(current_data));
+  }
+  info
+}
+
 #[derive(Default, Debug, Clone, PartialEq, Eq)]
 pub struct CpuStat {
   pub user:    u64,
@@ -323,23 +350,18 @@ impl Cpu {
     self.governor = fs::read(self.cpufreq_path("scaling_governor"))
       .with_context(|| format!("failed to read {self} scaling governor"))?;
 
-    if self.governor.is_some() {
-      self.available_governors = 'available_governors: {
-        let Some(content) =
-          fs::read(self.cpufreq_path("scaling_available_governors"))
-            .with_context(|| {
-              format!("failed to read {self} available governors")
-            })?
-        else {
-          break 'available_governors Vec::new();
-        };
-
-        content
-          .split_whitespace()
-          .map(ToString::to_string)
-          .collect()
-      };
+    if self.governor.is_none() {
+      return Ok(());
     }
+
+    let available = fs::read(self.cpufreq_path("scaling_available_governors"))
+      .with_context(|| format!("failed to read {self} available governors"))?;
+    self.available_governors = available
+      .as_deref()
+      .unwrap_or_default()
+      .split_whitespace()
+      .map(str::to_owned)
+      .collect();
 
     Ok(())
   }
@@ -381,29 +403,19 @@ impl Cpu {
     .with_context(|| format!("failed to read {self} EPB"))?;
 
     if self.epb.is_some() {
-      self.available_epbs = vec![
-        "0".to_owned(),
-        "1".to_owned(),
-        "2".to_owned(),
-        "3".to_owned(),
-        "4".to_owned(),
-        "5".to_owned(),
-        "6".to_owned(),
-        "7".to_owned(),
-        "8".to_owned(),
-        "9".to_owned(),
-        "10".to_owned(),
-        "11".to_owned(),
-        "12".to_owned(),
-        "13".to_owned(),
-        "14".to_owned(),
-        "15".to_owned(),
-        "performance".to_owned(),
-        "balance-performance".to_owned(),
-        "normal".to_owned(),
-        "balance-power".to_owned(),
-        "power".to_owned(),
+      let levels = [
+        "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12",
+        "13", "14", "15",
       ];
+      let names = [
+        "performance",
+        "balance-performance",
+        "normal",
+        "balance-power",
+        "power",
+      ];
+      self.available_epbs =
+        levels.into_iter().chain(names).map(str::to_owned).collect();
     }
 
     Ok(())
@@ -469,47 +481,15 @@ impl Cpu {
 
     // OnceCell::get_or_try_init is unstable. Cope:
     let info = match cache.info.get() {
-      Some(stat) => stat,
+      Some(info) => info,
 
       None => {
         let content = fs::read("/proc/cpuinfo")
           .context("failed to read CPU info")?
           .context("/proc/cpuinfo does not exist")?;
-
-        let mut info = HashMap::new();
-        let mut current_number = None;
-        let mut current_data = HashMap::new();
-
-        macro_rules! try_save_data {
-          () => {
-            if let Some(number) = current_number.take() {
-              info.insert(number, Arc::new(mem::take(&mut current_data)));
-            }
-          };
-        }
-
-        for line in content.lines() {
-          let parts = line.splitn(2, ':').collect::<Vec<_>>();
-
-          if parts.len() == 2 {
-            let key = parts[0].trim();
-            let value = parts[1].trim();
-
-            if key == "processor" {
-              try_save_data!();
-
-              current_number = value.parse::<u32>().ok();
-            } else {
-              current_data.insert(key.to_owned(), value.to_owned());
-            }
-          }
-        }
-
-        try_save_data!();
-
         cache
           .info
-          .set(info)
+          .set(parse_cpu_info(&content))
           .map_err(|_| report!("failed to initialize CPU info cache"))?;
         cache
           .info
@@ -978,7 +958,6 @@ impl DmaLatency {
 #[cfg(test)]
 mod tests {
   use std::{
-    sync::Arc,
     fs as stdfs,
     io::{
       Error,
@@ -986,6 +965,7 @@ mod tests {
     },
     iter,
     path::PathBuf,
+    sync::Arc,
   };
 
   use super::{
@@ -995,6 +975,7 @@ mod tests {
     DmaLatency,
     Frequency,
     GlobalDelta,
+    parse_cpu_info,
   };
   use crate::{
     fs,
@@ -1016,6 +997,27 @@ mod tests {
   }
 
   #[test]
+  fn cpu_info_keeps_unassigned_fields_until_a_valid_processor() {
+    let info = parse_cpu_info(
+      "version : global
+processor : invalid
+model : first
+processor : 0
+vendor : first vendor
+processor : invalid
+model : second
+processor : 1
+vendor : second vendor",
+    );
+
+    assert_eq!(info[&0]["version"], "global");
+    assert_eq!(info[&0]["model"], "first");
+    assert_eq!(info[&0]["vendor"], "first vendor");
+    assert_eq!(info[&1]["model"], "second");
+    assert_eq!(info[&1]["vendor"], "second vendor");
+  }
+
+  #[test]
   fn epb_remains_available_without_cpufreq() {
     let fixture = SystemFixture::new();
     fixture.cpu_telemetry(&[0]);
@@ -1025,7 +1027,7 @@ mod tests {
     assert!(cpu.policy.is_none());
     assert_eq!(cpu.epb.as_deref(), Some("6"));
     let delta = Delta {
-      energy_perf_bias: Some("0".into()),
+      energy_perf_bias: Some("0".to_owned().into()),
       ..Delta::default()
     };
     delta.apply(&mut cpu).unwrap();
@@ -1316,9 +1318,9 @@ mod tests {
 
     let mut cpu = Cpu::all().unwrap().remove(0);
     let error = Delta {
-      governor: Some("performance".into()),
-      energy_performance_preference: Some("missing".into()),
-      energy_perf_bias: Some("0".into()),
+      governor: Some("performance".to_owned().into()),
+      energy_performance_preference: Some("missing".to_owned().into()),
+      energy_perf_bias: Some("0".to_owned().into()),
       frequency_minimum: Some(Frequency::from_khz(1_000_000).unwrap().into()),
       ..Delta::default()
     }
@@ -1352,8 +1354,8 @@ mod tests {
     let mut dma_latency = DmaLatency::default();
     let error = GlobalDelta {
       turbo:                          Some(false.into()),
-      pstate_min_performance_percent: Some(20.into()),
-      pstate_max_performance_percent: Some(80.into()),
+      pstate_min_performance_percent: Some(20u8.into()),
+      pstate_max_performance_percent: Some(80u8.into()),
       dma_latency_us:                 Some(100),
     }
     .apply(iter::empty(), &mut dma_latency)

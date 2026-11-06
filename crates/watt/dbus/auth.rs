@@ -1,41 +1,59 @@
-use std::collections::HashMap;
+use std::{
+  collections::HashMap,
+  sync::Arc,
+};
 
+use dbus::{
+  Message,
+  arg::Variant,
+  nonblock::{
+    Proxy,
+    SyncConnection,
+  },
+};
 use misstep::{
   OptionExt as _,
   ResultExt as _,
   bail,
 };
-use zbus::{
-  Connection,
-  Proxy,
-  message::{
-    Flags,
-    Header,
-  },
-  zvariant::Value,
-};
+
+use super::connection::CALL_TIMEOUT;
 
 const AUTHORITY: &str = "org.freedesktop.PolicyKit1";
 const AUTHORITY_PATH: &str = "/org/freedesktop/PolicyKit1/Authority";
 const AUTHORITY_INTERFACE: &str = "org.freedesktop.PolicyKit1.Authority";
 
+pub(crate) struct Caller {
+  pub sender: String,
+  flags:      u32,
+}
+
+impl Caller {
+  pub(crate) fn from_message(message: &Message) -> misstep::Result<Self> {
+    let sender = message
+      .sender()
+      .context("missing D-Bus sender")?
+      .to_string();
+    let mut flags = 0;
+    message
+      .marshal::<(), _>(|bytes| {
+        flags = u32::from(bytes.get(2).is_some_and(|byte| byte & 4 != 0));
+        Ok(())
+      })
+      .expect("infallible D-Bus message inspection");
+    Ok(Self { sender, flags })
+  }
+}
+
 pub(crate) async fn authorize(
-  connection: &Connection,
-  header: &Header<'_>,
+  connection: Arc<SyncConnection>,
+  caller: Caller,
   action: &str,
 ) -> misstep::Result<()> {
-  let sender = header.sender().context("missing D-Bus sender")?;
-  let flags = u32::from(
-    header
-      .primary()
-      .flags()
-      .contains(Flags::AllowInteractiveAuth),
-  );
   let authority =
-    Proxy::new(connection, AUTHORITY, AUTHORITY_PATH, AUTHORITY_INTERFACE)
-      .await?;
+    Proxy::new(AUTHORITY, AUTHORITY_PATH, CALL_TIMEOUT, connection);
   let mut subject_details = HashMap::new();
-  subject_details.insert("name".to_owned(), Value::from(sender.as_str()));
+  subject_details.insert("name", Variant(caller.sender));
   let subject = ("system-bus-name", subject_details);
   let details: HashMap<&str, &str> = HashMap::new();
   let ((authorized, _challenge, _details),): ((
@@ -43,7 +61,11 @@ pub(crate) async fn authorize(
     bool,
     HashMap<String, String>,
   ),) = authority
-    .call("CheckAuthorization", &(subject, action, details, flags, ""))
+    .method_call(
+      AUTHORITY_INTERFACE,
+      "CheckAuthorization",
+      (subject, action, details, caller.flags, ""),
+    )
     .await
     .context("polkit authorization failed")?;
   if !authorized {
@@ -55,6 +77,7 @@ pub(crate) async fn authorize(
 #[cfg(test)]
 mod tests {
   use std::{
+    collections::HashMap,
     sync::{
       Arc,
       atomic::{
@@ -65,105 +88,110 @@ mod tests {
     time::Duration,
   };
 
-  use tokio::time::timeout;
-  use zbus::{
-    Message,
-    connection,
-    interface,
-    zvariant::OwnedValue,
+  use dbus::{
+    arg::PropMap,
+    channel::MatchingReceiver as _,
+    message::MatchRule,
   };
+  use dbus_crossroads::Crossroads;
+  use tokio::time::timeout;
 
   use super::*;
-  use crate::dbus::test_support::{
-    AuthorizationResult,
-    TestBus,
-  };
-
-  struct Authority(Arc<AtomicU32>);
-
-  #[interface(name = "org.freedesktop.PolicyKit1.Authority")]
-  impl Authority {
-    fn check_authorization(
-      &self,
-      subject: (String, HashMap<String, OwnedValue>),
-      action: &str,
-      _details: HashMap<String, String>,
-      flags: u32,
-      _cancellation_id: &str,
-    ) -> AuthorizationResult {
-      self.0.store(flags, Ordering::SeqCst);
-      assert_eq!(subject.0, "system-bus-name");
-      assert_eq!(subject.1["name"].downcast_ref::<&str>().unwrap(), ":1.42");
-      AuthorizationResult {
-        authorized: action == "dev.notashelf.watt.set-profile",
-        challenge:  false,
-        details:    HashMap::new(),
-      }
-    }
-  }
+  use crate::dbus::test_support::TestBus;
 
   #[tokio::test]
   async fn authorization_decodes_polkit_result_and_fails_closed() {
     let bus = TestBus::new();
-    let flags = Arc::new(AtomicU32::new(u32::MAX));
     timeout(Duration::from_secs(10), async {
-      let service = connection::Builder::address(bus.address.as_str())
-        .unwrap()
-        .name(AUTHORITY)
-        .unwrap()
-        .serve_at(AUTHORITY_PATH, Authority(flags.clone()))
-        .unwrap()
-        .build()
+      let service = bus.connect();
+      let client = bus.connect();
+      let flags = Arc::new(AtomicU32::new(u32::MAX));
+      let observed_flags = flags.clone();
+      let mut crossroads = Crossroads::new();
+      let authority =
+        crossroads.register(AUTHORITY_INTERFACE, move |builder| {
+          builder.method(
+            "CheckAuthorization",
+            ("subject", "action", "details", "flags", "cancellation_id"),
+            ("result",),
+            move |_,
+                  _,
+                  (subject, action, _, value, _): (
+              (String, PropMap),
+              String,
+              HashMap<String, String>,
+              u32,
+              String,
+            )| {
+              observed_flags.store(value, Ordering::SeqCst);
+              assert_eq!(subject.0, "system-bus-name");
+              assert_eq!(subject.1["name"].0.as_str().unwrap(), ":1.42");
+              Ok(((
+                action == "dev.notashelf.watt.set-profile",
+                false,
+                HashMap::<String, String>::new(),
+              ),))
+            },
+          );
+        });
+      crossroads.insert(AUTHORITY_PATH, &[authority], ());
+      service.connection.start_receive(
+        MatchRule::new_method_call(),
+        Box::new(move |message, connection| {
+          crossroads.handle_message(message, connection).unwrap();
+          true
+        }),
+      );
+      service
+        .connection
+        .request_name(AUTHORITY, false, false, true)
         .await
         .unwrap();
-      let client = connection::Builder::address(bus.address.as_str())
-        .unwrap()
-        .build()
-        .await
-        .unwrap();
-      let request =
-        Message::method_call("/net/hadess/PowerProfiles", "HoldProfile")
-          .unwrap()
-          .sender(":1.42")
-          .unwrap()
-          .with_flags(Flags::NoAutoStart)
-          .unwrap()
-          .build(&())
-          .unwrap();
-      authorize(&client, &request.header(), "dev.notashelf.watt.set-profile")
-        .await
-        .unwrap();
-      assert_eq!(flags.load(Ordering::SeqCst), 0);
-      let interactive =
-        Message::method_call("/net/hadess/PowerProfiles", "HoldProfile")
-          .unwrap()
-          .sender(":1.42")
-          .unwrap()
-          .with_flags(Flags::AllowInteractiveAuth)
-          .unwrap()
-          .build(&())
-          .unwrap();
+
       authorize(
-        &client,
-        &interactive.header(),
+        client.connection.clone(),
+        Caller {
+          sender: ":1.42".into(),
+          flags:  0,
+        },
+        "dev.notashelf.watt.set-profile",
+      )
+      .await
+      .unwrap();
+      assert_eq!(flags.load(Ordering::SeqCst), 0);
+      authorize(
+        client.connection.clone(),
+        Caller {
+          sender: ":1.42".into(),
+          flags:  1,
+        },
         "dev.notashelf.watt.set-profile",
       )
       .await
       .unwrap();
       assert_eq!(flags.load(Ordering::SeqCst), 1);
       let denied = authorize(
-        &client,
-        &request.header(),
+        client.connection.clone(),
+        Caller {
+          sender: ":1.42".into(),
+          flags:  0,
+        },
         "dev.notashelf.watt.hold-profile",
       )
       .await
       .unwrap_err();
       assert!(denied.to_string().contains("not authorized"), "{denied}");
-      service.release_name(AUTHORITY).await.unwrap();
-      let unavailable =
-        authorize(&client, &request.header(), "dev.notashelf.watt.set-profile")
-          .await
-          .unwrap_err();
+      service.connection.release_name(AUTHORITY).await.unwrap();
+      let unavailable = authorize(
+        client.connection.clone(),
+        Caller {
+          sender: ":1.42".into(),
+          flags:  0,
+        },
+        "dev.notashelf.watt.set-profile",
+      )
+      .await
+      .unwrap_err();
       assert!(
         unavailable
           .to_string()
