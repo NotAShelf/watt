@@ -21,14 +21,15 @@ use std::{
   },
 };
 
-use anyhow::{
-  Context,
-  bail,
-};
 pub use config::{
   CpuLog,
   HISTORY_SAMPLE_LIMIT,
   MAX_POLL_INTERVAL_SECONDS,
+};
+use misstep::{
+  OptionExt as _,
+  ResultExt as _,
+  bail,
 };
 #[cfg(unix)]
 use tokio::signal::unix::{
@@ -121,11 +122,11 @@ impl RuntimeFailures {
     self.seen.clear();
   }
 
-  fn record(&mut self, context: impl Into<String>, error: anyhow::Error) {
+  fn record(&mut self, context: impl Into<String>, error: misstep::Report) {
     const MAX_FAILURES: usize = 32;
 
     let context = context.into();
-    let message = format!("{error:#}");
+    let message = format!("{error}");
     let key = format!("{context}: {message}");
     self.seen.insert(key.clone());
 
@@ -159,7 +160,7 @@ impl RuntimeFailures {
   fn attempt<T>(
     &mut self,
     context: impl Into<String>,
-    operation: impl FnOnce() -> anyhow::Result<T>,
+    operation: impl FnOnce() -> misstep::Result<T>,
   ) -> Option<T> {
     match operation() {
       Ok(value) => Some(value),
@@ -297,7 +298,7 @@ fn retire_missing_devices<T>(
 fn reject_partial_inventory(
   subsystem: &str,
   failures: Vec<String>,
-) -> anyhow::Result<()> {
+) -> misstep::Result<()> {
   if !failures.is_empty() {
     bail!("partial {subsystem} scan failed: {}", failures.join("; "));
   }
@@ -415,14 +416,14 @@ impl System {
     &mut self,
     failures: &mut RuntimeFailures,
     context: &'static str,
-    scan: impl FnOnce(&mut Self) -> anyhow::Result<()>,
+    scan: impl FnOnce(&mut Self) -> misstep::Result<()>,
   ) {
     if let Err(error) = scan(self) {
       failures.record(context, error);
     }
   }
 
-  fn scan_cpus(&mut self) -> anyhow::Result<()> {
+  fn scan_cpus(&mut self) -> misstep::Result<()> {
     let previous_stats: HashMap<u32, cpu::CpuStat> = self
       .cpus
       .iter()
@@ -474,7 +475,7 @@ impl System {
     reject_partial_inventory("CPU", inventory.failures)
   }
 
-  fn scan_power_supplies(&mut self) -> anyhow::Result<()> {
+  fn scan_power_supplies(&mut self) -> misstep::Result<()> {
     let previous = self
       .power_supplies
       .iter()
@@ -496,7 +497,7 @@ impl System {
     reject_partial_inventory("power-supply", inventory.failures)
   }
 
-  fn scan_uncores(&mut self) -> anyhow::Result<()> {
+  fn scan_uncores(&mut self) -> misstep::Result<()> {
     let previous = self
       .uncores
       .iter()
@@ -513,7 +514,7 @@ impl System {
     reject_partial_inventory("uncore", inventory.failures)
   }
 
-  fn scan_disks(&mut self) -> anyhow::Result<()> {
+  fn scan_disks(&mut self) -> misstep::Result<()> {
     let previous = self
       .disks
       .iter()
@@ -530,7 +531,7 @@ impl System {
     reject_partial_inventory("disk", inventory.failures)
   }
 
-  fn scan_usb_devices(&mut self) -> anyhow::Result<()> {
+  fn scan_usb_devices(&mut self) -> misstep::Result<()> {
     let previous = self
       .usb_devices
       .iter()
@@ -549,7 +550,7 @@ impl System {
     reject_partial_inventory("USB", inventory.failures)
   }
 
-  fn scan_gpus(&mut self) -> anyhow::Result<()> {
+  fn scan_gpus(&mut self) -> misstep::Result<()> {
     let previous = self
       .gpus
       .iter()
@@ -579,7 +580,7 @@ impl System {
     reject_partial_inventory("GPU", inventory.failures)
   }
 
-  fn scan_ac_state(&mut self) -> anyhow::Result<()> {
+  fn scan_ac_state(&mut self) -> misstep::Result<()> {
     self.is_ac = self
       .power_supplies
       .iter()
@@ -588,12 +589,12 @@ impl System {
     Ok(())
   }
 
-  fn scan_chassis_type(&mut self) -> anyhow::Result<()> {
+  fn scan_chassis_type(&mut self) -> misstep::Result<()> {
     self.chassis_type = read_chassis_type()?;
     Ok(())
   }
 
-  fn scan_virtual_machine(&mut self) -> anyhow::Result<()> {
+  fn scan_virtual_machine(&mut self) -> misstep::Result<()> {
     self.virtual_machine = detect_virtual_machine()?;
     Ok(())
   }
@@ -666,7 +667,7 @@ impl System {
       (health_count > 0).then(|| health_sum / health_count as f64);
   }
 
-  fn scan_temperatures(&mut self) -> anyhow::Result<()> {
+  fn scan_temperatures(&mut self) -> misstep::Result<()> {
     log::debug!("scanning CPU temperatures...");
     let mut temperatures = HashMap::new();
     Self::scan_hwmon_temperatures(&mut temperatures)?;
@@ -679,7 +680,7 @@ impl System {
 
   fn scan_hwmon_temperatures(
     temperatures: &mut HashMap<u32, f64>,
-  ) -> anyhow::Result<()> {
+  ) -> misstep::Result<()> {
     const PATH: &str = "/sys/class/hwmon";
     for entry in fs::read_dir(PATH)
       .context("failed to read hardware information")?
@@ -695,7 +696,7 @@ impl System {
   fn read_hwmon_temperatures(
     device_path: &Path,
     temperatures: &mut HashMap<u32, f64>,
-  ) -> anyhow::Result<()> {
+  ) -> misstep::Result<()> {
     let Some(name) = fs::read(device_path.join("name")).with_context(|| {
       format!(
         "failed to read name of hardware entry at '{}'",
@@ -718,7 +719,7 @@ impl System {
 
   fn scan_thermal_zones(
     temperatures: &mut HashMap<u32, f64>,
-  ) -> anyhow::Result<()> {
+  ) -> misstep::Result<()> {
     const PATH: &str = "/sys/devices/virtual/thermal";
     log::trace!("no hwmon CPU temperatures, checking '{PATH}'");
     let Some(zones) =
@@ -746,7 +747,7 @@ impl System {
     Ok(())
   }
 
-  fn read_thermal_zone(zone_path: &Path) -> anyhow::Result<Option<f64>> {
+  fn read_thermal_zone(zone_path: &Path) -> misstep::Result<Option<f64>> {
     let Some(kind) = fs::read(zone_path.join("type")).with_context(|| {
       format!("failed to read type of zone at '{}'", zone_path.display())
     })?
@@ -770,7 +771,7 @@ impl System {
   fn get_temperatures(
     device_path: &Path,
     temperatures: &mut HashMap<u32, f64>,
-  ) -> anyhow::Result<()> {
+  ) -> misstep::Result<()> {
     // Increased range to handle systems with many sensors.
     for i in 1..=96 {
       let label_path = device_path.join(format!("temp{i}_label"));
@@ -863,7 +864,7 @@ impl System {
     Ok(())
   }
 
-  fn scan_load_average(&mut self) -> anyhow::Result<()> {
+  fn scan_load_average(&mut self) -> misstep::Result<()> {
     log::trace!("scanning load average");
 
     let content = fs::read("/proc/loadavg")
@@ -885,13 +886,13 @@ impl System {
     };
 
     self.load_average_1min = load_average_1min
-      .parse()
+      .parse::<f64>()
       .context("failed to parse load average")?;
     self.load_average_5min = load_average_5min
-      .parse()
+      .parse::<f64>()
       .context("failed to parse load average")?;
     self.load_average_15min = load_average_15min
-      .parse()
+      .parse::<f64>()
       .context("failed to parse load average")?;
 
     Ok(())
@@ -902,7 +903,7 @@ impl System {
   // library that *might or might not be installed*. The verbose fallback is,
   // unfortunately, necessary as there is no guarantee that we can use those
   // APIs.
-  fn scan_lid_state(&mut self) -> anyhow::Result<()> {
+  fn scan_lid_state(&mut self) -> misstep::Result<()> {
     log::trace!("scanning lid state");
 
     // Try ACPI button interface first
@@ -995,7 +996,7 @@ impl System {
     Ok(())
   }
 
-  fn is_desktop(&mut self) -> anyhow::Result<bool> {
+  fn is_desktop(&mut self) -> misstep::Result<bool> {
     log::debug!("checking chassis type to determine if system is a desktop");
     if let Some(chassis_type) = fs::read("/sys/class/dmi/id/chassis_type")
       .context("failed to read chassis type")?
@@ -1223,22 +1224,25 @@ fn turbo_restricted_externally(system: &System) -> bool {
     })
 }
 
-async fn wait_for_shutdown() -> anyhow::Result<()> {
+async fn wait_for_shutdown() -> misstep::Result<()> {
   #[cfg(unix)]
   {
     let mut terminate =
       signal::unix::signal(signal::unix::SignalKind::terminate())
         .context("failed to listen for SIGTERM")?;
     tokio::select! {
-      result = signal::ctrl_c() => result.context("failed to listen for Ctrl-C"),
+      result = signal::ctrl_c() => Ok(result.context("failed to listen for Ctrl-C")?),
       _ = terminate.recv() => Ok(()),
     }
   }
 
   #[cfg(not(unix))]
-  signal::ctrl_c()
-    .await
-    .context("failed to listen for Ctrl-C")
+  {
+    signal::ctrl_c()
+      .await
+      .context("failed to listen for Ctrl-C")?;
+    Ok(())
+  }
 }
 
 struct ReloadSignal {
@@ -1247,7 +1251,7 @@ struct ReloadSignal {
 }
 
 impl ReloadSignal {
-  fn new() -> anyhow::Result<Self> {
+  fn new() -> misstep::Result<Self> {
     #[cfg(unix)]
     {
       Ok(Self {
@@ -1261,7 +1265,7 @@ impl ReloadSignal {
     }
   }
 
-  async fn wait(&mut self) -> anyhow::Result<()> {
+  async fn wait(&mut self) -> misstep::Result<()> {
     #[cfg(unix)]
     {
       self.signal.recv().await.context("SIGHUP listener closed")?;
@@ -1272,7 +1276,7 @@ impl ReloadSignal {
   }
 }
 
-fn read_chassis_type() -> anyhow::Result<Option<String>> {
+fn read_chassis_type() -> misstep::Result<Option<String>> {
   let Some(chassis_type) = fs::read("/sys/class/dmi/id/chassis_type")? else {
     return Ok(None);
   };
@@ -1289,7 +1293,7 @@ fn read_chassis_type() -> anyhow::Result<Option<String>> {
   })
 }
 
-fn detect_virtual_machine() -> anyhow::Result<bool> {
+fn detect_virtual_machine() -> misstep::Result<bool> {
   const DMI_PATHS: &[&str] = &[
     "/sys/class/dmi/id/product_name",
     "/sys/class/dmi/id/sys_vendor",
@@ -1372,7 +1376,7 @@ impl DaemonState {
           profile.set_preference(preference);
         },
         Ok(None) => {},
-        Err(error) => log::warn!("failed to load active profile: {error:#}"),
+        Err(error) => log::warn!("failed to load active profile: {error}"),
       }
     }
     let duration_requirements = diagnostics::duration_requirements(&config);
@@ -1444,7 +1448,7 @@ impl DaemonState {
   pub fn set_active_profile(
     &mut self,
     profile: profile::PowerProfile,
-  ) -> anyhow::Result<Vec<u32>> {
+  ) -> misstep::Result<Vec<u32>> {
     if let Some(path) = &self.profile_state_path {
       profile::ProfileState::save_profile(path, profile)
         .context("failed to persist active profile")?;
@@ -1496,7 +1500,7 @@ impl DaemonState {
       .add_checked_hold(check, profile, reason, application_id)
   }
 
-  pub fn release_profile_hold(&mut self, cookie: u32) -> anyhow::Result<()> {
+  pub fn release_profile_hold(&mut self, cookie: u32) -> misstep::Result<()> {
     self.profile.release_hold(cookie)
   }
 
@@ -1653,7 +1657,7 @@ impl DaemonState {
   }
 }
 
-fn load_config(path: &Path) -> anyhow::Result<(config::DaemonConfig, String)> {
+fn load_config(path: &Path) -> misstep::Result<(config::DaemonConfig, String)> {
   let config = config::DaemonConfig::load_from(Some(path))?;
   let serialized = toml::to_string_pretty(&config)
     .context("failed to serialize daemon config")?;
@@ -1663,7 +1667,7 @@ fn load_config(path: &Path) -> anyhow::Result<(config::DaemonConfig, String)> {
 fn reload_config(
   path: &Path,
   active: &mut config::DaemonConfig,
-) -> anyhow::Result<String> {
+) -> misstep::Result<String> {
   let (config, serialized) = load_config(path)?;
   #[cfg(feature = "metrics")]
   if config.metrics != active.metrics {
@@ -1805,7 +1809,7 @@ fn apply_actions(
   for failure in fs::restore_unmanaged_settings() {
     runtime_failures.record(
       format!("setting restoration for {}", failure.path.display()),
-      anyhow::anyhow!(failure.message),
+      misstep::report!("{}", failure.message),
     );
   }
 }
@@ -1926,16 +1930,16 @@ impl PollingState {
 
 enum DaemonEvent {
   Shutdown,
-  Reload(Option<oneshot::Sender<anyhow::Result<()>>>),
+  Reload(Option<oneshot::Sender<misstep::Result<()>>>),
   Poll,
 }
 
 async fn next_daemon_event(
-  shutdown: Pin<&mut impl Future<Output = anyhow::Result<()>>>,
-  reload: Pin<&mut impl Future<Output = anyhow::Result<()>>>,
+  shutdown: Pin<&mut impl Future<Output = misstep::Result<()>>>,
+  reload: Pin<&mut impl Future<Output = misstep::Result<()>>>,
   reload_requests: &mut mpsc::Receiver<ReloadRequest>,
   delay: Duration,
-) -> anyhow::Result<DaemonEvent> {
+) -> misstep::Result<DaemonEvent> {
   tokio::select! {
     result = shutdown => {
       result?;
@@ -1956,14 +1960,14 @@ async fn next_daemon_event(
 
 fn publish_reload_result(
   results: &broadcast::Sender<ReloadResult>,
-  result: anyhow::Result<()>,
-  response: Option<oneshot::Sender<anyhow::Result<()>>>,
+  result: misstep::Result<()>,
+  response: Option<oneshot::Sender<misstep::Result<()>>>,
 ) {
   let snapshot = match &result {
     Ok(()) => (true, "configuration reloaded".to_owned()),
     Err(error) => {
-      log::error!("failed to reload daemon config: {error:#}");
-      (false, format!("{error:#}"))
+      log::error!("failed to reload daemon config: {error}");
+      (false, format!("{error}"))
     },
   };
   let _ = results.send(snapshot);
@@ -1976,7 +1980,7 @@ async fn reload_daemon_config(
   path: Option<&Path>,
   config: &mut config::DaemonConfig,
   state: &RwLock<DaemonState>,
-) -> anyhow::Result<()> {
+) -> misstep::Result<()> {
   let Some(path) = path else {
     log::info!("running on the built-in configuration, nothing to reload");
     return Ok(());
@@ -1990,7 +1994,7 @@ async fn reload_daemon_config(
 pub async fn run_daemon(
   config: config::DaemonConfig,
   config_path: Option<PathBuf>,
-) -> anyhow::Result<()> {
+) -> misstep::Result<()> {
   if !config.rules.is_sorted_by_key(|rule| rule.priority) {
     bail!("daemon config rules must be sorted by priority");
   }
@@ -2041,7 +2045,7 @@ async fn run_polling_loop(
   applied_rules_tx: watch::Sender<Vec<String>>,
   mut reload_rx: mpsc::Receiver<ReloadRequest>,
   reload_results_tx: broadcast::Sender<ReloadResult>,
-) -> anyhow::Result<()> {
+) -> misstep::Result<()> {
   let mut polling = PollingState::new();
   let _managed_settings = fs::manage_settings();
   let shutdown_signal = wait_for_shutdown();
@@ -2119,8 +2123,8 @@ mod tests {
   async fn closed_reload_request_channel_does_not_terminate_tuning() {
     let (sender, mut receiver) = mpsc::channel(1);
     drop(sender);
-    let shutdown = pending::<anyhow::Result<()>>();
-    let reload = pending::<anyhow::Result<()>>();
+    let shutdown = pending::<misstep::Result<()>>();
+    let reload = pending::<misstep::Result<()>>();
     tokio::pin!(shutdown, reload);
     let delay = Duration::from_millis(5);
     let started = Instant::now();
@@ -2921,8 +2925,8 @@ priority = 1
   fn daemon_state_retains_recent_errors_in_latest_first_order() {
     let mut failures = RuntimeFailures::default();
     failures.begin_iteration();
-    failures.record("first", anyhow::anyhow!("one"));
-    failures.record("second", anyhow::anyhow!("two"));
+    failures.record("first", misstep::report!("one"));
+    failures.record("second", misstep::report!("two"));
     let mut state = DaemonState::new(String::new(), 0);
     state.update_system(&System::default(), Vec::new(), None, &failures);
     assert_eq!(state.recent_errors().len(), 2);
@@ -2935,8 +2939,8 @@ priority = 1
     let mut failures = RuntimeFailures::default();
 
     failures.begin_iteration();
-    failures.record("CPU 0 governor", anyhow::anyhow!("rejected"));
-    failures.record("CPU 0 governor", anyhow::anyhow!("rejected"));
+    failures.record("CPU 0 governor", misstep::report!("rejected"));
+    failures.record("CPU 0 governor", misstep::report!("rejected"));
 
     assert_eq!(failures.errors.len(), 1);
     assert_eq!(

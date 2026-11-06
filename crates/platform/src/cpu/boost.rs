@@ -3,8 +3,8 @@ use std::{
   path::PathBuf,
 };
 
-use anyhow::{
-  Context,
+use misstep::{
+  OptionExt as _,
   bail,
 };
 
@@ -65,7 +65,7 @@ impl BoostCapabilities {
     })
   }
 
-  pub fn read(&self) -> anyhow::Result<bool> {
+  pub fn read(&self) -> misstep::Result<bool> {
     let mut enabled = true;
     for path in &self.paths {
       let value = fs::read_n::<u8>(path)?.with_context(|| {
@@ -79,7 +79,7 @@ impl BoostCapabilities {
     Ok(enabled)
   }
 
-  pub(super) fn write(&self, enabled: bool) -> anyhow::Result<()> {
+  pub(super) fn write(&self, enabled: bool) -> misstep::Result<()> {
     let value = if enabled != self.inverted { "1" } else { "0" };
     let failures: Vec<_> = self
       .paths
@@ -87,7 +87,7 @@ impl BoostCapabilities {
       .filter_map(|path| {
         write_verified(path, value, "CPU boost")
           .err()
-          .map(|error| format!("{}: {error:#}", path.display()))
+          .map(|error| format!("{}: {error}", path.display()))
       })
       .collect();
     if !failures.is_empty() {
@@ -172,8 +172,7 @@ mod tests {
       fixture.write_result(path, Err(ErrorKind::PermissionDenied));
     }
     let cpus = Cpu::all().unwrap();
-    let message =
-      format!("{:#}", Cpu::set_turbo(true, cpus.iter()).unwrap_err());
+    let message = format!("{}", Cpu::set_turbo(true, cpus.iter()).unwrap_err());
     assert!(message.contains(&first.display().to_string()));
     assert!(message.contains(&second.display().to_string()));
     assert_eq!(Cpu::turbo(cpus.iter()).unwrap(), Some(false));

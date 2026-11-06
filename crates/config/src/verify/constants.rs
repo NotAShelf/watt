@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 
-use anyhow::{
+use misstep::{
   bail,
   ensure,
 };
@@ -29,7 +29,7 @@ impl Constant<'_> {
     }
   }
 
-  fn number(self) -> anyhow::Result<Option<f64>> {
+  fn number(self) -> misstep::Result<Option<f64>> {
     match self {
       Self::Number(value) => Ok(Some(value)),
       Self::Unknown | Self::Unset => Ok(None),
@@ -37,7 +37,7 @@ impl Constant<'_> {
     }
   }
 
-  fn boolean(self) -> anyhow::Result<Option<bool>> {
+  fn boolean(self) -> misstep::Result<Option<bool>> {
     match self {
       Self::Boolean(value) => Ok(Some(value)),
       Self::Unknown | Self::Unset => Ok(None),
@@ -46,11 +46,13 @@ impl Constant<'_> {
   }
 }
 
-pub(super) fn analyze(expression: &Expression) -> anyhow::Result<Constant<'_>> {
+pub(super) fn analyze(
+  expression: &Expression,
+) -> misstep::Result<Constant<'_>> {
   analyze_bounded(expression, &mut 256, 0)
 }
 
-pub(super) fn number(expression: &Expression) -> anyhow::Result<Option<f64>> {
+pub(super) fn number(expression: &Expression) -> misstep::Result<Option<f64>> {
   analyze(expression)?.number()
 }
 
@@ -97,7 +99,7 @@ fn analyze_bounded<'a>(
   expression: &'a Expression,
   remaining: &mut usize,
   depth: usize,
-) -> anyhow::Result<Constant<'a>> {
+) -> misstep::Result<Constant<'a>> {
   use Expression::*;
   if *remaining == 0 || depth >= 64 {
     return Ok(Constant::Unknown);
@@ -130,7 +132,7 @@ fn literal<'a>(
   expression: &'a Expression,
   remaining: &mut usize,
   depth: usize,
-) -> anyhow::Result<Constant<'a>> {
+) -> misstep::Result<Constant<'a>> {
   match expression {
     Expression::Boolean(value) => Ok(Constant::Boolean(*value)),
     Expression::Number(value) => {
@@ -147,7 +149,7 @@ fn list<'a>(
   values: &'a [Expression],
   remaining: &mut usize,
   depth: usize,
-) -> anyhow::Result<Constant<'a>> {
+) -> misstep::Result<Constant<'a>> {
   if values.len() > *remaining {
     return Ok(Constant::Unknown);
   }
@@ -168,7 +170,7 @@ fn arithmetic<'a>(
   b: &'a Expression,
   remaining: &mut usize,
   depth: usize,
-) -> anyhow::Result<Constant<'a>> {
+) -> misstep::Result<Constant<'a>> {
   let mut numbers = [0.0; 2];
   for (index, operand) in [a, b].into_iter().enumerate() {
     let value = analyze_bounded(operand, remaining, depth)?;
@@ -188,7 +190,7 @@ fn comparison<'a>(
   b: &'a Expression,
   remaining: &mut usize,
   depth: usize,
-) -> anyhow::Result<Constant<'a>> {
+) -> misstep::Result<Constant<'a>> {
   let leeway = match expression {
     Expression::Equal { leeway, .. } => Some(leeway.as_ref()),
     _ => None,
@@ -213,7 +215,7 @@ fn aggregate<'a>(
   expression: &'a Expression,
   remaining: &mut usize,
   depth: usize,
-) -> anyhow::Result<Constant<'a>> {
+) -> misstep::Result<Constant<'a>> {
   match expression {
     Expression::And { a, b } => {
       logic([a.as_ref(), b.as_ref()], false, remaining, depth)
@@ -232,7 +234,7 @@ fn logic<'a>(
   decisive: bool,
   remaining: &mut usize,
   depth: usize,
-) -> anyhow::Result<Constant<'a>> {
+) -> misstep::Result<Constant<'a>> {
   for value in values {
     let value = analyze_bounded(value, remaining, depth)?;
     if matches!(value, Constant::Unknown | Constant::Unset) {
@@ -249,7 +251,7 @@ fn special<'a>(
   expression: &'a Expression,
   remaining: &mut usize,
   depth: usize,
-) -> anyhow::Result<Constant<'a>> {
+) -> misstep::Result<Constant<'a>> {
   match expression {
     Expression::Not { .. } | Expression::IsUnset { .. } => {
       unary(expression, remaining, depth)
@@ -275,7 +277,7 @@ fn unary<'a>(
   expression: &'a Expression,
   remaining: &mut usize,
   depth: usize,
-) -> anyhow::Result<Constant<'a>> {
+) -> misstep::Result<Constant<'a>> {
   match expression {
     Expression::Not { not } => {
       let value = analyze_bounded(not, remaining, depth)?;
@@ -301,7 +303,7 @@ fn conditional<'a>(
   alternative: Option<&'a Expression>,
   remaining: &mut usize,
   depth: usize,
-) -> anyhow::Result<Constant<'a>> {
+) -> misstep::Result<Constant<'a>> {
   let value = analyze_bounded(condition, remaining, depth)?;
   if matches!(value, Constant::Unknown | Constant::Unset) {
     return Ok(value);
@@ -320,7 +322,7 @@ fn extrema<'a>(
   values: &'a [Expression],
   remaining: &mut usize,
   depth: usize,
-) -> anyhow::Result<Constant<'a>> {
+) -> misstep::Result<Constant<'a>> {
   ensure!(
     !values.is_empty(),
     "minimum/maximum requires at least one expression"

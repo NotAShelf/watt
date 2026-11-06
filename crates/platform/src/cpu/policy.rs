@@ -3,7 +3,10 @@ use std::path::{
   PathBuf,
 };
 
-use anyhow::Context as _;
+use misstep::{
+  OptionExt as _,
+  ResultExt as _,
+};
 
 use crate::fs;
 
@@ -21,7 +24,7 @@ pub struct Policy {
 }
 
 impl Policy {
-  pub(super) fn scan(path: PathBuf, cpu: u32) -> anyhow::Result<Self> {
+  pub(super) fn scan(path: PathBuf, cpu: u32) -> misstep::Result<Self> {
     let policy = path
       .file_name()
       .and_then(|name| name.to_str())
@@ -39,7 +42,7 @@ impl Policy {
     })
   }
 
-  fn read_cpus(path: &Path) -> anyhow::Result<Vec<u32>> {
+  fn read_cpus(path: &Path) -> misstep::Result<Vec<u32>> {
     let list = match fs::read(path.join("related_cpus"))? {
       Some(list) => list,
       None => {

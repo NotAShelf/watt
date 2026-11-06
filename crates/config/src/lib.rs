@@ -36,8 +36,9 @@ use std::{
   sync::Arc,
 };
 
-use anyhow::{
-  Context,
+use misstep::{
+  OptionExt as _,
+  ResultExt as _,
   bail,
 };
 use serde::{
@@ -56,11 +57,11 @@ use watt_platform::{
 };
 
 type CpuDeltas = HashMap<Arc<cpu::Cpu>, cpu::Delta>;
-type CpuEvalResult = anyhow::Result<(CpuDeltas, cpu::GlobalDelta)>;
+type CpuEvalResult = misstep::Result<(CpuDeltas, cpu::GlobalDelta)>;
 type PowerSupplyDeltas =
   HashMap<Arc<power_supply::PowerSupply>, power_supply::Delta>;
 type PowerSupplyEvalResult =
-  anyhow::Result<(PowerSupplyDeltas, Option<String>)>;
+  misstep::Result<(PowerSupplyDeltas, Option<String>)>;
 type UncoreDeltas = HashMap<Arc<uncore::Uncore>, uncore::Delta>;
 type DiskDeltas = HashMap<Arc<disk::Disk>, disk::Delta>;
 type UsbDeltas = HashMap<Arc<usb::UsbDevice>, usb::Delta>;
@@ -204,7 +205,7 @@ impl CpusDelta {
   fn selected_cpus(
     &self,
     state: &EvalState<'_, '_>,
-  ) -> anyhow::Result<Vec<Arc<cpu::Cpu>>> {
+  ) -> misstep::Result<Vec<Arc<cpu::Cpu>>> {
     let mut cpus: Vec<_> = match &self.for_ {
       Some(expression) => {
         let numbers = expression
@@ -214,7 +215,7 @@ impl CpusDelta {
           .context("`cpu.for` was not a list")?
           .into_iter()
           .map(Self::cpu_number)
-          .collect::<anyhow::Result<HashSet<_>>>()?;
+          .collect::<misstep::Result<HashSet<_>>>()?;
         state
           .cpus
           .iter()
@@ -228,7 +229,7 @@ impl CpusDelta {
     Ok(cpus)
   }
 
-  fn cpu_number(expression: Expression) -> anyhow::Result<u32> {
+  fn cpu_number(expression: Expression) -> misstep::Result<u32> {
     let number = expression
       .try_into_number()
       .context("`cpu.for` item was not a number")?;
@@ -238,7 +239,7 @@ impl CpusDelta {
     Ok(number as u32)
   }
 
-  fn eval_cpu(&self, state: &EvalState<'_, '_>) -> anyhow::Result<cpu::Delta> {
+  fn eval_cpu(&self, state: &EvalState<'_, '_>) -> misstep::Result<cpu::Delta> {
     Ok(cpu::Delta {
       governor:                      eval_string(
         &self.governor,
@@ -272,7 +273,7 @@ impl CpusDelta {
   fn eval_resume_latency(
     &self,
     state: &EvalState<'_, '_>,
-  ) -> anyhow::Result<Option<String>> {
+  ) -> misstep::Result<Option<String>> {
     let Some(expression) = &self.pm_qos_resume_latency_us else {
       return Ok(None);
     };
@@ -295,7 +296,7 @@ impl CpusDelta {
   fn eval_global(
     &self,
     state: &EvalState<'_, '_>,
-  ) -> anyhow::Result<cpu::GlobalDelta> {
+  ) -> misstep::Result<cpu::GlobalDelta> {
     Ok(cpu::GlobalDelta {
       turbo:                          eval_bool(
         &self.turbo,
@@ -350,7 +351,7 @@ impl UncoresDelta {
   pub fn eval(
     &self,
     state: &EvalState<'_, '_>,
-  ) -> anyhow::Result<UncoreDeltas> {
+  ) -> misstep::Result<UncoreDeltas> {
     log::debug!("evaluating uncore deltas...");
 
     let uncores = match &self.for_ {
@@ -425,7 +426,7 @@ pub struct VmDelta {
 }
 
 impl VmDelta {
-  pub fn eval(&self, state: &EvalState<'_, '_>) -> anyhow::Result<vm::Delta> {
+  pub fn eval(&self, state: &EvalState<'_, '_>) -> misstep::Result<vm::Delta> {
     let delta = vm::Delta {
       dirty_bytes:                 eval_u64(
         &self.dirty_bytes,
@@ -487,7 +488,7 @@ impl DisksDelta {
   pub fn eval(
     &self,
     state: &EvalState<'_, '_>,
-  ) -> anyhow::Result<(DiskDeltas, disk::GlobalDelta)> {
+  ) -> misstep::Result<(DiskDeltas, disk::GlobalDelta)> {
     let disks = match &self.for_ {
       Some(names) => {
         let names = names
@@ -499,7 +500,7 @@ impl DisksDelta {
         let names = names
           .into_iter()
           .map(|name| name.try_into_string())
-          .collect::<anyhow::Result<Vec<_>>>()?;
+          .collect::<misstep::Result<Vec<_>>>()?;
 
         state
           .disks
@@ -548,7 +549,7 @@ pub struct UsbsDelta {
 }
 
 impl UsbsDelta {
-  pub fn eval(&self, state: &EvalState<'_, '_>) -> anyhow::Result<UsbDeltas> {
+  pub fn eval(&self, state: &EvalState<'_, '_>) -> misstep::Result<UsbDeltas> {
     let devices = match &self.for_ {
       Some(names) => {
         let names = names
@@ -559,7 +560,7 @@ impl UsbsDelta {
         let names = names
           .into_iter()
           .map(|name| name.try_into_string())
-          .collect::<anyhow::Result<Vec<_>>>()?;
+          .collect::<misstep::Result<Vec<_>>>()?;
 
         state
           .usb_devices
@@ -615,7 +616,7 @@ impl AudioDelta {
   pub fn eval(
     &self,
     state: &EvalState<'_, '_>,
-  ) -> anyhow::Result<audio::Delta> {
+  ) -> misstep::Result<audio::Delta> {
     Ok(audio::Delta {
       timeout_seconds:  eval_u64(
         &self.timeout_seconds,
@@ -645,7 +646,7 @@ pub struct GpusDelta {
 }
 
 impl GpusDelta {
-  pub fn eval(&self, state: &EvalState<'_, '_>) -> anyhow::Result<GpuDeltas> {
+  pub fn eval(&self, state: &EvalState<'_, '_>) -> misstep::Result<GpuDeltas> {
     let gpus = match &self.for_ {
       Some(names) => {
         let names = names
@@ -656,7 +657,7 @@ impl GpusDelta {
         let names = names
           .into_iter()
           .map(|name| name.try_into_string())
-          .collect::<anyhow::Result<Vec<_>>>()?;
+          .collect::<misstep::Result<Vec<_>>>()?;
 
         state
           .gpus
@@ -700,7 +701,7 @@ fn eval_frequency(
   expression: &Option<Expression>,
   state: &EvalState<'_, '_>,
   name: &str,
-) -> anyhow::Result<Option<cpu::frequency::Frequency>> {
+) -> misstep::Result<Option<cpu::frequency::Frequency>> {
   let Some(expression) = expression else {
     return Ok(None);
   };
@@ -719,7 +720,7 @@ fn eval_i32(
   expression: &Option<Expression>,
   state: &EvalState<'_, '_>,
   name: &str,
-) -> anyhow::Result<Option<i32>> {
+) -> misstep::Result<Option<i32>> {
   let Some(value) = eval_u64(expression, state, name)? else {
     return Ok(None);
   };
@@ -735,7 +736,7 @@ fn eval_u8(
   expression: &Option<Expression>,
   state: &EvalState<'_, '_>,
   name: &str,
-) -> anyhow::Result<Option<u8>> {
+) -> misstep::Result<Option<u8>> {
   let Some(value) = eval_u64(expression, state, name)? else {
     return Ok(None);
   };
@@ -750,7 +751,7 @@ fn eval_u64(
   expression: &Option<Expression>,
   state: &EvalState<'_, '_>,
   name: &str,
-) -> anyhow::Result<Option<u64>> {
+) -> misstep::Result<Option<u64>> {
   let Some(expression) = expression else {
     return Ok(None);
   };
@@ -767,7 +768,7 @@ fn eval_u64(
     .map(Some)
 }
 
-fn unsigned_integer(value: f64) -> anyhow::Result<u64> {
+fn unsigned_integer(value: f64) -> misstep::Result<u64> {
   if value.fract() != 0.0 || !(0.0..u64::MAX as f64).contains(&value) {
     bail!("value is not a representable unsigned integer: {value}");
   }
@@ -778,7 +779,7 @@ fn eval_string(
   expression: &Option<Expression>,
   state: &EvalState<'_, '_>,
   name: &str,
-) -> anyhow::Result<Option<String>> {
+) -> misstep::Result<Option<String>> {
   let Some(expression) = expression else {
     return Ok(None);
   };
@@ -796,7 +797,7 @@ fn eval_epp(
   expression: &Option<Expression>,
   state: &EvalState<'_, '_>,
   name: &str,
-) -> anyhow::Result<Option<String>> {
+) -> misstep::Result<Option<String>> {
   let Some(expression) = expression else {
     return Ok(None);
   };
@@ -819,7 +820,7 @@ fn eval_bool(
   expression: &Option<Expression>,
   state: &EvalState<'_, '_>,
   name: &str,
-) -> anyhow::Result<Option<bool>> {
+) -> misstep::Result<Option<bool>> {
   let Some(expression) = expression else {
     return Ok(None);
   };
@@ -837,7 +838,7 @@ fn eval_percent(
   expression: &Option<Expression>,
   state: &EvalState<'_, '_>,
   name: &str,
-) -> anyhow::Result<Option<u8>> {
+) -> misstep::Result<Option<u8>> {
   let Some(expression) = expression else {
     return Ok(None);
   };
@@ -852,7 +853,7 @@ fn eval_percent(
     .transpose()
 }
 
-fn percentage(value: f64) -> anyhow::Result<u8> {
+fn percentage(value: f64) -> misstep::Result<u8> {
   if value.fract() != 0.0 || !(0.0..=100.0).contains(&value) {
     bail!("percentage must be an integer between 0 and 100, got {value}");
   }
@@ -1314,7 +1315,7 @@ pub enum Expression {
 }
 
 impl Expression {
-  pub fn try_into_number(self) -> anyhow::Result<f64> {
+  pub fn try_into_number(self) -> misstep::Result<f64> {
     let Self::Number(number) = self else {
       bail!("tried to cast '{self:?}' to a number, failed")
     };
@@ -1322,7 +1323,7 @@ impl Expression {
     Ok(number)
   }
 
-  pub fn try_into_boolean(self) -> anyhow::Result<bool> {
+  pub fn try_into_boolean(self) -> misstep::Result<bool> {
     let Self::Boolean(boolean) = self else {
       bail!("tried to cast '{self:?}' to a boolean, failed")
     };
@@ -1330,7 +1331,7 @@ impl Expression {
     Ok(boolean)
   }
 
-  pub fn try_into_string(self) -> anyhow::Result<String> {
+  pub fn try_into_string(self) -> misstep::Result<String> {
     let Self::String(string) = self else {
       bail!("tried to cast '{self:?}' to a string, failed")
     };
@@ -1338,7 +1339,7 @@ impl Expression {
     Ok(string)
   }
 
-  pub fn try_into_list(self) -> anyhow::Result<Vec<Expression>> {
+  pub fn try_into_list(self) -> misstep::Result<Vec<Expression>> {
     let Self::List(list) = self else {
       bail!("tried to cast '{self:?}' to a list, failed")
     };
@@ -1551,7 +1552,7 @@ impl<'de> Deserialize<'de> for DaemonConfig {
 impl DaemonConfig {
   const DEFAULT: &str = include_str!("config.toml");
 
-  pub fn load_from(path: Option<&Path>) -> anyhow::Result<Self> {
+  pub fn load_from(path: Option<&Path>) -> misstep::Result<Self> {
     let contents = if let Some(path) = path {
       log::info!("loading config from '{path}'", path = path.display());
 
@@ -1609,7 +1610,7 @@ mod tests {
     let path = directory.path().join("config.toml");
     fs::write(&path, "[[rules]]\nname = 'power'\npriority = 1\n").unwrap();
     let error = DaemonConfig::load_from(Some(&path)).unwrap_err();
-    assert!(format!("{error:#}").contains("unknown field `rules`"));
+    assert!(format!("{error}").contains("unknown field `rules`"));
     fs::write(&path, "[[rule]]\nname = 'power'\npriority = 1\n").unwrap();
     let config = DaemonConfig::load_from(Some(&path)).unwrap();
     assert_eq!(config.rules.len(), 1);

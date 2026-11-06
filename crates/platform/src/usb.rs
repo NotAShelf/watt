@@ -5,7 +5,10 @@ use std::{
   path::PathBuf,
 };
 
-use anyhow::Context;
+use misstep::{
+  OptionExt as _,
+  ResultExt as _,
+};
 use yansi::Paint as _;
 
 use crate::fs;
@@ -39,7 +42,7 @@ impl fmt::Display for UsbDevice {
 pub type UsbInventory = fs::Inventory<UsbDevice>;
 
 impl UsbInventory {
-  pub fn scan() -> anyhow::Result<Self> {
+  pub fn scan() -> misstep::Result<Self> {
     let entries = fs::read_dir("/sys/bus/usb/devices")?
       .context("USB inventory directory is unavailable")?;
     Ok(Self::scan_entries(entries, "USB", UsbDevice::scan))
@@ -47,11 +50,11 @@ impl UsbInventory {
 }
 
 impl UsbDevice {
-  pub fn all() -> anyhow::Result<Vec<Self>> {
+  pub fn all() -> misstep::Result<Vec<Self>> {
     UsbInventory::scan()?.into_devices("USB")
   }
 
-  fn scan(entry: DirEntry) -> anyhow::Result<Option<Self>> {
+  fn scan(entry: DirEntry) -> misstep::Result<Option<Self>> {
     let name = entry.file_name().to_string_lossy().into_owned();
     // Entries like "1-1:1.0" are interfaces, not devices.
     if name.contains(':') {
@@ -66,13 +69,13 @@ impl UsbDevice {
     Ok(Some(Self { name, path }))
   }
 
-  pub fn set_autosuspend(&self, enabled: bool) -> anyhow::Result<()> {
+  pub fn set_autosuspend(&self, enabled: bool) -> misstep::Result<()> {
     let value = if enabled { "auto" } else { "on" };
     fs::write(self.path.join("power/control"), value)
       .with_context(|| format!("failed to set autosuspend for {self}"))
   }
 
-  pub fn set_autosuspend_delay_ms(&self, delay_ms: u64) -> anyhow::Result<()> {
+  pub fn set_autosuspend_delay_ms(&self, delay_ms: u64) -> misstep::Result<()> {
     fs::write(
       self.path.join("power/autosuspend_delay_ms"),
       &delay_ms.to_string(),
@@ -137,7 +140,7 @@ impl Delta {
     }
   }
 
-  pub fn apply(&self, device: &UsbDevice) -> anyhow::Result<()> {
+  pub fn apply(&self, device: &UsbDevice) -> misstep::Result<()> {
     if let Some(enabled) = self.autosuspend {
       device.set_autosuspend(enabled)?;
     }

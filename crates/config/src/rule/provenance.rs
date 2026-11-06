@@ -280,5 +280,5 @@ impl Attribution {
 #[derive(Default)]
 pub struct ResolvedAttribution {
   pub rules:    BTreeMap<PathBuf, RuleOrigin>,
-  pub failures: Vec<anyhow::Error>,
+  pub failures: Vec<misstep::Report>,
 }

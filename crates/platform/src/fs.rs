@@ -25,8 +25,8 @@ use std::{
   sync::OnceLock,
 };
 
-use anyhow::{
-  Context,
+use misstep::{
+  ResultExt as _,
   bail,
 };
 
@@ -232,7 +232,7 @@ pub fn path(path: impl AsRef<Path>) -> PathBuf {
 /// absent.
 pub fn canonicalize(
   input: impl AsRef<Path>,
-) -> anyhow::Result<Option<PathBuf>> {
+) -> misstep::Result<Option<PathBuf>> {
   let path = path(input);
   match fs::canonicalize(&path) {
     Ok(path) => Ok(Some(path)),
@@ -240,6 +240,7 @@ pub fn canonicalize(
     Err(error) => {
       Err(error)
         .with_context(|| format!("failed to resolve '{}'", path.display()))
+        .map_err(Into::into)
     },
   }
 }
@@ -254,7 +255,7 @@ pub fn known_missing(input: impl AsRef<Path>) -> bool {
 
 pub fn read_dir(
   input: impl AsRef<Path>,
-) -> anyhow::Result<Option<fs::ReadDir>> {
+) -> misstep::Result<Option<fs::ReadDir>> {
   let path = path(input);
 
   match fs::read_dir(&path) {
@@ -263,10 +264,12 @@ pub fn read_dir(
     Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
 
     Err(error) => {
-      Err(error).context(format!(
-        "failed to read directory '{path}'",
-        path = path.display(),
-      ))
+      Err(error)
+        .context(format!(
+          "failed to read directory '{path}'",
+          path = path.display(),
+        ))
+        .map_err(Into::into)
     },
   }
 }
@@ -284,7 +287,7 @@ impl<T> Inventory<T> {
   pub(crate) fn scan_entries(
     entries: fs::ReadDir,
     kind: &str,
-    scan: impl Fn(fs::DirEntry) -> anyhow::Result<Option<T>>,
+    scan: impl Fn(fs::DirEntry) -> misstep::Result<Option<T>>,
   ) -> Self {
     let mut entries: Vec<_> = entries.collect();
     entries
@@ -295,20 +298,21 @@ impl<T> Inventory<T> {
       failures: Vec::new(),
     };
     for entry in entries {
-      match entry
+      let result: misstep::Result<_> = entry
         .with_context(|| format!("failed to read {kind} entry"))
-        .and_then(&scan)
-      {
+        .map_err(Into::into)
+        .and_then(&scan);
+      match result {
         Ok(Some(device)) => inventory.devices.push(device),
         Ok(None) => {},
-        Err(error) => inventory.failures.push(format!("{error:#}")),
+        Err(error) => inventory.failures.push(format!("{error}")),
       }
     }
     inventory
   }
 
   /// Logs partial failures and fails only if every scan failed.
-  pub(crate) fn into_devices(self, kind: &str) -> anyhow::Result<Vec<T>> {
+  pub(crate) fn into_devices(self, kind: &str) -> misstep::Result<Vec<T>> {
     if self.devices.is_empty() && !self.failures.is_empty() {
       bail!("all {kind} scans failed: {}", self.failures.join("; "));
     }
@@ -319,7 +323,7 @@ impl<T> Inventory<T> {
   }
 }
 
-pub fn read(input: impl AsRef<Path>) -> anyhow::Result<Option<String>> {
+pub fn read(input: impl AsRef<Path>) -> misstep::Result<Option<String>> {
   let path = path(input);
 
   match read_raw(&path) {
@@ -330,13 +334,14 @@ pub fn read(input: impl AsRef<Path>) -> anyhow::Result<Option<String>> {
     Err(error) => {
       Err(error)
         .context(format!("failed to read '{path}'", path = path.display()))
+        .map_err(Into::into)
     },
   }
 }
 
 pub fn read_n<N: str::FromStr>(
   path: impl AsRef<Path>,
-) -> anyhow::Result<Option<N>>
+) -> misstep::Result<Option<N>>
 where
   N::Err: error::Error + Send + Sync + 'static,
 {
@@ -344,7 +349,7 @@ where
 
   match read(path)? {
     Some(content) => {
-      Ok(Some(content.trim().parse().with_context(|| {
+      Ok(Some(content.trim().parse::<N>().with_context(|| {
         format!(
           "failed to parse contents of '{path}' as a unsigned number",
           path = path.display(),
@@ -356,7 +361,7 @@ where
   }
 }
 
-pub fn write(input: impl AsRef<Path>, value: &str) -> anyhow::Result<()> {
+pub fn write(input: impl AsRef<Path>, value: &str) -> misstep::Result<()> {
   let path = path(input);
   let (track, capture_original) = with_managed_settings(|settings| {
     (settings.active, !settings.settings.contains_key(&path))
@@ -566,7 +571,7 @@ fn restore_settings(
         Err(error) => {
           Some(RestoreFailure {
             path,
-            message: format!("{error:#}"),
+            message: format!("{error}"),
           })
         },
       }
@@ -606,7 +611,7 @@ fn restore_setting(
   path: &Path,
   original: &str,
   owned: &str,
-) -> anyhow::Result<()> {
+) -> misstep::Result<()> {
   let current =
     read_raw(path).context("failed to read setting before restoration")?;
   if !equivalent_value(&current, owned) {

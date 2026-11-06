@@ -3,11 +3,12 @@ use std::{
   path::Path,
 };
 
-use anyhow::{
-  Context,
+use log::Level;
+use misstep::{
+  OptionExt as _,
+  ResultExt as _,
   bail,
 };
-use log::Level;
 
 use super::Cpu;
 use crate::fs;
@@ -20,7 +21,7 @@ pub struct Frequency(u64);
 
 impl Frequency {
   /// Constructs a frequency from a positive kHz value.
-  pub fn from_khz(khz: u64) -> anyhow::Result<Self> {
+  pub fn from_khz(khz: u64) -> misstep::Result<Self> {
     if khz == 0 {
       bail!("frequency must be greater than zero");
     }
@@ -29,7 +30,7 @@ impl Frequency {
   }
 
   /// Constructs a frequency from MHz, rounded to the nearest kHz.
-  pub fn from_mhz(mhz: f64) -> anyhow::Result<Self> {
+  pub fn from_mhz(mhz: f64) -> misstep::Result<Self> {
     let khz = (mhz * KHZ_PER_MHZ).round();
     if !khz.is_finite() || khz < 1.0 || khz >= u64::MAX as f64 {
       bail!("invalid frequency: {mhz} MHz");
@@ -62,7 +63,7 @@ struct Range {
 }
 
 impl Range {
-  fn new(minimum: Frequency, maximum: Frequency) -> anyhow::Result<Self> {
+  fn new(minimum: Frequency, maximum: Frequency) -> misstep::Result<Self> {
     if minimum > maximum {
       bail!(
         "minimum frequency ({minimum}) cannot be higher than maximum \
@@ -93,7 +94,7 @@ impl Transition {
     current: Range,
     minimum: Option<Frequency>,
     maximum: Option<Frequency>,
-  ) -> anyhow::Result<Self> {
+  ) -> misstep::Result<Self> {
     let target = Range::new(
       minimum.unwrap_or(current.minimum),
       maximum.unwrap_or(current.maximum),
@@ -129,7 +130,7 @@ impl Transition {
 }
 
 impl Cpu {
-  pub(super) fn scan_frequency(&mut self) -> anyhow::Result<()> {
+  pub(super) fn scan_frequency(&mut self) -> misstep::Result<()> {
     self.frequency = read(self.cpufreq_path("cpuinfo_cur_freq"))
       .with_context(|| format!("failed to parse {self} frequency"))?;
     if self.frequency.is_none() {
@@ -154,7 +155,7 @@ impl Cpu {
     &self,
     minimum: Option<Frequency>,
     maximum: Option<Frequency>,
-  ) -> anyhow::Result<Option<Transition>> {
+  ) -> misstep::Result<Option<Transition>> {
     if minimum.is_none() && maximum.is_none() {
       return Ok(None);
     }
@@ -182,7 +183,7 @@ impl Cpu {
   pub(super) fn apply_frequency_transition(
     &self,
     transition: Transition,
-  ) -> anyhow::Result<()> {
+  ) -> misstep::Result<()> {
     let Transition {
       minimum,
       maximum,
@@ -214,7 +215,7 @@ impl Cpu {
     Ok(())
   }
 
-  fn read_frequency(&self, name: &str) -> anyhow::Result<Frequency> {
+  fn read_frequency(&self, name: &str) -> misstep::Result<Frequency> {
     let path = self.cpufreq_path(name);
 
     read(path)?.with_context(|| format!("{name} is unavailable for {self}"))
@@ -224,7 +225,7 @@ impl Cpu {
     &self,
     name: &str,
     frequency: Frequency,
-  ) -> anyhow::Result<()> {
+  ) -> misstep::Result<()> {
     let path = self.cpufreq_path(name);
 
     if self.read_frequency(name)? == frequency {
@@ -257,7 +258,7 @@ impl Cpu {
   }
 }
 
-fn read(path: impl AsRef<Path>) -> anyhow::Result<Option<Frequency>> {
+fn read(path: impl AsRef<Path>) -> misstep::Result<Option<Frequency>> {
   fs::read_n::<u64>(path)?
     .map(Frequency::from_khz)
     .transpose()

@@ -9,14 +9,20 @@ fn main() {
   };
   let mut message = String::new();
 
-  for (index, error) in error.chain().enumerate() {
+  for (index, error) in error
+    .contexts()
+    .iter()
+    .rev()
+    .map(ToString::to_string)
+    .chain(error.chain().map(ToString::to_string))
+    .enumerate()
+  {
     message.clear();
 
     if index > 0 {
       message.push_str("cause: ");
     }
 
-    let error = error.to_string();
     let mut chars = error.char_indices();
 
     if let Some((_, first)) = chars.next()

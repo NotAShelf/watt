@@ -9,7 +9,7 @@ use std::{
   sync::Arc,
 };
 
-use anyhow::Context as _;
+use misstep::ResultExt as _;
 use provenance::Attribution;
 pub use provenance::ResolvedAttribution;
 use watt_platform::{
@@ -126,7 +126,7 @@ impl Rule {
   pub fn evaluate(
     &self,
     state: &EvalState<'_, '_>,
-  ) -> anyhow::Result<Option<EvaluatedRule>> {
+  ) -> misstep::Result<Option<EvaluatedRule>> {
     let Some(condition) = self.condition.eval(state)? else {
       return Ok(None);
     };
@@ -181,7 +181,7 @@ mod tests {
       )
       .unwrap();
       let error = rule.evaluate(state).err().expect("invalid audio action");
-      assert!(format!("{error:#}").contains("audio"));
+      assert!(format!("{error}").contains("audio"));
       rule.audio = Default::default();
       let result = rule.evaluate(state).unwrap().unwrap();
       assert_eq!(result.cpu_global.turbo, Some(true));

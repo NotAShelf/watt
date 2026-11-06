@@ -9,8 +9,9 @@ use std::{
   },
 };
 
-use anyhow::{
-  Context,
+use misstep::{
+  OptionExt as _,
+  ResultExt as _,
   bail,
 };
 use yansi::Paint as _;
@@ -47,7 +48,7 @@ impl fmt::Display for Gpu {
 pub type GpuInventory = fs::Inventory<Gpu>;
 
 impl GpuInventory {
-  pub fn scan() -> anyhow::Result<Self> {
+  pub fn scan() -> misstep::Result<Self> {
     let entries = fs::read_dir("/sys/class/drm")?
       .context("DRM inventory directory is unavailable")?;
     Ok(Self::scan_entries(entries, "GPU", Gpu::scan))
@@ -55,11 +56,11 @@ impl GpuInventory {
 }
 
 impl Gpu {
-  pub fn all() -> anyhow::Result<Vec<Self>> {
+  pub fn all() -> misstep::Result<Vec<Self>> {
     GpuInventory::scan()?.into_devices("GPU")
   }
 
-  fn scan(entry: DirEntry) -> anyhow::Result<Option<Self>> {
+  fn scan(entry: DirEntry) -> misstep::Result<Option<Self>> {
     let name = entry.file_name().to_string_lossy().into_owned();
     if !name.strip_prefix("card").is_some_and(|index| {
       !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit())
@@ -89,7 +90,7 @@ impl Gpu {
     path.join("amdgpu/panel_power_savings")
   }
 
-  pub fn set_panel_power_savings(&self, value: u8) -> anyhow::Result<()> {
+  pub fn set_panel_power_savings(&self, value: u8) -> misstep::Result<()> {
     if value > 4 {
       bail!("GPU panel power savings must be between 0 and 4, got {value}");
     }
@@ -104,7 +105,7 @@ impl Gpu {
       .with_context(|| format!("failed to set panel power savings for {self}"))
   }
 
-  pub fn set_radeon_powersave(&self, value: &str) -> anyhow::Result<()> {
+  pub fn set_radeon_powersave(&self, value: &str) -> misstep::Result<()> {
     let Some(path) = &self.radeon_path else {
       log::debug!("{self} does not support Radeon power profiles");
       return Ok(());
@@ -161,7 +162,7 @@ impl Delta {
     }
   }
 
-  pub fn apply(&self, gpu: &Gpu) -> anyhow::Result<()> {
+  pub fn apply(&self, gpu: &Gpu) -> misstep::Result<()> {
     if let Some(value) = self.panel_power_savings {
       gpu.set_panel_power_savings(value)?;
     }

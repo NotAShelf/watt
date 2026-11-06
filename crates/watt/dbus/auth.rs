@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
-use anyhow::{
-  Context,
+use misstep::{
+  OptionExt as _,
+  ResultExt as _,
   bail,
 };
 use zbus::{
@@ -22,7 +23,7 @@ pub(crate) async fn authorize(
   connection: &Connection,
   header: &Header<'_>,
   action: &str,
-) -> anyhow::Result<()> {
+) -> misstep::Result<()> {
   let sender = header.sender().context("missing D-Bus sender")?;
   let flags = u32::from(
     header
@@ -157,7 +158,7 @@ mod tests {
       )
       .await
       .unwrap_err();
-      assert!(denied.to_string().contains("not authorized"), "{denied:#}");
+      assert!(denied.to_string().contains("not authorized"), "{denied}");
       service.release_name(AUTHORITY).await.unwrap();
       let unavailable =
         authorize(&client, &request.header(), "dev.notashelf.watt.set-profile")
@@ -167,7 +168,7 @@ mod tests {
         unavailable
           .to_string()
           .contains("polkit authorization failed"),
-        "{unavailable:#}"
+        "{unavailable}"
       );
     })
     .await

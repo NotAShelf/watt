@@ -3,12 +3,13 @@ use std::{
   time::Instant,
 };
 
-use anyhow::{
-  Context as _,
-  bail,
-};
 use humantime::parse_duration;
 use jiff::Timestamp;
+use misstep::{
+  OptionExt as _,
+  ResultExt as _,
+  bail,
+};
 use watt_platform::{
   fs,
   power_supply::PowerSupply,
@@ -26,7 +27,7 @@ impl Expression {
   pub fn eval(
     &self,
     state: &EvalState<'_, '_>,
-  ) -> anyhow::Result<Option<Self>> {
+  ) -> misstep::Result<Option<Self>> {
     use Expression::*;
 
     log::trace!("evaluating expression: {self:?}");
@@ -348,7 +349,7 @@ impl Expression {
     &self,
     a: f64,
     b: f64,
-  ) -> anyhow::Result<f64> {
+  ) -> misstep::Result<f64> {
     let result = match self {
       Self::Plus { .. } => a + b,
       Self::Minus { .. } => a - b,
@@ -393,7 +394,7 @@ fn eval_string_list(
   values: &[Expression],
   state: &EvalState<'_, '_>,
   name: &str,
-) -> anyhow::Result<Option<Vec<String>>> {
+) -> misstep::Result<Option<Vec<String>>> {
   let mut strings = Vec::with_capacity(values.len());
 
   for value in values {
@@ -415,7 +416,7 @@ fn average_since(
   state: &EvalState<'_, '_>,
   duration: Expression,
   value: impl Fn(&CpuLog) -> f64,
-) -> anyhow::Result<Option<f64>> {
+) -> misstep::Result<Option<f64>> {
   let duration = duration.try_into_string()?;
   let duration = parse_duration(&duration)
     .with_context(|| format!("failed to parse duration '{duration}'"))?;

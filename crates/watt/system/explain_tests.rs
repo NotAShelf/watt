@@ -354,7 +354,7 @@ async fn identical_reload_outcomes_each_complete_and_publish() {
   );
   publish_reload_result(
     &results,
-    Err(anyhow::anyhow!("invalid candidate")),
+    Err(misstep::report!("invalid candidate")),
     None,
   );
   assert_eq!(

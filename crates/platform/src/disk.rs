@@ -9,8 +9,9 @@ use std::{
   process::Command,
 };
 
-use anyhow::{
-  Context,
+use misstep::{
+  OptionExt as _,
+  ResultExt as _,
   bail,
 };
 use yansi::Paint as _;
@@ -48,7 +49,7 @@ impl fmt::Display for Disk {
 pub type DiskInventory = fs::Inventory<Disk>;
 
 impl DiskInventory {
-  pub fn scan() -> anyhow::Result<Self> {
+  pub fn scan() -> misstep::Result<Self> {
     let entries = fs::read_dir(BLOCK_PATH)?
       .context("block-device inventory directory is unavailable")?;
     Ok(Self::scan_entries(entries, "disk", Disk::scan))
@@ -56,11 +57,11 @@ impl DiskInventory {
 }
 
 impl Disk {
-  pub fn all() -> anyhow::Result<Vec<Self>> {
+  pub fn all() -> misstep::Result<Vec<Self>> {
     DiskInventory::scan()?.into_devices("disk")
   }
 
-  fn scan(entry: DirEntry) -> anyhow::Result<Option<Self>> {
+  fn scan(entry: DirEntry) -> misstep::Result<Option<Self>> {
     let name = entry.file_name().to_string_lossy().into_owned();
     if name.starts_with("loop") {
       return Ok(None);
@@ -77,26 +78,26 @@ impl Disk {
     Ok(Some(Self { name, path }))
   }
 
-  pub fn set_scheduler(&self, value: &str) -> anyhow::Result<()> {
+  pub fn set_scheduler(&self, value: &str) -> misstep::Result<()> {
     fs::write(self.path.join("queue/scheduler"), value)
       .with_context(|| format!("failed to set scheduler for {self}"))
   }
 
-  pub fn set_readahead_kib(&self, value: u64) -> anyhow::Result<()> {
+  pub fn set_readahead_kib(&self, value: u64) -> misstep::Result<()> {
     fs::write(self.path.join("queue/read_ahead_kb"), &value.to_string())
       .with_context(|| format!("failed to set readahead for {self}"))
   }
 
-  pub fn set_apm(&self, value: u8) -> anyhow::Result<()> {
+  pub fn set_apm(&self, value: u8) -> misstep::Result<()> {
     run_hdparm(self, format!("-B{value}"))
   }
 
-  pub fn set_spindown(&self, value: u8) -> anyhow::Result<()> {
+  pub fn set_spindown(&self, value: u8) -> misstep::Result<()> {
     run_hdparm(self, format!("-S{value}"))
   }
 }
 
-fn run_hdparm(disk: &Disk, option: String) -> anyhow::Result<()> {
+fn run_hdparm(disk: &Disk, option: String) -> misstep::Result<()> {
   let device = fs::path(format!("/dev/{name}", name = disk.name));
   let status = Command::new("hdparm")
     .arg(option)
@@ -111,7 +112,7 @@ fn run_hdparm(disk: &Disk, option: String) -> anyhow::Result<()> {
   Ok(())
 }
 
-pub fn set_alpm(policy: &str) -> anyhow::Result<()> {
+pub fn set_alpm(policy: &str) -> misstep::Result<()> {
   let Some(entries) = fs::read_dir("/sys/class/scsi_host")? else {
     return Ok(());
   };
@@ -144,7 +145,7 @@ pub fn set_alpm(policy: &str) -> anyhow::Result<()> {
   Ok(())
 }
 
-fn is_external_sata_port(host_path: &Path) -> anyhow::Result<bool> {
+fn is_external_sata_port(host_path: &Path) -> misstep::Result<bool> {
   let Some(value) = fs::read(host_path.join("ahci_port_cmd"))? else {
     return Ok(false);
   };
@@ -188,7 +189,7 @@ impl Delta {
     }
   }
 
-  pub fn apply(&self, disk: &Disk) -> anyhow::Result<()> {
+  pub fn apply(&self, disk: &Disk) -> misstep::Result<()> {
     if let Some(value) = &self.scheduler {
       disk.set_scheduler(value)?;
     }
@@ -223,7 +224,7 @@ impl GlobalDelta {
     }
   }
 
-  pub fn apply(&self) -> anyhow::Result<()> {
+  pub fn apply(&self) -> misstep::Result<()> {
     if let Some(value) = &self.alpm {
       set_alpm(value)?;
     }

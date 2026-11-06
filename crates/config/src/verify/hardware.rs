@@ -11,8 +11,8 @@ use std::{
   },
 };
 
-use anyhow::{
-  Context as _,
+use misstep::{
+  ResultExt as _,
   ensure,
 };
 use watt_platform::{
@@ -58,7 +58,7 @@ use crate::CpusDelta;
 impl DaemonConfig {
   /// Checks device selectors, control availability, and constant action values
   /// against this host. Returns an error if hardware discovery is incomplete.
-  pub fn verify_hardware(&self) -> anyhow::Result<Vec<Diagnostic>> {
+  pub fn verify_hardware(&self) -> misstep::Result<Vec<Diagnostic>> {
     let inventory =
       CpuInventory::scan().context("CPU hardware discovery failed")?;
     ensure!(
@@ -162,7 +162,7 @@ impl DaemonConfig {
     diagnostics
   }
 
-  fn verify_disk_hardware(&self) -> anyhow::Result<Vec<Diagnostic>> {
+  fn verify_disk_hardware(&self) -> misstep::Result<Vec<Diagnostic>> {
     let inventory =
       DiskInventory::scan().context("disk hardware discovery failed")?;
     ensure_complete("disk", &inventory.failures)?;
@@ -186,7 +186,7 @@ impl DaemonConfig {
     Ok(diagnostics)
   }
 
-  fn verify_usb_hardware(&self) -> anyhow::Result<Vec<Diagnostic>> {
+  fn verify_usb_hardware(&self) -> misstep::Result<Vec<Diagnostic>> {
     let inventory =
       UsbInventory::scan().context("USB hardware discovery failed")?;
     ensure_complete("USB", &inventory.failures)?;
@@ -209,7 +209,7 @@ impl DaemonConfig {
     Ok(diagnostics)
   }
 
-  fn verify_gpu_hardware(&self) -> anyhow::Result<Vec<Diagnostic>> {
+  fn verify_gpu_hardware(&self) -> misstep::Result<Vec<Diagnostic>> {
     let inventory =
       GpuInventory::scan().context("GPU hardware discovery failed")?;
     ensure_complete("GPU", &inventory.failures)?;
@@ -232,7 +232,7 @@ impl DaemonConfig {
     Ok(diagnostics)
   }
 
-  fn verify_uncore_hardware(&self) -> anyhow::Result<Vec<Diagnostic>> {
+  fn verify_uncore_hardware(&self) -> misstep::Result<Vec<Diagnostic>> {
     let inventory =
       UncoreInventory::scan().context("uncore hardware discovery failed")?;
     ensure_complete("uncore", &inventory.failures)?;
@@ -377,7 +377,7 @@ fn verify_audio_control(
         diagnostics.push(Diagnostic::warning(
           rule,
           field,
-          format!("audio control is unknown at {path}: {error:#}"),
+          format!("audio control is unknown at {path}: {error}"),
         ));
       },
     }
@@ -455,7 +455,7 @@ fn verify_cpu_global_controls(
     let message = match Cpu::turbo(cpus.iter()) {
       Ok(Some(_)) => None,
       Ok(None) => Some("CPU turbo control is unavailable".into()),
-      Err(error) => Some(format!("CPU turbo state is unknown: {error:#}")),
+      Err(error) => Some(format!("CPU turbo state is unknown: {error}")),
     };
     if let Some(message) = message {
       diagnostics.push(Diagnostic::warning(rule, "cpu.turbo", message));
@@ -481,7 +481,10 @@ fn verify_cpu_global_controls(
   }
 }
 
-fn ensure_complete(subsystem: &str, failures: &[String]) -> anyhow::Result<()> {
+fn ensure_complete(
+  subsystem: &str,
+  failures: &[String],
+) -> misstep::Result<()> {
   ensure!(
     failures.is_empty(),
     "{subsystem} hardware discovery is incomplete: {}",
@@ -554,14 +557,14 @@ fn verify_control(
 }
 
 fn control_read_warning(
-  value: &anyhow::Result<Option<String>>,
+  value: &misstep::Result<Option<String>>,
 ) -> Option<String> {
   match value {
     Ok(Some(_)) => None,
     Ok(None) => Some("control is unavailable".into()),
     Err(error) => {
       Some(format!(
-        "control support is unknown because it is unreadable: {error:#}"
+        "control support is unknown because it is unreadable: {error}"
       ))
     },
   }
@@ -784,13 +787,13 @@ fn verify_alpm(rule: &Rule, diagnostics: &mut Vec<Diagnostic>) {
       diagnostics.push(Diagnostic::warning(
         rule,
         "disk.alpm",
-        format!("SATA link-power controls are unknown: {error:#}"),
+        format!("SATA link-power controls are unknown: {error}"),
       ))
     },
   }
 }
 
-fn alpm_paths() -> anyhow::Result<Vec<PathBuf>> {
+fn alpm_paths() -> misstep::Result<Vec<PathBuf>> {
   let Some(entries) = fs::read_dir("/sys/class/scsi_host")? else {
     return Ok(Vec::new());
   };
@@ -850,19 +853,17 @@ fn verify_charge_threshold_controls(
 }
 
 fn platform_profile_warning(
-  current: &anyhow::Result<Option<String>>,
-  available: &anyhow::Result<Vec<String>>,
+  current: &misstep::Result<Option<String>>,
+  available: &misstep::Result<Vec<String>>,
   value: &str,
 ) -> Option<String> {
   match (current, available) {
     (Ok(None), _) => Some("control is unavailable".into()),
     (Err(error), _) => {
-      Some(format!("current platform profile is unknown: {error:#}"))
+      Some(format!("current platform profile is unknown: {error}"))
     },
     (_, Err(error)) => {
-      Some(format!(
-        "supported platform profiles are unknown: {error:#}"
-      ))
+      Some(format!("supported platform profiles are unknown: {error}"))
     },
     (Ok(current), Ok(available)) => {
       control_warning(current.as_deref(), available, value)
@@ -871,8 +872,8 @@ fn platform_profile_warning(
 }
 
 fn platform_alternatives_warning(
-  current: &anyhow::Result<Option<String>>,
-  available: &anyhow::Result<Vec<String>>,
+  current: &misstep::Result<Option<String>>,
+  available: &misstep::Result<Vec<String>>,
   values: &[Expression],
 ) -> Option<String> {
   let candidates = literal_strings(values)?;
@@ -882,12 +883,10 @@ fn platform_alternatives_warning(
   match (current, available) {
     (Ok(None), _) => Some("control is unavailable; setting is skipped".into()),
     (Err(error), _) => {
-      Some(format!("current platform profile is unknown: {error:#}"))
+      Some(format!("current platform profile is unknown: {error}"))
     },
     (_, Err(error)) => {
-      Some(format!(
-        "supported platform profiles are unknown: {error:#}"
-      ))
+      Some(format!("supported platform profiles are unknown: {error}"))
     },
     (Ok(current), Ok(available)) => {
       unavailable_alternatives_warning(
@@ -1172,7 +1171,7 @@ mod tests {
     *,
   };
 
-  type Verify = fn(&DaemonConfig) -> anyhow::Result<Vec<Diagnostic>>;
+  type Verify = fn(&DaemonConfig) -> misstep::Result<Vec<Diagnostic>>;
 
   const DEVICE_VERIFIERS: [(&str, &str, Verify); 4] = [
     ("disk", "/sys/block", DaemonConfig::verify_disk_hardware),

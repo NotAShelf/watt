@@ -8,8 +8,9 @@ use std::{
   },
 };
 
-use anyhow::{
-  Context,
+use misstep::{
+  OptionExt as _,
+  ResultExt as _,
   bail,
 };
 use yansi::Paint as _;
@@ -51,7 +52,7 @@ impl fmt::Display for Uncore {
 pub type UncoreInventory = fs::Inventory<Uncore>;
 
 impl UncoreInventory {
-  pub fn scan() -> anyhow::Result<Self> {
+  pub fn scan() -> misstep::Result<Self> {
     let Some(entries) = fs::read_dir(UNCORE_PATH)
       .context("failed to read Intel uncore frequency devices")?
     else {
@@ -74,11 +75,11 @@ impl UncoreInventory {
 }
 
 impl Uncore {
-  pub fn all() -> anyhow::Result<Vec<Self>> {
+  pub fn all() -> misstep::Result<Vec<Self>> {
     UncoreInventory::scan()?.into_devices("uncore")
   }
 
-  fn scan(name: String, path: PathBuf) -> anyhow::Result<Self> {
+  fn scan(name: String, path: PathBuf) -> misstep::Result<Self> {
     let initial_min_khz = read_required(&path, "initial_min_freq_khz")?;
     let initial_max_khz = read_required(&path, "initial_max_freq_khz")?;
     let min_khz = read_required(&path, "min_freq_khz")?;
@@ -94,7 +95,7 @@ impl Uncore {
     })
   }
 
-  pub fn set_min_khz(&self, value: u64) -> anyhow::Result<()> {
+  pub fn set_min_khz(&self, value: u64) -> misstep::Result<()> {
     if value < self.initial_min_khz {
       bail!(
         "new uncore minimum frequency ({value} kHz) cannot be lower than the \
@@ -109,7 +110,7 @@ impl Uncore {
     Ok(())
   }
 
-  pub fn set_max_khz(&self, value: u64) -> anyhow::Result<()> {
+  pub fn set_max_khz(&self, value: u64) -> misstep::Result<()> {
     if value > self.initial_max_khz {
       bail!(
         "new uncore maximum frequency ({value} kHz) cannot be higher than the \
@@ -125,7 +126,7 @@ impl Uncore {
   }
 }
 
-fn read_required(path: &Path, file: &str) -> anyhow::Result<u64> {
+fn read_required(path: &Path, file: &str) -> misstep::Result<u64> {
   fs::read_n::<u64>(path.join(file))?.with_context(|| {
     format!(
       "missing uncore frequency file '{}'",
@@ -157,7 +158,7 @@ impl Delta {
     }
   }
 
-  pub fn apply(&self, uncore: &Uncore) -> anyhow::Result<()> {
+  pub fn apply(&self, uncore: &Uncore) -> misstep::Result<()> {
     let target_min = self.frequency_khz_minimum.unwrap_or(uncore.min_khz);
     let target_max = self.frequency_khz_maximum.unwrap_or(uncore.max_khz);
 

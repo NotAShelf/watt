@@ -1,4 +1,4 @@
-use anyhow::Context;
+use misstep::ResultExt as _;
 
 use crate::fs;
 
@@ -23,7 +23,7 @@ impl Delta {
     }
   }
 
-  pub fn apply(&self) -> anyhow::Result<()> {
+  pub fn apply(&self) -> misstep::Result<()> {
     for module in AUDIO_MODULES {
       if let Some(timeout) = self.timeout_seconds {
         write_if_exists(module, "power_save", &timeout.to_string())?;
@@ -45,7 +45,7 @@ fn write_if_exists(
   module: &str,
   parameter: &str,
   value: &str,
-) -> anyhow::Result<()> {
+) -> misstep::Result<()> {
   let path = format!("/sys/module/{module}/parameters/{parameter}");
   if fs::exists(&path) {
     fs::write(&path, value).with_context(|| {

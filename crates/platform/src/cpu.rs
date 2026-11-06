@@ -20,10 +20,11 @@ use std::{
   sync::Arc,
 };
 
-use anyhow::{
-  Context,
-  anyhow,
+use misstep::{
+  OptionExt as _,
+  ResultExt as _,
   bail,
+  report,
 };
 use yansi::Paint as _;
 
@@ -45,7 +46,7 @@ struct CpuScanCache {
 }
 
 impl CpuScanCache {
-  fn policy(&self, number: u32) -> anyhow::Result<Option<Arc<Policy>>> {
+  fn policy(&self, number: u32) -> misstep::Result<Option<Arc<Policy>>> {
     let Some(path) =
       fs::canonicalize(format!("/sys/devices/system/cpu/cpu{number}/cpufreq"))?
     else {
@@ -158,7 +159,7 @@ fn write_verified(
   path: impl AsRef<Path>,
   value: &str,
   setting: &str,
-) -> anyhow::Result<()> {
+) -> misstep::Result<()> {
   let path = path.as_ref();
   if fs::read(path)?.is_some_and(|observed| observed == value) {
     fs::keep_setting(path, value);
@@ -187,7 +188,7 @@ pub struct CpuInventory {
 impl CpuInventory {
   /// Reads CPU capabilities and telemetry without changing hardware settings.
   /// Returns an error if discovery fails or every CPU scan fails.
-  pub fn scan() -> anyhow::Result<Self> {
+  pub fn scan() -> misstep::Result<Self> {
     const PATH: &str = "/sys/devices/system/cpu";
 
     log::trace!("detecting CPUs...");
@@ -231,7 +232,7 @@ impl CpuInventory {
       };
       match cpu.scan(&cache) {
         Ok(()) => cpus.push(cpu),
-        Err(error) => failures.push(format!("cpu{number}: {error:#}")),
+        Err(error) => failures.push(format!("cpu{number}: {error}")),
       }
     }
 
@@ -256,7 +257,7 @@ impl Cpu {
   }
 
   /// Get all CPUs, logging failures from partial discovery.
-  pub fn all() -> anyhow::Result<Vec<Cpu>> {
+  pub fn all() -> misstep::Result<Vec<Cpu>> {
     let inventory = CpuInventory::scan()?;
     for failure in &inventory.failures {
       log::error!("CPU scan failed: {failure}");
@@ -265,7 +266,7 @@ impl Cpu {
   }
 
   /// Scan CPU, tuning local copy of settings.
-  fn scan(&mut self, cache: &CpuScanCache) -> anyhow::Result<()> {
+  fn scan(&mut self, cache: &CpuScanCache) -> misstep::Result<()> {
     log::debug!("scanning CPU {number}", number = self.number);
 
     let Self { number, .. } = self;
@@ -316,7 +317,7 @@ impl Cpu {
     }
   }
 
-  fn scan_governor(&mut self) -> anyhow::Result<()> {
+  fn scan_governor(&mut self) -> misstep::Result<()> {
     log::trace!("scanning governor for CPU {number}", number = self.number);
 
     self.governor = fs::read(self.cpufreq_path("scaling_governor"))
@@ -343,7 +344,7 @@ impl Cpu {
     Ok(())
   }
 
-  fn scan_epp(&mut self) -> anyhow::Result<()> {
+  fn scan_epp(&mut self) -> misstep::Result<()> {
     log::trace!("scanning EPP for CPU {number}", number = self.number);
 
     self.epp = fs::read(self.cpufreq_path("energy_performance_preference"))
@@ -369,7 +370,7 @@ impl Cpu {
     Ok(())
   }
 
-  fn scan_epb(&mut self) -> anyhow::Result<()> {
+  fn scan_epb(&mut self) -> misstep::Result<()> {
     log::trace!("scanning EPB for CPU {number}", number = self.number);
 
     let Self { number, .. } = self;
@@ -408,7 +409,7 @@ impl Cpu {
     Ok(())
   }
 
-  fn scan_stat(&mut self, cache: &CpuScanCache) -> anyhow::Result<()> {
+  fn scan_stat(&mut self, cache: &CpuScanCache) -> misstep::Result<()> {
     log::trace!("scanning stat for CPU {number}", number = self.number);
 
     // OnceCell::get_or_try_init is unstable. Cope:
@@ -442,7 +443,7 @@ impl Cpu {
               Some((number, stat))
             },
           )))
-          .map_err(|_| anyhow!("failed to initialize CPU stat cache"))?;
+          .map_err(|_| report!("failed to initialize CPU stat cache"))?;
 
         cache
           .stat
@@ -463,7 +464,7 @@ impl Cpu {
     Ok(())
   }
 
-  fn scan_info(&mut self, cache: &CpuScanCache) -> anyhow::Result<()> {
+  fn scan_info(&mut self, cache: &CpuScanCache) -> misstep::Result<()> {
     log::trace!("scanning info for CPU {number}", number = self.number);
 
     // OnceCell::get_or_try_init is unstable. Cope:
@@ -509,7 +510,7 @@ impl Cpu {
         cache
           .info
           .set(info)
-          .map_err(|_| anyhow!("failed to initialize CPU info cache"))?;
+          .map_err(|_| report!("failed to initialize CPU info cache"))?;
         cache
           .info
           .get()
@@ -522,7 +523,7 @@ impl Cpu {
     Ok(())
   }
 
-  pub fn set_governor(&mut self, governor: &str) -> anyhow::Result<()> {
+  pub fn set_governor(&mut self, governor: &str) -> misstep::Result<()> {
     self.validate_governor(governor)?;
     let path = self.cpufreq_path("scaling_governor");
 
@@ -543,7 +544,7 @@ impl Cpu {
     Ok(())
   }
 
-  fn validate_governor(&self, governor: &str) -> anyhow::Result<()> {
+  fn validate_governor(&self, governor: &str) -> misstep::Result<()> {
     if !self
       .available_governors
       .iter()
@@ -559,7 +560,7 @@ impl Cpu {
     Ok(())
   }
 
-  pub fn set_epp(&mut self, epp: &str) -> anyhow::Result<()> {
+  pub fn set_epp(&mut self, epp: &str) -> misstep::Result<()> {
     self.validate_epp(epp)?;
     let numeric = epp.parse::<u8>().ok().map(|value| value.to_string());
     let epp = numeric.as_deref().unwrap_or(epp);
@@ -579,7 +580,7 @@ impl Cpu {
     Ok(())
   }
 
-  fn write_epp(&self, path: &Path, epp: &str) -> anyhow::Result<String> {
+  fn write_epp(&self, path: &Path, epp: &str) -> misstep::Result<String> {
     let current = fs::read(path)?.context("CPU EPP control is unavailable")?;
     if current == epp {
       fs::keep_setting(path, &current);
@@ -623,7 +624,7 @@ impl Cpu {
       && self.available_epps.iter().any(|value| value == observed)
   }
 
-  pub fn validate_epp(&self, epp: &str) -> anyhow::Result<()> {
+  pub fn validate_epp(&self, epp: &str) -> misstep::Result<()> {
     if let Ok(value) = epp.parse::<u16>() {
       let supported = self.policy.as_ref().is_some_and(|policy| {
         matches!(
@@ -650,7 +651,7 @@ impl Cpu {
     Ok(())
   }
 
-  pub fn set_epb(&mut self, epb: &str) -> anyhow::Result<()> {
+  pub fn set_epb(&mut self, epb: &str) -> misstep::Result<()> {
     self.validate_epb(epb)?;
     let number = self.number;
     let path =
@@ -670,7 +671,7 @@ impl Cpu {
     Ok(())
   }
 
-  fn validate_epb(&self, epb: &str) -> anyhow::Result<()> {
+  fn validate_epb(&self, epb: &str) -> misstep::Result<()> {
     if !self.available_epbs.iter().any(|value| value == epb) {
       bail!(
         "EPB value '{epb}' is not available for {self}. available EPB values: \
@@ -685,7 +686,7 @@ impl Cpu {
   pub fn set_pm_qos_resume_latency_us(
     &self,
     latency: &str,
-  ) -> anyhow::Result<()> {
+  ) -> misstep::Result<()> {
     self.validate_pm_qos_resume_latency()?;
     let Self { number, .. } = *self;
     let path = format!(
@@ -709,7 +710,7 @@ impl Cpu {
     Ok(())
   }
 
-  fn validate_pm_qos_resume_latency(&self) -> anyhow::Result<()> {
+  fn validate_pm_qos_resume_latency(&self) -> misstep::Result<()> {
     let number = self.number;
     if !fs::exists(format!(
       "/sys/devices/system/cpu/cpu{number}/power/pm_qos_resume_latency_us"
@@ -720,7 +721,9 @@ impl Cpu {
     Ok(())
   }
 
-  pub fn set_pstate_min_performance_percent(percent: u8) -> anyhow::Result<()> {
+  pub fn set_pstate_min_performance_percent(
+    percent: u8,
+  ) -> misstep::Result<()> {
     write_verified(
       "/sys/devices/system/cpu/intel_pstate/min_perf_pct",
       &percent.to_string(),
@@ -733,7 +736,9 @@ impl Cpu {
     Ok(())
   }
 
-  pub fn set_pstate_max_performance_percent(percent: u8) -> anyhow::Result<()> {
+  pub fn set_pstate_max_performance_percent(
+    percent: u8,
+  ) -> misstep::Result<()> {
     write_verified(
       "/sys/devices/system/cpu/intel_pstate/max_perf_pct",
       &percent.to_string(),
@@ -749,7 +754,7 @@ impl Cpu {
   pub fn set_turbo<'a>(
     on: bool,
     cpus: impl Iterator<Item = &'a Self>,
-  ) -> anyhow::Result<()> {
+  ) -> misstep::Result<()> {
     BoostCapabilities::discover(cpus)
       .context("no supported CPU boost control mechanism found")?
       .write(on)
@@ -761,7 +766,7 @@ impl Cpu {
 
   pub fn turbo<'a>(
     cpus: impl Iterator<Item = &'a Self>,
-  ) -> anyhow::Result<Option<bool>> {
+  ) -> misstep::Result<Option<bool>> {
     BoostCapabilities::discover(cpus)
       .map(|boost| boost.read())
       .transpose()
@@ -830,7 +835,7 @@ impl Delta {
     }
   }
 
-  pub fn apply(&self, cpu: &mut Cpu) -> anyhow::Result<()> {
+  pub fn apply(&self, cpu: &mut Cpu) -> misstep::Result<()> {
     combine_failures([
       self
         .governor
@@ -892,7 +897,7 @@ impl GlobalDelta {
     &self,
     cpus: impl Iterator<Item = &'a Cpu>,
     dma_latency: &mut DmaLatency,
-  ) -> anyhow::Result<()> {
+  ) -> misstep::Result<()> {
     combine_failures([
       self
         .pstate_min_performance_percent
@@ -907,12 +912,12 @@ impl GlobalDelta {
 }
 
 fn combine_failures(
-  results: impl IntoIterator<Item = Option<anyhow::Result<()>>>,
-) -> anyhow::Result<()> {
+  results: impl IntoIterator<Item = Option<misstep::Result<()>>>,
+) -> misstep::Result<()> {
   let failures: Vec<_> = results
     .into_iter()
     .flatten()
-    .filter_map(|result| result.err().map(|error| format!("{error:#}")))
+    .filter_map(|result| result.err().map(|error| format!("{error}")))
     .collect();
   if !failures.is_empty() {
     bail!("{}", failures.join("; "));
@@ -927,7 +932,7 @@ pub struct DmaLatency {
 }
 
 impl DmaLatency {
-  pub fn apply(&mut self, latency_us: Option<i32>) -> anyhow::Result<()> {
+  pub fn apply(&mut self, latency_us: Option<i32>) -> misstep::Result<()> {
     if self.current == latency_us {
       return Ok(());
     }
@@ -979,7 +984,7 @@ mod tests {
     test_support::SystemFixture,
   };
 
-  fn is_permission_denied(error: &anyhow::Error) -> bool {
+  fn is_permission_denied(error: &misstep::Report) -> bool {
     error.chain().any(|cause| {
       cause
         .downcast_ref::<Error>()
@@ -1165,7 +1170,7 @@ mod tests {
       fs::begin_settings_iteration();
       fixture.write_result(&path, Ok(observed));
       let error = cpu.set_epp("123").unwrap_err();
-      assert!(format!("{error:#}").contains("did not retain '123'"));
+      assert!(format!("{error}").contains("did not retain '123'"));
       assert_eq!(cpu.epp, original);
       let applied = fs::applied_settings().remove(0);
       assert_eq!(applied.observed.as_deref(), Some(observed));
@@ -1298,7 +1303,7 @@ mod tests {
     }
     .apply(&mut cpu)
     .unwrap_err();
-    let message = format!("{error:#}");
+    let message = format!("{error}");
     assert!(message.contains("changing governors"));
     assert!(message.contains("EPP value 'missing' is not available"));
     assert_eq!(fixture.write_count(&governor), 1);
@@ -1330,7 +1335,7 @@ mod tests {
     }
     .apply(iter::empty(), &mut dma_latency)
     .unwrap_err();
-    assert!(format!("{error:#}").contains("minimum performance"));
+    assert!(format!("{error}").contains("minimum performance"));
     assert_eq!(stdfs::read_to_string(fixture.path(minimum)).unwrap(), "10");
     assert_eq!(stdfs::read_to_string(fixture.path(maximum)).unwrap(), "80");
     assert_eq!(stdfs::read_to_string(fixture.path(no_turbo)).unwrap(), "1");

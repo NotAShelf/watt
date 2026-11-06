@@ -3,8 +3,9 @@ use std::{
   path::PathBuf,
 };
 
-use anyhow::{
-  Context,
+use misstep::{
+  OptionExt as _,
+  ResultExt as _,
   bail,
 };
 
@@ -50,7 +51,7 @@ impl Delta {
     }
   }
 
-  pub fn validate(&self) -> anyhow::Result<()> {
+  pub fn validate(&self) -> misstep::Result<()> {
     if self.dirty_bytes.is_some() && self.dirty_ratio.is_some() {
       bail!("`vm.dirty-bytes` conflicts with `vm.dirty-ratio`");
     }
@@ -74,7 +75,7 @@ impl Delta {
     Ok(())
   }
 
-  pub fn apply(&self) -> anyhow::Result<()> {
+  pub fn apply(&self) -> misstep::Result<()> {
     self.validate()?;
 
     if let Some(value) = self.dirty_bytes {
@@ -101,14 +102,14 @@ impl Delta {
   }
 }
 
-pub fn validate_hugepage_mode(value: &str) -> anyhow::Result<()> {
+pub fn validate_hugepage_mode(value: &str) -> misstep::Result<()> {
   if !matches!(value, "always" | "madvise" | "never") {
     bail!("invalid `vm.transparent-hugepages`: {value}");
   }
   Ok(())
 }
 
-pub fn validate_hugepage_defrag(value: &str) -> anyhow::Result<()> {
+pub fn validate_hugepage_defrag(value: &str) -> misstep::Result<()> {
   if !matches!(
     value,
     "always" | "defer" | "defer+madvise" | "madvise" | "never"
@@ -118,12 +119,12 @@ pub fn validate_hugepage_defrag(value: &str) -> anyhow::Result<()> {
   Ok(())
 }
 
-fn write_proc_sys_vm(name: &str, value: impl Display) -> anyhow::Result<()> {
+fn write_proc_sys_vm(name: &str, value: impl Display) -> misstep::Result<()> {
   fs::write(format!("/proc/sys/vm/{name}"), &value.to_string())
     .with_context(|| format!("failed to set vm sysctl '{name}'"))
 }
 
-fn write_transparent_hugepage(name: &str, value: &str) -> anyhow::Result<()> {
+fn write_transparent_hugepage(name: &str, value: &str) -> misstep::Result<()> {
   let base = transparent_hugepage_path()
     .context("transparent hugepage control is not available")?;
   fs::write(base.join(name), value)

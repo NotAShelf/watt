@@ -3,7 +3,7 @@ use std::path::{
   PathBuf,
 };
 
-use anyhow::Context as _;
+use misstep::ResultExt as _;
 use watt_platform::{
   cpu,
   fs,
@@ -14,7 +14,7 @@ use crate::EvaluatedRule;
 pub(super) fn paths(
   field: &str,
   actions: &EvaluatedRule,
-) -> anyhow::Result<Vec<PathBuf>> {
+) -> misstep::Result<Vec<PathBuf>> {
   let paths = match field {
     "turbo" => {
       cpu::Cpu::boost_capabilities(actions.cpu.keys().map(AsRef::as_ref))
@@ -46,7 +46,7 @@ pub(super) fn paths(
   Ok(paths)
 }
 
-pub(crate) fn alpm_paths() -> anyhow::Result<Vec<PathBuf>> {
+pub(crate) fn alpm_paths() -> misstep::Result<Vec<PathBuf>> {
   let Some(entries) = fs::read_dir("/sys/class/scsi_host")? else {
     return Ok(Vec::new());
   };

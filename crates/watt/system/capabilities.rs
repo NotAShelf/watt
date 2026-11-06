@@ -244,7 +244,7 @@ fn globals(
   }
 }
 
-fn alpm_hosts() -> anyhow::Result<Vec<DeviceCapabilities>> {
+fn alpm_hosts() -> misstep::Result<Vec<DeviceCapabilities>> {
   let Some(entries) = fs::read_dir("/sys/class/scsi_host")? else {
     return Ok(Vec::new());
   };

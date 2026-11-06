@@ -5,10 +5,10 @@ use std::{
   time::Duration,
 };
 
-use anyhow::{
-  anyhow,
+use misstep::{
   bail,
   ensure,
+  report,
 };
 use serde::Serialize;
 use watt_platform::{
@@ -101,7 +101,7 @@ impl fmt::Display for Diagnostic {
 }
 
 /// Logs warning diagnostics and fails with every error diagnostic.
-pub fn report(diagnostics: Vec<Diagnostic>) -> anyhow::Result<()> {
+pub fn report(diagnostics: Vec<Diagnostic>) -> misstep::Result<()> {
   let (errors, warnings): (Vec<_>, Vec<_>) = diagnostics
     .into_iter()
     .partition(|diagnostic| diagnostic.severity == Severity::Error);
@@ -219,7 +219,7 @@ fn verify_vm_modes(rule: &Rule, diagnostics: &mut Vec<Diagnostic>) {
     (
       "vm.transparent-hugepages",
       &rule.vm.transparent_hugepages,
-      validate_hugepage_mode as fn(&str) -> anyhow::Result<()>,
+      validate_hugepage_mode as fn(&str) -> misstep::Result<()>,
     ),
     (
       "vm.transparent-hugepage-defrag",
@@ -529,7 +529,7 @@ fn verify_selections(rule: &Rule, diagnostics: &mut Vec<Diagnostic>) {
     };
     for (index, (kind, number)) in items.into_iter().enumerate() {
       let result = if kind.is_some_and(|kind| kind != expected) {
-        Err(anyhow!("{subject} selection item must be a {expected}"))
+        Err(report!("{subject} selection item must be a {expected}"))
       } else if field == "cpu.for"
         && let Some(number) = number
       {
@@ -613,7 +613,7 @@ fn literal_epp_error(expression: Option<&Expression>) -> Option<String> {
 fn verify_bounds<T: Copy + PartialOrd + fmt::Display>(
   rule: &Rule,
   fields: [(&str, &Option<Expression>); 2],
-  convert: fn(Option<&Expression>) -> anyhow::Result<Option<T>>,
+  convert: fn(Option<&Expression>) -> misstep::Result<Option<T>>,
   diagnostics: &mut Vec<Diagnostic>,
 ) {
   let mut bounds = [None, None];
@@ -639,8 +639,8 @@ fn verify_bounds<T: Copy + PartialOrd + fmt::Display>(
 fn constant_number<T>(
   expression: Option<&Expression>,
   type_error: &str,
-  convert: fn(f64) -> anyhow::Result<T>,
-) -> anyhow::Result<Option<T>> {
+  convert: fn(f64) -> misstep::Result<T>,
+) -> misstep::Result<Option<T>> {
   let Some(expression) = expression else {
     return Ok(None);
   };
@@ -652,7 +652,7 @@ fn constant_number<T>(
 
 fn constant_frequency(
   expression: Option<&Expression>,
-) -> anyhow::Result<Option<Frequency>> {
+) -> misstep::Result<Option<Frequency>> {
   constant_number(
     expression,
     "frequency must be a number in MHz",
@@ -662,13 +662,13 @@ fn constant_frequency(
 
 fn constant_percentage(
   expression: Option<&Expression>,
-) -> anyhow::Result<Option<u8>> {
+) -> misstep::Result<Option<u8>> {
   constant_number(expression, "percentage must be a number", super::percentage)
 }
 
 fn constant_unsigned_integer(
   expression: Option<&Expression>,
-) -> anyhow::Result<Option<u64>> {
+) -> misstep::Result<Option<u64>> {
   constant_number(
     expression,
     "value must be an unsigned integer",
@@ -781,7 +781,7 @@ mod tests {
       .unwrap()
   }
 
-  pub(super) fn load_rule(fields: &str) -> anyhow::Result<DaemonConfig> {
+  pub(super) fn load_rule(fields: &str) -> misstep::Result<DaemonConfig> {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("config.toml");
     fs::write(
