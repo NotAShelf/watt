@@ -12,7 +12,10 @@ use super::{
   System,
   idle_multiplier,
 };
-use crate::config;
+use crate::config::{
+  self,
+  verify::constant_duration,
+};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct DurationMetricDiagnostics {
@@ -231,5 +234,5 @@ fn record_requirement(
 
 fn requirement_window(value: &toml::Value) -> Option<Duration> {
   let expression: config::Expression = value.clone().try_into().ok()?;
-  config::verify::constant_duration(&expression)
+  constant_duration(&expression)
 }

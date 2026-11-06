@@ -35,7 +35,7 @@ thread_local! {
 }
 
 /// An isolated system tree installed for the current test thread.
-pub(crate) struct SystemFixture {
+pub struct SystemFixture {
   // Restore the thread's root before deleting the directory.
   _guard:      SystemRootGuard,
   root:        TempDir,
@@ -43,7 +43,7 @@ pub(crate) struct SystemFixture {
 }
 
 impl SystemFixture {
-  pub(crate) fn new() -> Self {
+  pub fn new() -> Self {
     let root = tempfile::tempdir().expect("create system fixture");
     for directory in ["sys/block", "sys/bus/usb/devices", "sys/class/drm"] {
       fs::create_dir_all(root.path().join(directory))
@@ -57,7 +57,7 @@ impl SystemFixture {
     }
   }
 
-  pub(crate) fn path(&self, path: impl AsRef<Path>) -> PathBuf {
+  pub fn path(&self, path: impl AsRef<Path>) -> PathBuf {
     let path = path.as_ref();
     if path.starts_with(self.root.path()) {
       return path.to_owned();
@@ -68,14 +68,14 @@ impl SystemFixture {
       .join(path.strip_prefix("/").unwrap_or(path))
   }
 
-  pub(crate) fn write(&self, path: impl AsRef<Path>, value: impl AsRef<[u8]>) {
+  pub fn write(&self, path: impl AsRef<Path>, value: impl AsRef<[u8]>) {
     let path = self.path(path);
     fs::create_dir_all(path.parent().expect("fixture path has a parent"))
       .unwrap();
     fs::write(path, value).unwrap();
   }
 
-  pub(crate) fn enforce_bounds(
+  pub fn enforce_bounds(
     &self,
     minimum: impl AsRef<Path>,
     maximum: impl AsRef<Path>,
@@ -90,7 +90,7 @@ impl SystemFixture {
     });
   }
 
-  pub(crate) fn write_count(&self, path: impl AsRef<Path>) -> usize {
+  pub fn write_count(&self, path: impl AsRef<Path>) -> usize {
     let path = fs::canonicalize(self.path(path)).unwrap();
     FILE_BEHAVIORS.with_borrow(|behaviors| {
       behaviors.get(&path).map_or(0, |behavior| behavior.writes)
@@ -107,12 +107,12 @@ impl SystemFixture {
       .with_borrow_mut(|behaviors| update(behaviors.entry(path).or_default()));
   }
 
-  pub(crate) fn fail_read(&self, path: impl AsRef<Path>, error: io::ErrorKind) {
+  pub fn fail_read(&self, path: impl AsRef<Path>, error: io::ErrorKind) {
     self.configure(path, |behavior| behavior.read_error = Some(error));
   }
 
   /// Fails the first read after a tracked write attempt, then resumes reads.
-  pub(crate) fn fail_read_after_write(
+  pub fn fail_read_after_write(
     &self,
     path: impl AsRef<Path>,
     error: io::ErrorKind,
@@ -122,7 +122,7 @@ impl SystemFixture {
     });
   }
 
-  pub(crate) fn write_result(
+  pub fn write_result(
     &self,
     path: impl AsRef<Path>,
     result: Result<&str, io::ErrorKind>,
@@ -132,7 +132,7 @@ impl SystemFixture {
     });
   }
 
-  pub(crate) fn clear_io(&self, path: impl AsRef<Path>) {
+  pub fn clear_io(&self, path: impl AsRef<Path>) {
     let path = fs::canonicalize(self.path(path)).unwrap();
     FILE_BEHAVIORS.with_borrow_mut(|behaviors| {
       behaviors.remove(&path);
@@ -140,7 +140,7 @@ impl SystemFixture {
   }
 
   /// Creates a shared cpufreq policy and the logical CPUs that refer to it.
-  pub(crate) fn policy(&self, id: u32, cpus: &[u32], driver: &str) -> PathBuf {
+  pub fn policy(&self, id: u32, cpus: &[u32], driver: &str) -> PathBuf {
     let path = self.path(format!("/sys/devices/system/cpu/cpufreq/policy{id}"));
     for (name, value) in [
       ("scaling_driver", driver),
@@ -182,7 +182,7 @@ impl SystemFixture {
     path
   }
 
-  pub(crate) fn cpu_telemetry(&self, cpus: &[u32]) {
+  pub fn cpu_telemetry(&self, cpus: &[u32]) {
     let mut stat = String::from("cpu 1 0 1 8 0 0 0 0\n");
     let mut info = String::new();
     for cpu in cpus {
@@ -191,6 +191,12 @@ impl SystemFixture {
     }
     self.write("/proc/stat", stat);
     self.write("/proc/cpuinfo", info);
+  }
+}
+
+impl Default for SystemFixture {
+  fn default() -> Self {
+    Self::new()
   }
 }
 

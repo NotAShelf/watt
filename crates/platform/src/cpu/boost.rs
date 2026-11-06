@@ -65,7 +65,7 @@ impl BoostCapabilities {
     })
   }
 
-  pub(crate) fn read(&self) -> anyhow::Result<bool> {
+  pub fn read(&self) -> anyhow::Result<bool> {
     let mut enabled = true;
     for path in &self.paths {
       let value = fs::read_n::<u8>(path)?.with_context(|| {

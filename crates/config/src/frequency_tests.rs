@@ -3,11 +3,12 @@ use std::{
   sync::Arc,
 };
 
+use watt_platform::test_support::SystemFixture;
+
 use super::{
   test_support::with_cpu_state,
   *,
 };
-use crate::test_support::SystemFixture;
 
 fn frequency(mhz: f64) -> cpu::frequency::Frequency {
   cpu::frequency::Frequency::from_mhz(mhz).expect("valid test frequency")

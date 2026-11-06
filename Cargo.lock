@@ -1203,11 +1203,8 @@ dependencies = [
  "clap-verbosity-flag",
  "env_logger",
  "futures-util",
- "humantime",
- "jiff",
  "log",
  "nix",
- "num_cpus",
  "schemars",
  "serde",
  "serde_json",
@@ -1215,8 +1212,36 @@ dependencies = [
  "tiny_http",
  "tokio",
  "toml",
+ "watt-config",
+ "watt-platform",
  "yansi",
  "zbus",
+]
+
+[[package]]
+name = "watt-config"
+version = "1.4.0"
+dependencies = [
+ "anyhow",
+ "humantime",
+ "jiff",
+ "log",
+ "schemars",
+ "serde",
+ "tempfile",
+ "toml",
+ "watt-platform",
+]
+
+[[package]]
+name = "watt-platform"
+version = "1.4.0"
+dependencies = [
+ "anyhow",
+ "log",
+ "num_cpus",
+ "tempfile",
+ "yansi",
 ]
 
 [[package]]

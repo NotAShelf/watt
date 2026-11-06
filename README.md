@@ -4,7 +4,6 @@
   <h1 id="header">
     <pre>Watt</pre>
   </h1>
-  <div>
     <a alt="CI" href="https://github.com/NotAShelf/watt/actions">
       <img
         src="https://github.com/NotAShelf/watt/actions/workflows/build.yml/badge.svg"
@@ -114,10 +113,10 @@ watt config --json polling
 ## Configuration
 
 Watt uses a rule-based TOML configuration system that allows you to define power
-management policies. Each `[[rule]]` has an optional condition, a unique name and
-priority, and one or more action sections. Watt evaluates matching rules from
-highest to lowest priority; higher-priority values fill each setting first, and
-lower-priority rules only fill settings that remain unset.
+management policies. Each `[[rule]]` has an optional condition, a unique name
+and priority, and one or more action sections. Watt evaluates matching rules
+from highest to lowest priority; higher-priority values fill each setting first,
+and lower-priority rules only fill settings that remain unset.
 
 ### Configuration Locations
 
@@ -129,10 +128,10 @@ Configuration sources, in order of precedence:
 
 <!--markdownlint-disable MD059 -->
 
-[watt crate]: ./watt/config.toml
+[default config]: ./crates/config/src/config.toml
 
 If no custom config path is provided, Watt uses a built-in default
-configuration. You can find the default configuration in the [watt crate].
+configuration. You can find it in the [default config].
 
 <!--markdownlint-enable MD059 -->
 
@@ -228,18 +227,18 @@ manager, or using something like Rustup.
 ### Tests
 
 Run `cargo test --workspace --all-features` as an unprivileged user. Tests that
-touch sysfs or procfs go through `crate::fs`, which `SystemFixture` (in
-`watt/test_support.rs`) redirects into a temporary root for the current test
-thread. The fixture can also inject read and write failures. A unit test that
-resolves an absolute path through `crate::fs` without a fixture or
-`WATT_SYSTEM_ROOT` panics instead of touching the host. Process tests under
-`watt/tests` run the real binary against a private D-Bus and `WATT_SYSTEM_ROOT`,
-and need `dbus-daemon` in `PATH`.
+touch sysfs or procfs go through `watt_platform::fs`. `SystemFixture`, in
+`crates/platform/src/test_support.rs`, redirects those accesses into a temporary
+root for the current test thread and can inject read and write failures. A unit
+test that resolves an absolute path without a fixture or `WATT_SYSTEM_ROOT`
+panics instead of touching the host. Process tests under `watt/tests` run the
+real binary against a private D-Bus and `WATT_SYSTEM_ROOT`, and need
+`dbus-daemon` in `PATH`.
 
 ### Formatting & Lints
 
 Please make sure to run _at least_ `cargo fmt` (and `taplo format` if you have
-modified any TOML) inside the repository to make sure all of your code is
+modified any TOML files) inside the repository to make sure all of your code is
 properly formatted. For Nix code, use Alejandra.
 
 Clippy lints are not _required_ as of now, but a good rule of thumb to run them

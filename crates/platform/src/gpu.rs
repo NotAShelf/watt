@@ -77,11 +77,11 @@ impl Gpu {
     }))
   }
 
-  pub(crate) fn control_roots(&self) -> impl Iterator<Item = &Path> {
+  pub fn control_roots(&self) -> impl Iterator<Item = &Path> {
     iter::once(self.path.as_path()).chain(self.radeon_path.as_deref())
   }
 
-  pub(crate) fn radeon_control_root(&self) -> Option<&Path> {
+  pub fn radeon_control_root(&self) -> Option<&Path> {
     self.radeon_path.as_deref()
   }
 

@@ -11,6 +11,17 @@ use std::{
 
 use anyhow::Context as _;
 use provenance::Attribution;
+pub use provenance::ResolvedAttribution;
+use watt_platform::{
+  audio,
+  cpu,
+  disk,
+  gpu,
+  power_supply,
+  uncore,
+  usb,
+  vm,
+};
 
 use super::{
   CpuDeltas,
@@ -22,36 +33,26 @@ use super::{
   UncoreDeltas,
   UsbDeltas,
 };
-use crate::{
-  audio,
-  cpu,
-  disk,
-  gpu,
-  power_supply,
-  uncore,
-  usb,
-  vm,
-};
 
 /// Actions from one matching rule, available only after complete evaluation.
 #[derive(Default)]
 pub struct EvaluatedRule {
-  pub cpu:                CpuDeltas,
-  pub cpu_global:         cpu::GlobalDelta,
-  pub uncore:             UncoreDeltas,
-  pub vm:                 vm::Delta,
-  pub disk:               DiskDeltas,
-  pub disk_global:        disk::GlobalDelta,
-  pub usb:                UsbDeltas,
-  pub audio:              audio::Delta,
-  pub gpu:                GpuDeltas,
-  pub power:              PowerSupplyDeltas,
-  pub platform_profile:   Option<String>,
-  pub(crate) attribution: Attribution,
+  pub cpu:              CpuDeltas,
+  pub cpu_global:       cpu::GlobalDelta,
+  pub uncore:           UncoreDeltas,
+  pub vm:               vm::Delta,
+  pub disk:             DiskDeltas,
+  pub disk_global:      disk::GlobalDelta,
+  pub usb:              UsbDeltas,
+  pub audio:            audio::Delta,
+  pub gpu:              GpuDeltas,
+  pub power:            PowerSupplyDeltas,
+  pub platform_profile: Option<String>,
+  attribution:          Attribution,
 }
 
 impl EvaluatedRule {
-  pub(crate) fn empty(state: &EvalState<'_, '_>) -> Self {
+  pub fn empty(state: &EvalState<'_, '_>) -> Self {
     Self {
       cpu: empty_deltas(state.cpus),
       uncore: empty_deltas(state.uncores),
@@ -63,7 +64,7 @@ impl EvaluatedRule {
     }
   }
 
-  pub(crate) fn merge(&mut self, lower: Self) {
+  pub fn merge(&mut self, lower: Self) {
     self.attribution.merge(lower.attribution);
     merge_deltas(&mut self.cpu, lower.cpu, cpu::Delta::or);
     merge_deltas(&mut self.uncore, lower.uncore, uncore::Delta::or);
@@ -79,7 +80,7 @@ impl EvaluatedRule {
       self.platform_profile.take().or(lower.platform_profile);
   }
 
-  pub(crate) fn complete(&self) -> bool {
+  pub fn complete(&self) -> bool {
     self.cpu.values().all(cpu::Delta::is_some)
       && self.cpu_global.is_some()
       && self.power.values().all(power_supply::Delta::is_some)
@@ -91,6 +92,11 @@ impl EvaluatedRule {
       && self.usb.values().all(usb::Delta::is_some)
       && self.audio.is_some()
       && self.gpu.values().all(gpu::Delta::is_some)
+  }
+
+  pub fn resolve_attribution(&mut self) -> ResolvedAttribution {
+    let attribution = mem::take(&mut self.attribution);
+    attribution.resolve(self)
   }
 }
 
@@ -164,7 +170,7 @@ mod tests {
   use std::collections::HashSet;
 
   use super::*;
-  use crate::config::test_support::with_cpu_state;
+  use crate::test_support::with_cpu_state;
 
   #[test]
   fn failed_late_action_returns_no_partial_rule() {

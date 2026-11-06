@@ -101,14 +101,14 @@ impl Delta {
   }
 }
 
-pub(crate) fn validate_hugepage_mode(value: &str) -> anyhow::Result<()> {
+pub fn validate_hugepage_mode(value: &str) -> anyhow::Result<()> {
   if !matches!(value, "always" | "madvise" | "never") {
     bail!("invalid `vm.transparent-hugepages`: {value}");
   }
   Ok(())
 }
 
-pub(crate) fn validate_hugepage_defrag(value: &str) -> anyhow::Result<()> {
+pub fn validate_hugepage_defrag(value: &str) -> anyhow::Result<()> {
   if !matches!(
     value,
     "always" | "defer" | "defer+madvise" | "madvise" | "never"

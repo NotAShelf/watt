@@ -9,12 +9,13 @@ use std::{
   path::PathBuf,
 };
 
-use super::EvaluatedRule;
-use crate::{
-  config::Rule,
+use watt_platform::{
   cpu::Cpu,
   fs::RuleOrigin,
 };
+
+use super::EvaluatedRule;
+use crate::Rule;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum Scope {
@@ -196,7 +197,7 @@ impl Attribution {
     }
   }
 
-  pub(crate) fn resolve(
+  pub(super) fn resolve(
     self,
     actions: &mut EvaluatedRule,
   ) -> ResolvedAttribution {
@@ -277,7 +278,7 @@ impl Attribution {
 }
 
 #[derive(Default)]
-pub(crate) struct ResolvedAttribution {
+pub struct ResolvedAttribution {
   pub rules:    BTreeMap<PathBuf, RuleOrigin>,
   pub failures: Vec<anyhow::Error>,
 }

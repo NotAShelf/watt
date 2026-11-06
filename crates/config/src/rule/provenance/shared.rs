@@ -7,14 +7,13 @@ use std::{
   },
 };
 
+use watt_platform::uncore;
+
 use super::{
   RuleOrigin,
   Scope,
 };
-use crate::{
-  config::EvaluatedRule,
-  uncore,
-};
+use crate::EvaluatedRule;
 
 type Winners = BTreeMap<PathBuf, (String, RuleOrigin)>;
 

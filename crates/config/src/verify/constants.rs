@@ -348,7 +348,7 @@ mod tests {
   use std::collections::HashSet;
 
   use super::*;
-  use crate::config::test_support::with_cpu_state;
+  use crate::test_support::with_cpu_state;
 
   fn parse(text: &str) -> Expression {
     toml::from_str(text).unwrap()

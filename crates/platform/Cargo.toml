@@ -1,0 +1,25 @@
+[package]
+name                   = "watt-platform"
+description.workspace  = true
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace   = true
+log.workspace      = true
+num_cpus.workspace = true
+tempfile           = { optional = true, workspace = true }
+yansi.workspace    = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[features]
+default      = [  ]
+test-support = [ "dep:tempfile" ]

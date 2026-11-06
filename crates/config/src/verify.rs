@@ -11,19 +11,19 @@ use anyhow::{
   ensure,
 };
 use serde::Serialize;
+use watt_platform::{
+  cpu::frequency::Frequency,
+  vm::{
+    validate_hugepage_defrag,
+    validate_hugepage_mode,
+  },
+};
 
 use super::{
   CpusDelta,
   DaemonConfig,
   Expression,
   Rule,
-};
-use crate::{
-  cpu::frequency::Frequency,
-  vm::{
-    validate_hugepage_defrag,
-    validate_hugepage_mode,
-  },
 };
 
 mod constants;
@@ -32,7 +32,7 @@ mod hardware;
 
 /// Evaluates a constant string expression as a duration without reading
 /// telemetry.
-pub(crate) fn constant_duration(expression: &Expression) -> Option<Duration> {
+pub fn constant_duration(expression: &Expression) -> Option<Duration> {
   let constants::Constant::String(value) =
     constants::analyze(expression).ok()?
   else {

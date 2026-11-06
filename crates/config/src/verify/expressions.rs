@@ -10,7 +10,7 @@ use super::{
   constants,
   expression_type,
 };
-use crate::system::{
+use crate::{
   HISTORY_SAMPLE_LIMIT,
   MAX_POLL_INTERVAL_SECONDS,
 };

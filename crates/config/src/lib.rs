@@ -1,8 +1,24 @@
+mod profile;
+mod telemetry;
+
+pub use profile::{
+  InvalidPowerProfile,
+  PowerProfile,
+};
+pub use telemetry::{
+  CpuLog,
+  HISTORY_SAMPLE_LIMIT,
+  MAX_POLL_INTERVAL_SECONDS,
+};
+
 pub mod verify;
 
 mod eval;
 mod rule;
-pub use rule::EvaluatedRule;
+pub use rule::{
+  EvaluatedRule,
+  ResolvedAttribution,
+};
 
 #[cfg(test)] mod eval_tests;
 #[cfg(test)] mod test_support;
@@ -28,15 +44,12 @@ use serde::{
   Deserialize,
   Serialize,
 };
-
-use crate::{
+use watt_platform::{
   audio,
   cpu,
   disk,
   gpu,
   power_supply,
-  profile::PowerProfile,
-  system::CpuLog,
   uncore,
   usb,
   vm,
@@ -1780,10 +1793,5 @@ mod tests {
   }
 }
 
-#[cfg(test)]
-#[path = "config/frequency_tests.rs"]
-mod frequency_tests;
-
-#[cfg(test)]
-#[path = "config/usage_tests.rs"]
-mod usage_tests;
+#[cfg(test)] mod frequency_tests;
+#[cfg(test)] mod usage_tests;

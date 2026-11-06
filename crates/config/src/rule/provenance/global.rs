@@ -4,12 +4,12 @@ use std::path::{
 };
 
 use anyhow::Context as _;
-
-use crate::{
-  config::EvaluatedRule,
+use watt_platform::{
   cpu,
   fs,
 };
+
+use crate::EvaluatedRule;
 
 pub(super) fn paths(
   field: &str,

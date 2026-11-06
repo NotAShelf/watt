@@ -9,7 +9,6 @@ use std::{
   env,
   future::Future,
   iter::once,
-  mem,
   path::{
     Path,
     PathBuf,
@@ -25,6 +24,11 @@ use std::{
 use anyhow::{
   Context,
   bail,
+};
+pub use config::{
+  CpuLog,
+  HISTORY_SAMPLE_LIMIT,
+  MAX_POLL_INTERVAL_SECONDS,
 };
 #[cfg(unix)]
 use tokio::signal::unix::{
@@ -74,37 +78,6 @@ pub use diagnostics::{
 };
 
 pub type ReloadResult = (bool, String);
-
-pub(crate) const HISTORY_SAMPLE_LIMIT: usize = 100;
-pub(crate) const MAX_POLL_INTERVAL_SECONDS: u64 = 30;
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct CpuLog {
-  pub at: Instant,
-
-  /// CPU usage between 0-1, a percentage.
-  pub usage: f64,
-
-  /// CPU temperature in celsius, if available.
-  pub temperature: Option<f64>,
-
-  /// Load average.
-  pub load_average: f64,
-}
-
-impl CpuLog {
-  pub(crate) fn recent(
-    logs: &VecDeque<Self>,
-    now: Instant,
-    window: Duration,
-  ) -> impl Iterator<Item = &Self> {
-    logs.iter().filter(move |log| {
-      now
-        .checked_duration_since(log.at)
-        .is_some_and(|age| age < window)
-    })
-  }
-}
 
 #[derive(Debug)]
 struct CpuVolatility {
@@ -1727,7 +1700,7 @@ fn install_rule_attribution(
   actions: &mut config::EvaluatedRule,
   failures: &mut RuntimeFailures,
 ) {
-  let attribution = mem::take(&mut actions.attribution).resolve(actions);
+  let attribution = actions.resolve_attribution();
   fs::begin_settings_iteration();
   fs::set_setting_rules(attribution.rules);
   for error in attribution.failures {
@@ -1753,7 +1726,7 @@ fn apply_actions(
     gpu: gpu_deltas,
     power: power_deltas,
     platform_profile: power_platform_profile,
-    attribution: _,
+    ..
   } = actions;
 
   runtime_failures.apply_cpu_deltas(&cpu_deltas);
