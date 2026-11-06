@@ -18,10 +18,10 @@ name = "watt"
 path = "main.rs"
 
 [dependencies]
-clap.workspace                = true
-clap-verbosity-flag.workspace = true
+caress.workspace              = true
 env_logger.workspace          = true
 misstep.workspace             = true
+pound.workspace               = true
 futures-util.workspace        = true
 log.workspace                 = true
 nix.workspace                 = true

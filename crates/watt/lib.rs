@@ -11,13 +11,13 @@ use std::{
   },
 };
 
+use config::verify::report as report_verification;
 use misstep::{
   ResultExt as _,
   bail,
   ensure,
 };
-use clap::Parser as _;
-use config::verify::report as report_verification;
+use pound::Parse as _;
 use tokio::runtime::Builder as RuntimeBuilder;
 pub use watt_config as config;
 pub use watt_platform::{
@@ -44,79 +44,99 @@ pub mod profile;
 
 #[cfg(test)] pub(crate) use watt_platform::test_support;
 
-#[derive(clap::Parser, Debug)]
-#[command(version, about)]
+/// Modern CPU frequency and power management utility for Linux.
+#[derive(pound::Parse, Debug)]
+#[pound(name = "watt")]
 pub struct Cli {
-  #[command(flatten)]
-  verbosity: clap_verbosity_flag::Verbosity<clap_verbosity_flag::InfoLevel>,
+  #[pound(flatten)]
+  verbosity: Verbosity,
 
   /// The daemon config path.
-  #[arg(long, env = "WATT_CONFIG")]
+  #[pound(long, env = "WATT_CONFIG")]
   config: Option<PathBuf>,
 
   /// Print daemon query results as stable JSON.
-  #[arg(long, global = true)]
+  #[pound(long, global)]
   json: bool,
 
   /// Check configuration and exit. Hardware mode also checks discovered CPU,
   /// power-supply and peripheral controls.
-  #[arg(
-    long,
-    value_enum,
-    num_args = 0..=1,
-    default_missing_value = "offline",
-    require_equals = true
-  )]
+  #[pound(long, default_missing = "offline")]
   verify_config: Option<VerificationMode>,
 
-  #[command(subcommand)]
+  #[pound(subcommand)]
   command: Option<Command>,
 }
 
-#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+#[derive(pound::Parse, Debug)]
+struct Verbosity {
+  /// Increase logging verbosity. Repeat for trace logging.
+  #[pound(short, long, count, conflicts_with = quiet)]
+  verbose: u8,
+
+  /// Reduce logging verbosity. Repeat to disable logging.
+  #[pound(short, long, count)]
+  quiet: u8,
+}
+
+impl Verbosity {
+  fn log_level_filter(&self) -> log::LevelFilter {
+    match (self.verbose, self.quiet) {
+      (0, 0) => log::LevelFilter::Info,
+      (0, 1) => log::LevelFilter::Warn,
+      (0, 2) => log::LevelFilter::Error,
+      (0, _) => log::LevelFilter::Off,
+      (1, 0) => log::LevelFilter::Debug,
+      (_, 0) => log::LevelFilter::Trace,
+      _ => unreachable!("pound rejects mixed verbosity flags"),
+    }
+  }
+}
+
+#[derive(pound::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 enum VerificationMode {
   Offline,
   Hardware,
 }
 
-#[derive(clap::Subcommand, Debug)]
+#[derive(pound::Parse, Debug)]
 enum Command {
   /// Inspect watt's configuration.
   Config {
-    #[command(subcommand)]
+    #[pound(subcommand)]
     command: ConfigCommand,
   },
 }
 
-#[derive(clap::Subcommand, Debug)]
+#[derive(pound::Parse, Debug)]
 enum ConfigCommand {
   /// Ask the running daemon to verify a local configuration file.
   Verify {
     path:     PathBuf,
     /// Check controls on the daemon's host as well as static configuration.
-    #[arg(long)]
+    #[pound(long)]
     hardware: bool,
   },
   /// Print the active rules selected by the daemon.
   Active {
     /// Continue printing the active rules whenever they change.
-    #[arg(long)]
+    #[pound(long)]
     watch: bool,
   },
   /// Ask the running daemon to reload its file-backed configuration.
   Reload,
-  #[command(flatten)]
+  #[pound(flatten)]
   Query(ConfigQuery),
   /// Read or select the active power profile.
   Profile {
-    #[command(subcommand)]
+    #[pound(subcommand)]
     command: ProfileCommand,
   },
 
   /// Print configuration as normalized TOML.
   Show {
     /// Show the built-in default instead of the running daemon's config.
-    #[arg(long)]
+    #[pound(long)]
     default: bool,
   },
 
@@ -142,7 +162,7 @@ impl ConfigCommand {
   }
 }
 
-#[derive(clap::Subcommand, Debug)]
+#[derive(pound::Parse, Debug)]
 enum ConfigQuery {
   /// Print recent daemon errors.
   Errors,
@@ -158,13 +178,14 @@ enum ConfigQuery {
   Polling,
 }
 
-#[derive(clap::Subcommand, Debug)]
+#[derive(pound::Parse, Debug)]
 enum ProfileCommand {
   Get,
   Set { profile: String },
 }
 
 pub fn main() -> misstep::Result<()> {
+  caress::handle(Cli::SPEC);
   let cli = Cli::parse();
 
   yansi::whenever(yansi::Condition::TTY_AND_COLOR);
