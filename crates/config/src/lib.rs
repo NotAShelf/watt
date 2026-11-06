@@ -1,3 +1,16 @@
+mod profile;
+mod telemetry;
+
+pub use profile::{
+  InvalidPowerProfile,
+  PowerProfile,
+};
+pub use telemetry::{
+  CpuLog,
+  HISTORY_SAMPLE_LIMIT,
+  MAX_POLL_INTERVAL_SECONDS,
+};
+
 pub mod verify;
 
 mod eval;
@@ -14,7 +27,7 @@ use std::{
     HashSet,
     VecDeque,
   },
-  fs,
+  fs as stdfs,
   mem,
   path::Path,
   sync::Arc,
@@ -29,16 +42,13 @@ use serde::{
   Deserialize,
   Serialize,
 };
-
-use crate::{
-  fs as settings,
+use watt_platform::{
+  fs,
   audio,
   cpu,
   disk,
   gpu,
   power_supply,
-  profile::PowerProfile,
-  system::CpuLog,
   uncore,
   usb,
   vm,
@@ -1366,7 +1376,7 @@ pub struct EvalState<'peripherals, 'context> {
   pub power_profile_preference: PowerProfile,
 
   pub context: EvalContext<'context>,
-  pub rule:    Option<&'context Arc<settings::RuleOrigin>>,
+  pub rule:    Option<&'context Arc<fs::RuleOrigin>>,
 
   pub cpus:           &'peripherals HashSet<Arc<cpu::Cpu>>,
   pub uncores:        &'peripherals HashSet<Arc<uncore::Uncore>>,
@@ -1385,8 +1395,8 @@ pub enum EvalContext<'a> {
 }
 
 impl<'peripherals, 'context> EvalState<'peripherals, 'context> {
-  fn setting<T>(&self, value: T) -> settings::Setting<T> {
-    let mut setting = settings::Setting::from(value);
+  fn setting<T>(&self, value: T) -> fs::Setting<T> {
+    let mut setting = fs::Setting::from(value);
     if let Some(rule) = self.rule {
       setting.set_rule(rule);
     }
@@ -1558,7 +1568,7 @@ impl DaemonConfig {
     let contents = if let Some(path) = path {
       log::info!("loading config from '{path}'", path = path.display());
 
-      &fs::read_to_string(path).with_context(|| {
+      &stdfs::read_to_string(path).with_context(|| {
         format!("failed to read config from '{path}'", path = path.display())
       })?
     } else {
@@ -1610,10 +1620,10 @@ mod tests {
   fn config_rejects_plural_rule_table() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("config.toml");
-    fs::write(&path, "[[rules]]\nname = 'power'\npriority = 1\n").unwrap();
+    stdfs::write(&path, "[[rules]]\nname = 'power'\npriority = 1\n").unwrap();
     let error = DaemonConfig::load_from(Some(&path)).unwrap_err();
     assert!(format!("{error:#}").contains("unknown field `rules`"));
-    fs::write(&path, "[[rule]]\nname = 'power'\npriority = 1\n").unwrap();
+    stdfs::write(&path, "[[rule]]\nname = 'power'\npriority = 1\n").unwrap();
     let config = DaemonConfig::load_from(Some(&path)).unwrap();
     assert_eq!(config.rules.len(), 1);
     assert_eq!(config.rules[0].name, "power");
@@ -1796,10 +1806,5 @@ mod tests {
   }
 }
 
-#[cfg(test)]
-#[path = "config/frequency_tests.rs"]
-mod frequency_tests;
-
-#[cfg(test)]
-#[path = "config/usage_tests.rs"]
-mod usage_tests;
+#[cfg(test)] mod frequency_tests;
+#[cfg(test)] mod usage_tests;

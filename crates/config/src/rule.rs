@@ -9,18 +9,7 @@ use std::{
 };
 
 use anyhow::Context as _;
-
-use super::{
-  CpuDeltas,
-  DiskDeltas,
-  EvalState,
-  GpuDeltas,
-  PowerSupplyDeltas,
-  Rule,
-  UncoreDeltas,
-  UsbDeltas,
-};
-use crate::{
+use watt_platform::{
   fs,
   audio,
   cpu,
@@ -32,24 +21,35 @@ use crate::{
   vm,
 };
 
+use super::{
+  CpuDeltas,
+  DiskDeltas,
+  EvalState,
+  GpuDeltas,
+  PowerSupplyDeltas,
+  Rule,
+  UncoreDeltas,
+  UsbDeltas,
+};
+
 /// Actions from one matching rule, available only after complete evaluation.
 #[derive(Default)]
 pub struct EvaluatedRule {
-  pub cpu:                CpuDeltas,
-  pub cpu_global:         cpu::GlobalDelta,
-  pub uncore:             UncoreDeltas,
-  pub vm:                 vm::Delta,
-  pub disk:               DiskDeltas,
-  pub disk_global:        disk::GlobalDelta,
-  pub usb:                UsbDeltas,
-  pub audio:              audio::Delta,
-  pub gpu:                GpuDeltas,
-  pub power:              PowerSupplyDeltas,
-  pub platform_profile:   Option<fs::Setting<String>>,
+  pub cpu:              CpuDeltas,
+  pub cpu_global:       cpu::GlobalDelta,
+  pub uncore:           UncoreDeltas,
+  pub vm:               vm::Delta,
+  pub disk:             DiskDeltas,
+  pub disk_global:      disk::GlobalDelta,
+  pub usb:              UsbDeltas,
+  pub audio:            audio::Delta,
+  pub gpu:              GpuDeltas,
+  pub power:            PowerSupplyDeltas,
+  pub platform_profile: Option<fs::Setting<String>>,
 }
 
 impl EvaluatedRule {
-  pub(crate) fn empty(state: &EvalState<'_, '_>) -> Self {
+  pub fn empty(state: &EvalState<'_, '_>) -> Self {
     Self {
       cpu: empty_deltas(state.cpus),
       uncore: empty_deltas(state.uncores),
@@ -61,7 +61,7 @@ impl EvaluatedRule {
     }
   }
 
-  pub(crate) fn merge(&mut self, lower: Self) {
+  pub fn merge(&mut self, lower: Self) {
     merge_deltas(&mut self.cpu, lower.cpu, cpu::Delta::or);
     merge_deltas(&mut self.uncore, lower.uncore, uncore::Delta::or);
     merge_deltas(&mut self.disk, lower.disk, disk::Delta::or);
@@ -76,7 +76,7 @@ impl EvaluatedRule {
       fs::prefer(self.platform_profile.take(), &lower.platform_profile);
   }
 
-  pub(crate) fn complete(&self) -> bool {
+  pub fn complete(&self) -> bool {
     self.cpu.values().all(cpu::Delta::is_some)
       && self.cpu_global.is_some()
       && self.power.values().all(power_supply::Delta::is_some)
@@ -168,7 +168,7 @@ mod tests {
   use std::collections::HashSet;
 
   use super::*;
-  use crate::config::test_support::with_cpu_state;
+  use crate::test_support::with_cpu_state;
 
   #[test]
   fn invalid_audio_action_rejects_entire_rule() {

@@ -1,10 +1,12 @@
-#[cfg(test)] use std::cell::RefCell;
-#[cfg(not(test))]
+#[cfg(any(test, feature = "test-support"))]
+use std::cell::RefCell;
+#[cfg(not(any(test, feature = "test-support")))]
 use std::fs::{
   read_to_string as read_raw,
   write as write_raw,
 };
-#[cfg(not(test))] use std::sync::Mutex;
+#[cfg(not(any(test, feature = "test-support")))]
+use std::sync::Mutex;
 use std::{
   cell::Cell,
   collections::{
@@ -29,7 +31,7 @@ use anyhow::{
   bail,
 };
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use crate::test_support::{
   read_raw,
   write_raw,
@@ -39,9 +41,9 @@ static SYSTEM_ROOT: OnceLock<Option<PathBuf>> = OnceLock::new();
 thread_local! {
   static WRITING_RULE: Cell<Option<Arc<RuleOrigin>>> = const { Cell::new(None) };
 }
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 static MANAGED_SETTINGS: OnceLock<Mutex<ManagedSettings>> = OnceLock::new();
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
   static TEST_SYSTEM_ROOT: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
   static TEST_MANAGED_SETTINGS: RefCell<ManagedSettings> = RefCell::new(ManagedSettings::default());
@@ -192,7 +194,7 @@ struct ManagedSettings {
 
 /// Keep originals for previously discovered roots that still exist but could
 /// not be scanned. Successful rediscovery or physical removal clears them.
-pub(crate) fn protect_scan_failures(
+pub fn protect_scan_failures(
   subsystem: &'static str,
   previous: &[PathBuf],
   current: impl IntoIterator<Item = PathBuf>,
@@ -245,7 +247,7 @@ impl Drop for SettingsGuard {
 }
 
 fn system_root() -> Option<PathBuf> {
-  #[cfg(test)]
+  #[cfg(any(test, feature = "test-support"))]
   if let Some(root) = TEST_SYSTEM_ROOT.with(|root| root.borrow().clone()) {
     return Some(root);
   }
@@ -264,7 +266,7 @@ fn system_root() -> Option<PathBuf> {
 pub fn path(path: impl AsRef<Path>) -> PathBuf {
   let path = path.as_ref();
   let Some(root) = system_root() else {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     assert!(
       !path.is_absolute(),
       "refusing to resolve host path '{}' in a test without a SystemFixture \
@@ -303,7 +305,7 @@ pub fn exists(input: impl AsRef<Path>) -> bool {
   path(input).exists()
 }
 
-pub(crate) fn known_missing(input: impl AsRef<Path>) -> bool {
+pub fn known_missing(input: impl AsRef<Path>) -> bool {
   matches!(path(input).try_exists(), Ok(false))
 }
 
@@ -525,7 +527,7 @@ pub fn applied_settings() -> Vec<AppliedSetting> {
 }
 
 /// Whether Watt owns a previously applied setting at this path.
-pub(crate) fn is_managed(input: impl AsRef<Path>) -> bool {
+pub fn is_managed(input: impl AsRef<Path>) -> bool {
   let path = path(input);
   with_managed_settings(|settings| settings.settings.contains_key(&path))
 }
@@ -564,12 +566,12 @@ fn restore_all_settings() -> Vec<RestoreFailure> {
 fn with_managed_settings<T>(
   operation: impl FnOnce(&mut ManagedSettings) -> T,
 ) -> T {
-  #[cfg(test)]
+  #[cfg(any(test, feature = "test-support"))]
   {
     TEST_MANAGED_SETTINGS.with(|settings| operation(&mut settings.borrow_mut()))
   }
 
-  #[cfg(not(test))]
+  #[cfg(not(any(test, feature = "test-support")))]
   {
     operation(
       &mut MANAGED_SETTINGS
@@ -701,12 +703,12 @@ fn equivalent_value(observed: &str, expected: &str) -> bool {
   normalize_value(observed.to_owned()) == expected.trim()
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub struct SystemRootGuard {
   old: Option<PathBuf>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn set_system_root_for_tests(root: impl Into<PathBuf>) -> SystemRootGuard {
   SystemRootGuard {
     old: TEST_SYSTEM_ROOT
@@ -714,7 +716,7 @@ pub fn set_system_root_for_tests(root: impl Into<PathBuf>) -> SystemRootGuard {
   }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl Drop for SystemRootGuard {
   fn drop(&mut self) {
     TEST_SYSTEM_ROOT.with(|configured| {

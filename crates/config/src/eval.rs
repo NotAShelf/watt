@@ -4,6 +4,10 @@ use anyhow::{
 };
 use humantime::parse_duration;
 use jiff::Timestamp;
+use watt_platform::{
+  fs,
+  power_supply::PowerSupply,
+};
 
 use super::{
   EvalContext,
@@ -11,11 +15,7 @@ use super::{
   Expression,
   find_battery,
 };
-use crate::{
-  fs,
-  power_supply::PowerSupply,
-  system::CpuLog,
-};
+use crate::CpuLog;
 
 pub(super) enum Evaluated<T> {
   Value(T),

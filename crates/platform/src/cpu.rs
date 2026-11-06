@@ -623,7 +623,7 @@ impl Cpu {
       && self.available_epps.iter().any(|value| value == observed)
   }
 
-  pub(crate) fn validate_epp(&self, epp: &str) -> anyhow::Result<()> {
+  pub fn validate_epp(&self, epp: &str) -> anyhow::Result<()> {
     if let Ok(value) = epp.parse::<u16>() {
       let supported = self.policy.as_ref().is_some_and(|policy| {
         matches!(

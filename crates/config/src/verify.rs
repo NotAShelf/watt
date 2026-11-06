@@ -11,14 +11,7 @@ use anyhow::{
   ensure,
 };
 use serde::Serialize;
-
-use super::{
-  CpusDelta,
-  DaemonConfig,
-  Expression,
-  Rule,
-};
-use crate::{
+use watt_platform::{
   cpu::frequency::Frequency,
   vm::{
     validate_hugepage_defrag,
@@ -26,14 +19,21 @@ use crate::{
   },
 };
 
+use super::{
+  CpusDelta,
+  DaemonConfig,
+  Expression,
+  Rule,
+};
+
 mod constants;
 mod expressions;
 mod hardware;
 
-pub(crate) use expressions::visit_rule_duration_windows;
+pub use expressions::visit_rule_duration_windows;
 
 /// Parses a duration from a string expression that needs no telemetry.
-pub(crate) fn constant_duration(expression: &Expression) -> Option<Duration> {
+pub fn constant_duration(expression: &Expression) -> Option<Duration> {
   let constants::Constant::String(value) =
     constants::analyze(expression).ok()?
   else {

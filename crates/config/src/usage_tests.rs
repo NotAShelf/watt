@@ -11,8 +11,8 @@ use std::{
 
 use super::*;
 use crate::{
-  profile::PowerProfile,
-  system::CpuLog,
+  CpuLog,
+  PowerProfile,
 };
 
 #[test]

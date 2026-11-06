@@ -7,14 +7,13 @@ use std::{
   time::Instant,
 };
 
+use watt_platform::cpu;
+
 use super::{
   EvalContext,
   EvalState,
 };
-use crate::{
-  cpu,
-  profile::PowerProfile,
-};
+use crate::PowerProfile;
 
 pub(super) fn with_cpu_state(
   cpus: &HashSet<Arc<cpu::Cpu>>,

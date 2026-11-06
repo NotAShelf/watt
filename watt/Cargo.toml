@@ -4,6 +4,8 @@ description.workspace  = true
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
 
 [lib]
 path = "lib.rs"
@@ -21,11 +23,8 @@ clap.workspace                = true
 clap-verbosity-flag.workspace = true
 env_logger.workspace          = true
 futures-util.workspace        = true
-humantime.workspace           = true
-jiff.workspace                = true
 log.workspace                 = true
 nix.workspace                 = true
-num_cpus.workspace            = true
 schemars.workspace            = true
 serde.workspace               = true
 serde_json.workspace          = true
@@ -33,10 +32,14 @@ tempfile.workspace            = true
 tiny_http                     = { optional = true, workspace = true }
 tokio.workspace               = true
 toml.workspace                = true
+watt-config.workspace         = true
+watt-platform.workspace       = true
 yansi.workspace               = true
 zbus.workspace                = true
 
+[dev-dependencies]
+watt-platform = { workspace = true, features = [ "test-support" ] }
+
 [features]
 default = [  ]
-metrics = [ "dep:tiny_http" ]
-
+metrics = [ "dep:tiny_http", "watt-config/metrics" ]

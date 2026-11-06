@@ -17,23 +17,24 @@ use anyhow::{
   ensure,
 };
 use clap::Parser as _;
+use config::verify::report as report_verification;
 use tokio::runtime::Builder as RuntimeBuilder;
+pub use watt_config as config;
+pub use watt_platform::{
+  audio,
+  cpu,
+  disk,
+  fs,
+  gpu,
+  power_supply,
+  uncore,
+  usb,
+  vm,
+};
 
 use crate::dbus::client::OutputFormat;
 
-pub mod audio;
-pub mod cpu;
-pub mod disk;
-pub mod gpu;
-pub mod power_supply;
 pub mod system;
-pub mod uncore;
-pub mod usb;
-pub mod vm;
-
-pub mod fs;
-
-pub mod config;
 
 pub mod lock;
 
@@ -41,7 +42,7 @@ pub mod dbus;
 #[cfg(feature = "metrics")] pub mod metrics;
 pub mod profile;
 
-#[cfg(test)] mod test_support;
+#[cfg(test)] pub(crate) use watt_platform::test_support;
 
 #[derive(clap::Parser, Debug)]
 #[command(version, about)]
@@ -214,7 +215,7 @@ fn verify_configuration(
   mode: VerificationMode,
 ) -> anyhow::Result<()> {
   if let VerificationMode::Hardware = mode {
-    config::verify::report(config.verify_hardware()?)?;
+    report_verification(config.verify_hardware()?)?;
   }
   print_output("Configuration valid.")
 }

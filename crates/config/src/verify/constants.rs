@@ -4,7 +4,7 @@ use anyhow::{
 };
 
 use super::Expression;
-use crate::config::eval::{
+use crate::eval::{
   Evaluated,
   Evaluation,
   Evaluator,

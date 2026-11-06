@@ -18,6 +18,8 @@ rustPlatform.buildRustPackage (finalAttrs: {
       root = s;
       fileset = fs.unions [
         ../.cargo
+        ../crates
+        ../crates/config/src/config.toml
         ../watt
         ../xtask
         ../dbus

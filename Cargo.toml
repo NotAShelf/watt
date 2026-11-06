@@ -1,11 +1,11 @@
 [workspace]
 resolver        = "3"
-members         = [ "watt", "xtask" ]
+members         = [ "crates/*", "watt", "xtask" ]
 default-members = [ "watt" ]
 
 [workspace.package]
 description  = "Modern CPU frequency and power management utility for Linux"
-edition      = "2024"                                                        # Keep in sync with .rustfmt.toml.
+edition      = "2024"
 license      = "MPL-2.0"
 readme       = true
 repository   = "https://github.com/notashelf/watt"
@@ -14,7 +14,9 @@ version      = "1.4.0"
 
 [workspace.dependencies]
 # Workspace components
-watt = { path = "./watt", version = "1.4.0" }
+watt          = { path = "./watt", version = "1.4.0" }
+watt-config   = { path = "./crates/config", version = "1.4.0" }
+watt-platform = { path = "./crates/platform", version = "1.4.0" }
 
 # Other dependencies
 anyhow                = "1.0.104"

@@ -52,7 +52,7 @@ Configuration is loaded in this order:
 
 - `--config /path/to/config.toml`
 - `WATT_CONFIG=/path/to/config.toml`
-- the built-in default at `watt/config.toml`
+- the built-in default at `crates/config/src/config.toml`
 
 Send SIGHUP to reload a file-backed configuration. If the new file fails to
 parse or validate, Watt keeps the previous configuration. On the built-in

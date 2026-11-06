@@ -12,19 +12,7 @@ use anyhow::{
   Context as _,
   ensure,
 };
-
-use super::{
-  DaemonConfig,
-  Diagnostic,
-  Expression,
-  Rule,
-  constant_frequency,
-  constant_percentage,
-  constant_unsigned_integer,
-  constants,
-};
-use crate::{
-  config::CpusDelta,
+use watt_platform::{
   cpu::{
     Cpu,
     CpuInventory,
@@ -52,6 +40,18 @@ use crate::{
     UsbInventory,
   },
 };
+
+use super::{
+  DaemonConfig,
+  Diagnostic,
+  Expression,
+  Rule,
+  constant_frequency,
+  constant_percentage,
+  constant_unsigned_integer,
+  constants,
+};
+use crate::CpusDelta;
 
 impl DaemonConfig {
   /// Checks device selectors, control availability, and constant action values
@@ -1138,6 +1138,8 @@ mod tests {
     os::unix::fs::symlink,
   };
 
+  use watt_platform::test_support::SystemFixture;
+
   use super::{
     super::{
       Severity,
@@ -1145,7 +1147,6 @@ mod tests {
     },
     *,
   };
-  use crate::test_support::SystemFixture;
 
   type Verify = fn(&DaemonConfig) -> anyhow::Result<Vec<Diagnostic>>;
 

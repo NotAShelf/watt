@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches: [ "main" ]
-    paths: [ 'watt/**.rs', 'xtask/*', 'build.rs',  'Cargo.toml', 'Cargo.lock', 'nix/package.nix', 'flake.nix', 'flake.lock' ]
+    paths: [ 'crates/**', 'watt/**.rs', 'xtask/*', 'build.rs',  'Cargo.toml', 'Cargo.lock', 'nix/package.nix', 'flake.nix', 'flake.lock' ]
 
 permissions:
   contents: read
