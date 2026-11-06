@@ -5,6 +5,7 @@ use std::{
   io::Write as _,
 };
 
+use dbus::Error;
 use futures_util::{
   StreamExt as _,
   stream::FuturesUnordered,
@@ -21,16 +22,17 @@ use support::{
   reloaded,
   rule,
 };
-use zbus::Error;
 
 fn reload_accepted(result: Result<(), Error>) -> bool {
   match result {
     Ok(()) => true,
-    Err(Error::MethodError(name, ..)) => {
-      assert_eq!(name.as_str(), "org.freedesktop.DBus.Error.LimitsExceeded");
+    Err(error) => {
+      assert_eq!(
+        error.name(),
+        Some("org.freedesktop.DBus.Error.LimitsExceeded")
+      );
       false
     },
-    Err(error) => panic!("unexpected concurrent reload failure: {error}"),
   }
 }
 
@@ -103,9 +105,7 @@ async fn invalid_reload_retains_loaded_config_and_reports_both_reload_routes() {
     proxy.receive_signal("ConfigurationReloaded").await.unwrap();
 
   daemon.config("[[rule]\nthis is not TOML\n");
-  let error = bounded(proxy.call::<_, _, ()>("Reload", &()))
-    .await
-    .unwrap_err();
+  let error = bounded(proxy.invoke("Reload", ())).await.unwrap_err();
   assert!(error.to_string().contains("reload failed"), "{error}");
   assert!(!reloaded(&mut signals).await.0);
   assert_eq!(call::<String>(&proxy, "GetConfig").await, original);
@@ -175,10 +175,7 @@ async fn hotplug_reload_and_device_disappearance_at_shutdown_restore_survivors()
   daemon.fifo("/config.toml");
   let reload_connection = connection.clone();
   let request = tokio::spawn(async move {
-    native(&reload_connection)
-      .await
-      .call::<_, _, ()>("Reload", &())
-      .await
+    native(&reload_connection).await.invoke("Reload", ()).await
   });
   let mut writer = daemon.fifo_reader("/config.toml").await;
   daemon.policy(1);
@@ -258,16 +255,13 @@ async fn repeated_hangups_and_concurrent_native_reloads_remain_bounded() {
   daemon.fifo("/config.toml");
   let reload_connection = connection.clone();
   let first_request = tokio::spawn(async move {
-    native(&reload_connection)
-      .await
-      .call::<_, _, ()>("Reload", &())
-      .await
+    native(&reload_connection).await.invoke("Reload", ()).await
   });
   let mut writer = daemon.fifo_reader("/config.toml").await;
   let mut requests = FuturesUnordered::new();
   for _ in 0..32 {
     let proxy = proxy.clone();
-    requests.push(async move { proxy.call::<_, _, ()>("Reload", &()).await });
+    requests.push(async move { proxy.invoke("Reload", ()).await });
   }
   // One queued request can wait; the rest must fail promptly while loading
   // blocks.

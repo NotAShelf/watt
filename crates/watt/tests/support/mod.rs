@@ -4,10 +4,6 @@ mod process;
 
 use std::{
   collections::HashMap,
-  fmt::{
-    Debug,
-    Display,
-  },
   fs,
   future::Future,
   os::unix::fs::{
@@ -18,6 +14,7 @@ use std::{
     Path,
     PathBuf,
   },
+  pin::Pin,
   process::{
     Command,
     Output,
@@ -30,10 +27,41 @@ use std::{
       Ordering,
     },
   },
+  task::{
+    Context,
+    Poll,
+  },
   time::Duration,
 };
 
-use futures_util::StreamExt as _;
+use dbus::{
+  Message,
+  arg::{
+    AppendAll,
+    Arg,
+    Get,
+    PropMap,
+    prop_cast,
+  },
+  channel::{
+    Channel,
+    MatchingReceiver as _,
+  },
+  message::MatchRule,
+  nonblock::{
+    MsgMatch,
+    Proxy,
+    SyncConnection,
+    stdintf::org_freedesktop_dbus::Properties as _,
+  },
+};
+use dbus_crossroads::Crossroads;
+use dbus_tokio::connection as tokio_dbus;
+use futures_channel::mpsc::UnboundedReceiver;
+use futures_util::{
+  Stream,
+  StreamExt as _,
+};
 use nix::{
   libc,
   sys::stat::Mode,
@@ -42,23 +70,11 @@ use nix::{
 use process::Process;
 pub use process::isolated_command;
 use tempfile::TempDir;
-use tokio::time::{
-  interval,
-  timeout,
-};
-use zbus::{
-  Connection,
-  Proxy,
-  connection,
-  interface,
-  proxy::{
-    Builder,
-    CacheProperties,
-    SignalStream,
-  },
-  zvariant::{
-    DynamicDeserialize,
-    OwnedValue,
+use tokio::{
+  task::JoinHandle,
+  time::{
+    interval,
+    timeout,
   },
 };
 
@@ -69,7 +85,139 @@ pub const EPP: &str =
   "/sys/devices/system/cpu/cpufreq/policy0/energy_performance_preference";
 pub const DIRTY_RATIO: &str = "/proc/sys/vm/dirty_ratio";
 
-pub type Dictionary = HashMap<String, OwnedValue>;
+pub type Dictionary = PropMap;
+
+#[derive(Clone)]
+pub struct Connection {
+  inner:    Arc<SyncConnection>,
+  resource: Arc<ConnectionResource>,
+}
+
+struct ConnectionResource(JoinHandle<()>);
+
+impl Drop for ConnectionResource {
+  fn drop(&mut self) {
+    self.0.abort();
+  }
+}
+
+impl Connection {
+  pub fn address(address: &str) -> Result<Self, dbus::Error> {
+    let mut channel = Channel::open_private(address)?;
+    channel.register()?;
+    let (resource, inner) = tokio_dbus::from_channel(channel)?;
+    let resource = tokio::spawn(async move {
+      let _ = resource.await;
+    });
+    Ok(Self {
+      inner,
+      resource: Arc::new(ConnectionResource(resource)),
+    })
+  }
+
+  pub fn inner(&self) -> &Arc<SyncConnection> {
+    &self.inner
+  }
+}
+#[derive(Clone)]
+pub struct ServiceProxy {
+  connection:  Connection,
+  destination: &'static str,
+  path:        &'static str,
+  interface:   &'static str,
+}
+
+impl ServiceProxy {
+  fn proxy(&self) -> Proxy<'_, Arc<SyncConnection>> {
+    Proxy::new(
+      self.destination,
+      self.path,
+      DEADLINE,
+      self.connection.inner.clone(),
+    )
+  }
+
+  pub async fn call<R>(&self, method: &str) -> Result<R, dbus::Error>
+  where
+    R: Arg + for<'a> Get<'a> + 'static,
+  {
+    let (result,): (R,) =
+      self.proxy().method_call(self.interface, method, ()).await?;
+    Ok(result)
+  }
+
+  pub async fn invoke<A: AppendAll>(
+    &self,
+    method: &str,
+    args: A,
+  ) -> Result<(), dbus::Error> {
+    self.proxy().method_call(self.interface, method, args).await
+  }
+
+  pub async fn invoke_result<A, R>(
+    &self,
+    method: &str,
+    args: A,
+  ) -> Result<R, dbus::Error>
+  where
+    A: AppendAll,
+    R: Arg + for<'a> Get<'a> + 'static,
+  {
+    let (result,): (R,) = self
+      .proxy()
+      .method_call(self.interface, method, args)
+      .await?;
+    Ok(result)
+  }
+
+  pub async fn get_property<R>(&self, property: &str) -> Result<R, dbus::Error>
+  where
+    R: Arg + for<'a> Get<'a> + 'static,
+  {
+    self.proxy().get(self.interface, property).await
+  }
+
+  pub async fn set_property(
+    &self,
+    property: &str,
+    value: &str,
+  ) -> Result<(), dbus::Error> {
+    self
+      .proxy()
+      .set(self.interface, property, value.to_owned())
+      .await
+  }
+
+  pub async fn receive_signal(
+    &self,
+    member: &'static str,
+  ) -> Result<SignalStream, dbus::Error> {
+    let mut rule = MatchRule::new_signal(self.interface, member);
+    rule.path = Some(self.path.into());
+    let (guard, inner) =
+      self.connection.inner.add_match(rule).await?.msg_stream();
+    Ok(SignalStream {
+      _guard: guard,
+      inner,
+    })
+  }
+}
+
+pub struct SignalStream {
+  _guard: MsgMatch,
+  inner:  UnboundedReceiver<Message>,
+}
+
+impl Stream for SignalStream {
+  type Item = Message;
+
+  fn poll_next(
+    mut self: Pin<&mut Self>,
+    context: &mut Context<'_>,
+  ) -> Poll<Option<Self::Item>> {
+    Pin::new(&mut self.inner).poll_next(context)
+  }
+}
 
 pub async fn bounded<T>(future: impl Future<Output = T>) -> T {
   timeout(DEADLINE, future)
@@ -111,81 +259,45 @@ pub fn assert_success(output: &Output) {
   );
 }
 
-pub fn assert_denied(error: impl Display) {
-  let error = error.to_string();
-  assert!(error.contains("AccessDenied"), "{error}");
+pub fn assert_denied(error: dbus::Error) {
+  assert_eq!(
+    error.name(),
+    Some("org.freedesktop.DBus.Error.AccessDenied"),
+    "{error}"
+  );
 }
 
-pub async fn call<R>(proxy: &Proxy<'_>, method: &str) -> R
+pub async fn call<R>(proxy: &ServiceProxy, method: &str) -> R
 where
-  R: for<'d> DynamicDeserialize<'d>,
+  R: Arg + for<'a> Get<'a> + 'static,
 {
-  bounded(proxy.call(method, &())).await.unwrap()
+  bounded(proxy.call(method)).await.unwrap()
 }
 
-pub async fn reload(proxy: &Proxy<'_>) {
-  call::<()>(proxy, "Reload").await;
+pub async fn reload(proxy: &ServiceProxy) {
+  bounded(proxy.invoke("Reload", ())).await.unwrap();
 }
 
 /// Next `ConfigurationReloaded` result as `(success, message)`.
-pub async fn reloaded(signals: &mut SignalStream<'_>) -> (bool, String) {
-  bounded(signals.next())
-    .await
-    .unwrap()
-    .body()
-    .deserialize()
-    .unwrap()
+pub async fn reloaded(signals: &mut SignalStream) -> (bool, String) {
+  bounded(signals.next()).await.unwrap().read2().unwrap()
 }
 
 pub fn string<'a>(dictionary: &'a Dictionary, key: &str) -> &'a str {
-  dictionary[key].downcast_ref().unwrap()
+  prop_cast::<String>(dictionary, key).unwrap()
 }
 
 pub fn value<T>(dictionary: &Dictionary, key: &str) -> T
 where
-  T: TryFrom<OwnedValue>,
-  T::Error: Debug,
+  T: Clone + 'static,
 {
-  T::try_from(dictionary[key].try_clone().unwrap()).unwrap()
-}
-
-#[derive(serde::Serialize, zbus::zvariant::Type)]
-struct AuthorizationResult {
-  authorized: bool,
-  challenge:  bool,
-  details:    HashMap<String, String>,
+  prop_cast::<T>(dictionary, key).unwrap().clone()
 }
 
 /// Private-bus polkit authority controlled by the test.
 struct MockAuthority {
   allowed: Arc<AtomicBool>,
   actions: Arc<AtomicU32>,
-}
-
-#[interface(name = "org.freedesktop.PolicyKit1.Authority")]
-impl MockAuthority {
-  fn check_authorization(
-    &self,
-    subject: (String, HashMap<String, OwnedValue>),
-    _action: &str,
-    _details: HashMap<String, String>,
-    _flags: u32,
-    _cancellation_id: &str,
-  ) -> AuthorizationResult {
-    assert_eq!(subject.0, "system-bus-name");
-    assert!(
-      subject.1["name"]
-        .downcast_ref::<&str>()
-        .unwrap()
-        .starts_with(':')
-    );
-    self.actions.fetch_add(1, Ordering::SeqCst);
-    AuthorizationResult {
-      authorized: self.allowed.load(Ordering::SeqCst),
-      challenge:  false,
-      details:    HashMap::new(),
-    }
-  }
 }
 
 fn bus_config(address: &str) -> String {
@@ -368,32 +480,66 @@ impl Harness {
           bus.child.try_wait().unwrap().is_none(),
           "private bus exited"
         );
-        if let Ok(connection) = connection::Builder::address(address.as_str())
-          .unwrap()
-          .build()
-          .await
-        {
+        if let Ok(connection) = Connection::address(&address) {
           break connection;
         }
       }
     })
     .await;
-    self.authority = Some(
-      bounded(
-        connection::Builder::address(address.as_str())
-          .unwrap()
-          .name("org.freedesktop.PolicyKit1")
-          .unwrap()
-          .serve_at("/org/freedesktop/PolicyKit1/Authority", MockAuthority {
-            allowed: self.allowed.clone(),
-            actions: self.actions.clone(),
-          })
-          .unwrap()
-          .build(),
-      )
-      .await
-      .unwrap(),
+
+    let authority = Connection::address(&address).unwrap();
+    let mut crossroads = Crossroads::new();
+    let interface =
+      crossroads.register("org.freedesktop.PolicyKit1.Authority", |builder| {
+        builder.method(
+          "CheckAuthorization",
+          ("subject", "action", "details", "flags", "cancellation_id"),
+          ("result",),
+          |_,
+           authority: &mut MockAuthority,
+           (subject, ..): (
+            (String, PropMap),
+            String,
+            HashMap<String, String>,
+            u32,
+            String,
+          )| {
+            assert_eq!(subject.0, "system-bus-name");
+            assert!(
+              prop_cast::<String>(&subject.1, "name")
+                .unwrap()
+                .starts_with(':')
+            );
+            authority.actions.fetch_add(1, Ordering::SeqCst);
+            Ok(((
+              authority.allowed.load(Ordering::SeqCst),
+              false,
+              HashMap::<String, String>::new(),
+            ),))
+          },
+        );
+      });
+    crossroads.insert(
+      "/org/freedesktop/PolicyKit1/Authority",
+      &[interface],
+      MockAuthority {
+        allowed: self.allowed.clone(),
+        actions: self.actions.clone(),
+      },
     );
+    authority.inner.start_receive(
+      MatchRule::new_method_call(),
+      Box::new(move |message, connection| {
+        crossroads.handle_message(message, connection).unwrap();
+        true
+      }),
+    );
+    authority
+      .inner
+      .request_name("org.freedesktop.PolicyKit1", false, false, true)
+      .await
+      .unwrap();
+    self.authority = Some(authority);
     self.connection = Some(client);
   }
 
@@ -420,9 +566,8 @@ impl Harness {
       loop {
         ticks.tick().await;
         self.assert_running();
-        if let Ok(cpus) = proxy
-          .call::<_, _, Vec<Dictionary>>("GetCpuCapabilities", &())
-          .await
+        if let Ok(cpus) =
+          proxy.call::<Vec<Dictionary>>("GetCpuCapabilities").await
           && !cpus.is_empty()
         {
           return;
@@ -526,27 +671,26 @@ impl Harness {
   }
 }
 
-async fn proxy<'a>(connection: &'a Connection, name: &'a str) -> Proxy<'a> {
-  let path = format!("/{}", name.replace('.', "/"));
-  Builder::new(connection)
-    .destination(name)
-    .unwrap()
-    .path(path)
-    .unwrap()
-    .interface(name)
-    .unwrap()
-    .cache_properties(CacheProperties::No)
-    .build()
-    .await
-    .unwrap()
+fn proxy(connection: &Connection, name: &'static str) -> ServiceProxy {
+  let path = match name {
+    "dev.notashelf.Watt" => "/dev/notashelf/Watt",
+    "net.hadess.PowerProfiles" => "/net/hadess/PowerProfiles",
+    _ => unreachable!(),
+  };
+  ServiceProxy {
+    connection: connection.clone(),
+    destination: name,
+    path,
+    interface: name,
+  }
 }
 
-pub async fn native(connection: &Connection) -> Proxy<'_> {
-  proxy(connection, "dev.notashelf.Watt").await
+pub async fn native(connection: &Connection) -> ServiceProxy {
+  proxy(connection, "dev.notashelf.Watt")
 }
 
-pub async fn ppd(connection: &Connection) -> Proxy<'_> {
-  proxy(connection, "net.hadess.PowerProfiles").await
+pub async fn ppd(connection: &Connection) -> ServiceProxy {
+  proxy(connection, "net.hadess.PowerProfiles")
 }
 
 pub fn rule(name: &str, actions: &str) -> String {

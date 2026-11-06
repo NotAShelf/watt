@@ -2,11 +2,14 @@ mod support;
 
 use std::sync::atomic::Ordering;
 
+use dbus::nonblock::Proxy;
 use futures_util::StreamExt as _;
 use support::{
+  Connection,
   Dictionary,
   GOVERNOR,
   Harness,
+  ServiceProxy,
   assert_denied,
   bounded,
   call,
@@ -17,11 +20,6 @@ use support::{
   rule,
   string,
   value,
-};
-use zbus::{
-  Connection,
-  Proxy,
-  connection,
 };
 
 fn attribute<'a>(xml: &'a str, name: &str) -> &'a str {
@@ -92,14 +90,19 @@ async fn introspect(
   path: &str,
 ) -> String {
   let proxy = Proxy::new(
-    connection,
     destination,
     path,
+    support::DEADLINE,
+    connection.inner().clone(),
+  );
+  let (xml,): (String,) = bounded(proxy.method_call(
     "org.freedesktop.DBus.Introspectable",
-  )
+    "Introspect",
+    (),
+  ))
   .await
   .unwrap();
-  bounded(proxy.call("Introspect", &())).await.unwrap()
+  xml
 }
 
 #[tokio::test]
@@ -170,7 +173,7 @@ async fn public_bus_names_paths_and_signatures_remain_additive() {
   daemon.shutdown("-TERM").await;
 }
 
-async fn profile(native: &Proxy<'_>) -> String {
+async fn profile(native: &ServiceProxy) -> String {
   let status: Dictionary = call(native, "GetStatus").await;
   string(&status, "profile").to_owned()
 }
@@ -188,11 +191,7 @@ async fn mock_authorization_denies_mutations_without_changing_live_state() {
   daemon.config(&rule("replacement", "cpu.governor = 'schedutil'"));
 
   daemon.allowed.store(false, Ordering::SeqCst);
-  assert_denied(
-    bounded(native.call::<_, _, ()>("Reload", &()))
-      .await
-      .unwrap_err(),
-  );
+  assert_denied(bounded(native.invoke("Reload", ())).await.unwrap_err());
   assert_eq!(call::<String>(&native, "GetConfig").await, before);
   assert_eq!(daemon.read(GOVERNOR), "performance");
   assert_denied(
@@ -202,7 +201,7 @@ async fn mock_authorization_denies_mutations_without_changing_live_state() {
   );
   assert_eq!(profile(&native).await, "balanced");
   assert_denied(
-    bounded(ppd.call::<_, _, u32>("HoldProfile", &hold))
+    bounded(ppd.invoke_result::<_, u32>("HoldProfile", hold))
       .await
       .unwrap_err(),
   );
@@ -214,25 +213,21 @@ async fn mock_authorization_denies_mutations_without_changing_live_state() {
     .await
     .unwrap();
   assert_eq!(profile(&native).await, "performance");
-  let cookie: u32 = bounded(ppd.call("HoldProfile", &hold)).await.unwrap();
+  let cookie: u32 = bounded(ppd.invoke_result("HoldProfile", hold))
+    .await
+    .unwrap();
   assert_eq!(profile(&native).await, "power-saver");
 
-  let other = bounded(
-    connection::Builder::address(daemon.address.as_str())
-      .unwrap()
-      .build(),
-  )
-  .await
-  .unwrap();
+  let other = Connection::address(&daemon.address).unwrap();
   let other = support::ppd(&other).await;
   daemon.allowed.store(false, Ordering::SeqCst);
   assert_denied(
-    bounded(other.call::<_, _, ()>("ReleaseProfile", &(cookie,)))
+    bounded(other.invoke("ReleaseProfile", (cookie,)))
       .await
       .unwrap_err(),
   );
   assert_eq!(profile(&native).await, "power-saver");
-  bounded(ppd.call::<_, _, ()>("ReleaseProfile", &(cookie,)))
+  bounded(ppd.invoke("ReleaseProfile", (cookie,)))
     .await
     .unwrap();
   assert_eq!(profile(&native).await, "performance");
@@ -240,9 +235,11 @@ async fn mock_authorization_denies_mutations_without_changing_live_state() {
   assert_eq!(daemon.actions.load(Ordering::SeqCst), 7);
 
   daemon.allowed.store(true, Ordering::SeqCst);
-  let cookie: u32 = bounded(ppd.call("HoldProfile", &hold)).await.unwrap();
+  let cookie: u32 = bounded(ppd.invoke_result("HoldProfile", hold))
+    .await
+    .unwrap();
   assert_eq!(profile(&native).await, "power-saver");
-  bounded(other.call::<_, _, ()>("ReleaseProfile", &(cookie,)))
+  bounded(other.invoke("ReleaseProfile", (cookie,)))
     .await
     .unwrap();
   assert_eq!(profile(&native).await, "performance");

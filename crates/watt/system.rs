@@ -2091,6 +2091,7 @@ async fn run_polling_loop(
 #[cfg(test)]
 mod tests {
   use std::{
+    collections::HashSet,
     env,
     fs as stdfs,
     future::pending,
@@ -2099,22 +2100,34 @@ mod tests {
     process,
   };
 
+  use dbus::{
+    Message,
+    arg::{
+      PropMap,
+      prop_cast,
+    },
+    message::MatchRule,
+    nonblock::{
+      Proxy,
+      SyncConnection,
+      stdintf::org_freedesktop_dbus::Properties as _,
+    },
+  };
+  use futures_channel::mpsc::UnboundedReceiver;
   use futures_util::StreamExt as _;
   use tokio::{
     task::yield_now,
     time::timeout,
   };
-  use zbus::{
-    Proxy,
-    connection,
-    fdo::DBusProxy,
-    zvariant::OwnedValue,
-  };
 
   use super::*;
   use crate::{
     audio,
-    dbus::test_support::TestBus,
+    dbus::{
+      ppd,
+      test_support::TestBus,
+      watt,
+    },
     profile::PowerProfile,
     test_support::SystemFixture,
   };
@@ -2236,177 +2249,207 @@ mod tests {
     };
     let bus = TestBus::new();
     timeout(Duration::from_secs(10), async {
-      let connection = connection::Builder::address(bus.address.as_str())
-        .unwrap()
-        .build()
-        .await
-        .unwrap();
-      let client = connection::Builder::address(bus.address.as_str())
-        .unwrap()
-        .build()
-        .await
-        .unwrap();
-      let closing = connection.clone();
+      let (resource, connection) = bus.raw_connection();
+      let client = bus.connect();
       let state = Arc::new(RwLock::new(DaemonState::new(String::new(), 0)));
       let (_updates, applied_rules) = watch::channel(Vec::new());
-      let observe = async {
-        wait_native_service(&client).await;
-        let proxy = Proxy::new(
-          &client,
-          "dev.notashelf.Watt",
-          "/dev/notashelf/Watt",
-          "dev.notashelf.Watt",
-        )
-        .await
-        .unwrap();
-        let mut changes = proxy
-          .receive_property_changed::<Vec<HashMap<String, OwnedValue>>>(
-            "DegradedConditions",
-          )
-          .await;
-        let mut counts =
-          proxy.receive_property_changed::<u32>("ErrorCount").await;
-        let mut errors = proxy
-          .receive_property_changed::<String>("LatestError")
-          .await;
-        assert_eq!(proxy.get_property::<u32>("ErrorCount").await.unwrap(), 0);
-        assert!(
-          proxy
-            .get_property::<String>("LatestError")
-            .await
-            .unwrap()
-            .is_empty()
-        );
-        counts.next().await.unwrap();
-        errors.next().await.unwrap();
-        let ppd = Proxy::new(
-          &client,
-          "net.hadess.PowerProfiles",
-          "/net/hadess/PowerProfiles",
-          "net.hadess.PowerProfiles",
-        )
-        .await
-        .unwrap();
-        let mut ppd_changes = ppd
-          .receive_property_changed::<String>("PerformanceDegraded")
-          .await;
-        let initial_ppd: String =
-          ppd.get_property("PerformanceDegraded").await.unwrap();
-        assert!(initial_ppd.is_empty());
-        ppd_changes.next().await.unwrap();
-        let initial: Vec<HashMap<String, OwnedValue>> =
-          proxy.get_property("DegradedConditions").await.unwrap();
-        assert!(initial.is_empty());
-        // Consume the property cache's initial value before testing signals.
-        changes.next().await.unwrap();
-        let _settings = fs::manage_settings();
-        let mut failures = RuntimeFailures::default();
-        let mut dma_latency = cpu::DmaLatency::default();
-        fixture.write_result(&first, Err(ErrorKind::PermissionDenied));
-        for (expected_conditions, expected_reason) in
-          [(1, "policy-error"), (0, "")]
-        {
-          failures.begin_iteration();
-          let now = Instant::now();
-          let eval =
-            system.eval_state(now, now, PowerProfile::Performance, true);
-          let mut actions = config::EvaluatedRule::empty(&eval);
-          actions.cpu_global.turbo = Some(true);
-          apply_actions(actions, &mut failures, &mut dma_latency);
-          failures.finish_iteration();
-          let degraded =
-            detect_performance_degradation(&system, &failures, None);
-          {
-            let mut state = state.write().await;
-            state.update_system(&system, Vec::new(), degraded, &failures);
-            state.set_active_profile(PowerProfile::PowerSaver).unwrap();
-            assert!(state.performance_degraded().is_none());
-            state.set_active_profile(PowerProfile::Performance).unwrap();
-          }
-          assert_eq!(
-            counts.next().await.unwrap().get().await.unwrap(),
-            expected_conditions as u32
-          );
-          let latest = errors.next().await.unwrap().get().await.unwrap();
-          assert_eq!(latest.is_empty(), expected_conditions == 0);
-          assert_eq!(
-            proxy.cached_property::<u32>("ErrorCount").unwrap(),
-            Some(expected_conditions as u32)
-          );
-          assert_eq!(
-            proxy.cached_property::<String>("LatestError").unwrap(),
-            Some(latest)
-          );
-          let conditions = changes.next().await.unwrap().get().await.unwrap();
-          assert_eq!(conditions.len(), expected_conditions);
-          assert_eq!(
-            ppd_changes.next().await.unwrap().get().await.unwrap(),
-            expected_reason,
-          );
-          assert_eq!(stdfs::read_to_string(&second).unwrap(), "1");
-          for condition in &conditions {
-            assert_eq!(
-              <&str>::try_from(&condition["context"]).unwrap(),
-              "global CPU application"
-            );
-            let message = <&str>::try_from(&condition["message"]).unwrap();
-            assert!(message.contains(first.to_str().unwrap()), "{message}");
-          }
-          fixture.clear_io(&first);
-        }
-        assert_eq!(stdfs::read_to_string(&first).unwrap(), "1");
-        closing.close().await.unwrap();
-      };
       let (_reload_results_tx, reload_results_rx) = broadcast::channel(64);
-      let (result, ()) = tokio::join!(
-        server::run_connection(
-          connection,
-          state.clone(),
-          applied_rules,
-          mpsc::channel(1).0,
-          reload_results_rx,
-        ),
-        observe
+      let server = tokio::spawn(server::run_connection(
+        connection,
+        state.clone(),
+        applied_rules,
+        mpsc::channel(1).0,
+        reload_results_rx,
+        resource,
+      ));
+      wait_native_service(&client.connection).await;
+      let proxy = Proxy::new(
+        "dev.notashelf.Watt",
+        "/dev/notashelf/Watt",
+        Duration::from_secs(5),
+        client.connection.clone(),
       );
-      assert!(result.is_err());
-      client.close().await.unwrap();
+      let ppd = Proxy::new(
+        "net.hadess.PowerProfiles",
+        "/net/hadess/PowerProfiles",
+        Duration::from_secs(5),
+        client.connection.clone(),
+      );
+      let property_match = client
+        .connection
+        .add_match(MatchRule::new_signal(
+          "org.freedesktop.DBus.Properties",
+          "PropertiesChanged",
+        ))
+        .await
+        .unwrap();
+      let (_property_match, mut property_changes) = property_match.msg_stream();
+      assert_eq!(
+        proxy
+          .get::<u32>(watt::INTERFACE, "ErrorCount")
+          .await
+          .unwrap(),
+        0
+      );
+      assert!(
+        proxy
+          .get::<String>(watt::INTERFACE, "LatestError")
+          .await
+          .unwrap()
+          .is_empty()
+      );
+      assert!(
+        ppd
+          .get::<String>(ppd::INTERFACE, "PerformanceDegraded")
+          .await
+          .unwrap()
+          .is_empty()
+      );
+      let initial: Vec<PropMap> = proxy
+        .get(watt::INTERFACE, "DegradedConditions")
+        .await
+        .unwrap();
+      assert!(initial.is_empty());
+
+      let _settings = fs::manage_settings();
+      let mut failures = RuntimeFailures::default();
+      let mut dma_latency = cpu::DmaLatency::default();
+      fixture.write_result(&first, Err(ErrorKind::PermissionDenied));
+      for (expected_conditions, expected_reason) in
+        [(1, "policy-error"), (0, "")]
+      {
+        failures.begin_iteration();
+        let now = Instant::now();
+        let eval = system.eval_state(now, now, PowerProfile::Performance, true);
+        let mut actions = config::EvaluatedRule::empty(&eval);
+        actions.cpu_global.turbo = Some(true);
+        apply_actions(actions, &mut failures, &mut dma_latency);
+        failures.finish_iteration();
+        let degraded = detect_performance_degradation(&system, &failures, None);
+        {
+          let mut state = state.write().await;
+          state.update_system(&system, Vec::new(), degraded, &failures);
+          state.set_active_profile(PowerProfile::PowerSaver).unwrap();
+          assert!(state.performance_degraded().is_none());
+          state.set_active_profile(PowerProfile::Performance).unwrap();
+        }
+        wait_property_changes(&mut property_changes, &[
+          (watt::INTERFACE, "ErrorCount"),
+          (watt::INTERFACE, "LatestError"),
+          (watt::INTERFACE, "PerformanceDegraded"),
+          (watt::INTERFACE, "DegradedConditions"),
+          (ppd::INTERFACE, "PerformanceDegraded"),
+        ])
+        .await;
+        assert_eq!(
+          proxy
+            .get::<u32>(watt::INTERFACE, "ErrorCount")
+            .await
+            .unwrap(),
+          expected_conditions as u32
+        );
+        let latest = proxy
+          .get::<String>(watt::INTERFACE, "LatestError")
+          .await
+          .unwrap();
+        assert_eq!(latest.is_empty(), expected_conditions == 0);
+        let conditions: Vec<PropMap> = proxy
+          .get(watt::INTERFACE, "DegradedConditions")
+          .await
+          .unwrap();
+        assert_eq!(conditions.len(), expected_conditions);
+        assert_eq!(
+          ppd
+            .get::<String>(ppd::INTERFACE, "PerformanceDegraded")
+            .await
+            .unwrap(),
+          expected_reason,
+        );
+        assert_eq!(stdfs::read_to_string(&second).unwrap(), "1");
+        for condition in &conditions {
+          assert_eq!(
+            prop_cast::<String>(condition, "context").unwrap(),
+            "global CPU application"
+          );
+          let message = prop_cast::<String>(condition, "message").unwrap();
+          assert!(message.contains(first.to_str().unwrap()), "{message}");
+        }
+        fixture.clear_io(&first);
+      }
+      assert_eq!(stdfs::read_to_string(&first).unwrap(), "1");
+      server.abort();
     })
     .await
     .expect("boost degradation notification timed out");
   }
 
-  async fn wait_native_service(connection: &zbus::Connection) {
-    let bus = DBusProxy::new(connection).await.unwrap();
-    while !bus
-      .name_has_owner("dev.notashelf.Watt".try_into().unwrap())
-      .await
-      .unwrap()
-    {
+  async fn wait_native_service(connection: &Arc<SyncConnection>) {
+    let bus = Proxy::new(
+      "org.freedesktop.DBus",
+      "/org/freedesktop/DBus",
+      Duration::from_secs(5),
+      connection.clone(),
+    );
+    loop {
+      let (owned,): (bool,) = bus
+        .method_call(
+          "org.freedesktop.DBus",
+          "NameHasOwner",
+          ("dev.notashelf.Watt",),
+        )
+        .await
+        .unwrap();
+      if owned {
+        return;
+      }
       yield_now().await;
     }
   }
 
+  async fn wait_property_changes(
+    changes: &mut UnboundedReceiver<Message>,
+    expected: &[(&str, &str)],
+  ) {
+    let mut remaining: HashSet<_> = expected
+      .iter()
+      .map(|(interface, property)| {
+        ((*interface).to_owned(), (*property).to_owned())
+      })
+      .collect();
+    while !remaining.is_empty() {
+      let message = changes.next().await.unwrap();
+      let (interface, changed, invalidated): (String, PropMap, Vec<String>) =
+        message.read3().unwrap();
+      for property in changed.keys().chain(&invalidated) {
+        remaining.remove(&(interface.clone(), property.clone()));
+      }
+    }
+  }
+
   async fn assert_selected_boost(
-    proxy: &Proxy<'_>,
+    proxy: &Proxy<'_, Arc<SyncConnection>>,
     expected: Option<(&str, bool, &str)>,
   ) {
-    let boost: HashMap<String, OwnedValue> =
-      proxy.call("GetBoostCapabilities", &()).await.unwrap();
-    let devices: Vec<HashMap<String, OwnedValue>> =
-      proxy.call("GetDeviceCapabilities", &()).await.unwrap();
+    let (boost,): (PropMap,) = proxy
+      .method_call(watt::INTERFACE, "GetBoostCapabilities", ())
+      .await
+      .unwrap();
+    let (devices,): (Vec<PropMap>,) = proxy
+      .method_call(watt::INTERFACE, "GetDeviceCapabilities", ())
+      .await
+      .unwrap();
     let paths: Vec<_> = devices
       .iter()
-      .filter(|device| <&str>::try_from(&device["name"]).unwrap() == "boost")
-      .map(|device| <&str>::try_from(&device["path"]).unwrap())
+      .filter(|device| prop_cast::<String>(device, "name").unwrap() == "boost")
+      .map(|device| prop_cast::<String>(device, "path").unwrap().clone())
       .collect();
     match expected {
       Some((scope, inverted, path)) => {
-        assert_eq!(<&str>::try_from(&boost["scope"]).unwrap(), scope);
-        assert_eq!(bool::try_from(&boost["inverted"]).unwrap(), inverted);
+        assert_eq!(prop_cast::<String>(&boost, "scope").unwrap(), scope);
+        assert_eq!(*prop_cast::<bool>(&boost, "inverted").unwrap(), inverted);
         assert_eq!(
-          Vec::<String>::try_from(boost["control-paths"].try_clone().unwrap())
-            .unwrap(),
-          [path]
+          prop_cast::<Vec<String>>(&boost, "control-paths").unwrap(),
+          &[path]
         );
         assert_eq!(paths, [path]);
       },
@@ -2435,88 +2478,72 @@ mod tests {
       .update_system(&system, Vec::new(), None, &failures);
     let bus = TestBus::new();
     timeout(Duration::from_secs(10), async {
-      let connection = connection::Builder::address(bus.address.as_str())
-        .unwrap()
-        .build()
-        .await
-        .unwrap();
-      let client = connection::Builder::address(bus.address.as_str())
-        .unwrap()
-        .build()
-        .await
-        .unwrap();
-      let closing = connection.clone();
+      let (resource, connection) = bus.raw_connection();
+      let client = bus.connect();
       let (_updates, applied_rules) = watch::channel(Vec::new());
       let (_reloads, reload_results) = broadcast::channel(64);
-      let observe = async {
-        wait_native_service(&client).await;
-        let proxy = Proxy::new(
-          &client,
-          "dev.notashelf.Watt",
-          "/dev/notashelf/Watt",
-          "dev.notashelf.Watt",
-        )
-        .await
-        .unwrap();
-        let mut changes =
-          proxy.receive_signal("CapabilitiesChanged").await.unwrap();
-        let policy_path = policy.to_str().unwrap();
-        let global_path = global;
-        let mut previous = Some(("global", true, global_path));
-        assert_selected_boost(&proxy, previous).await;
-        for selected in [
-          Some(("policy", false, policy_path)),
-          None,
-          Some(("global", true, global_path)),
-        ] {
-          match selected {
-            Some(("policy", ..)) => {
-              stdfs::remove_file(fixture.path(global)).unwrap();
-            },
-            None => {
-              stdfs::remove_file(&policy).unwrap();
-            },
-            Some(_) => fixture.write(global, "0"),
-          }
-          // Hardware mutations are not visible until the next published scan.
-          assert_selected_boost(&proxy, previous).await;
-          failures.begin_iteration();
-          system.scan(&mut failures);
-          failures.finish_iteration();
-          state.write().await.update_system(
-            &system,
-            Vec::new(),
-            None,
-            &failures,
-          );
-          changes
-            .next()
-            .await
-            .unwrap()
-            .body()
-            .deserialize::<()>()
-            .unwrap();
-          assert_selected_boost(&proxy, selected).await;
-          let cpus: Vec<HashMap<String, OwnedValue>> =
-            proxy.call("GetCpuCapabilities", &()).await.unwrap();
-          assert_eq!(cpus.len(), 1);
-          previous = selected;
-        }
-        assert_eq!(fixture.write_count(global), 0);
-        closing.close().await.unwrap();
-      };
-      let (result, ()) = tokio::join!(
-        server::run_connection(
-          connection,
-          state.clone(),
-          applied_rules,
-          mpsc::channel(1).0,
-          reload_results
-        ),
-        observe
+      let server = tokio::spawn(server::run_connection(
+        connection,
+        state.clone(),
+        applied_rules,
+        mpsc::channel(1).0,
+        reload_results,
+        resource,
+      ));
+      wait_native_service(&client.connection).await;
+      let proxy = Proxy::new(
+        "dev.notashelf.Watt",
+        "/dev/notashelf/Watt",
+        Duration::from_secs(5),
+        client.connection.clone(),
       );
-      assert!(result.is_err());
-      client.close().await.unwrap();
+      let mut rule =
+        MatchRule::new_signal(watt::INTERFACE, "CapabilitiesChanged");
+      rule.path = Some(watt::PATH.into());
+      let (_signal_match, mut changes) = client
+        .connection
+        .add_match(rule)
+        .await
+        .unwrap()
+        .msg_stream();
+      let policy_path = policy.to_str().unwrap();
+      let global_path = global;
+      let mut previous = Some(("global", true, global_path));
+      assert_selected_boost(&proxy, previous).await;
+      for selected in [
+        Some(("policy", false, policy_path)),
+        None,
+        Some(("global", true, global_path)),
+      ] {
+        match selected {
+          Some(("policy", ..)) => {
+            stdfs::remove_file(fixture.path(global)).unwrap();
+          },
+          None => {
+            stdfs::remove_file(&policy).unwrap();
+          },
+          Some(_) => fixture.write(global, "0"),
+        }
+        // Hardware mutations are not visible until the next published scan.
+        assert_selected_boost(&proxy, previous).await;
+        failures.begin_iteration();
+        system.scan(&mut failures);
+        failures.finish_iteration();
+        state
+          .write()
+          .await
+          .update_system(&system, Vec::new(), None, &failures);
+        changes.next().await.unwrap();
+        assert_selected_boost(&proxy, selected).await;
+        let (cpus,): (Vec<PropMap>,) = proxy
+          .method_call(watt::INTERFACE, "GetCpuCapabilities", ())
+          .await
+          .unwrap();
+        assert_eq!(cpus.len(), 1);
+        previous = selected;
+      }
+      assert_eq!(fixture.write_count(global), 0);
+      server.abort();
     })
     .await
     .expect("boost snapshot notification timed out");

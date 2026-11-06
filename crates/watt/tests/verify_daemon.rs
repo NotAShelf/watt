@@ -1,48 +1,54 @@
 mod support;
 
+use dbus::{
+  channel::MatchingReceiver as _,
+  message::MatchRule,
+};
+use dbus_crossroads::Crossroads;
 use support::{
+  Connection,
   Harness,
-  bounded,
-};
-use zbus::{
-  connection,
-  interface,
 };
 
-struct Verifier;
-
-#[interface(name = "dev.notashelf.Watt")]
-impl Verifier {
-  fn verify_configuration(
-    &self,
-    _contents: &str,
-    hardware: bool,
-  ) -> Vec<(String, String, u16, String, String)> {
-    vec![(
-      if hardware { "error" } else { "warning" }.into(),
-      "battery".into(),
-      42,
-      "power.charge-threshold-end".into(),
-      "fixture diagnostic".into(),
-    )]
-  }
+fn verifier(connection: &Connection) {
+  let mut crossroads = Crossroads::new();
+  let interface = crossroads.register("dev.notashelf.Watt", |builder| {
+    builder.method(
+      "VerifyConfiguration",
+      ("contents", "hardware"),
+      ("diagnostics",),
+      |_, _, (_contents, hardware): (String, bool)| {
+        Ok((vec![(
+          if hardware { "error" } else { "warning" }.to_owned(),
+          "battery".to_owned(),
+          42_u16,
+          "power.charge-threshold-end".to_owned(),
+          "fixture diagnostic".to_owned(),
+        )],))
+      },
+    );
+  });
+  crossroads.insert("/dev/notashelf/Watt", &[interface], ());
+  connection.inner().start_receive(
+    MatchRule::new_method_call(),
+    Box::new(move |message, connection| {
+      crossroads.handle_message(message, connection).unwrap();
+      true
+    }),
+  );
 }
 
 #[tokio::test]
 async fn daemon_verification_sets_exit_status() {
   let mut daemon = Harness::isolated("configuration from local file");
   daemon.start_bus().await;
-  let server = bounded(
-    connection::Builder::address(daemon.address.as_str())
-      .unwrap()
-      .name("dev.notashelf.Watt")
-      .unwrap()
-      .serve_at("/dev/notashelf/Watt", Verifier)
-      .unwrap()
-      .build(),
-  )
-  .await
-  .unwrap();
+  let server = Connection::address(&daemon.address).unwrap();
+  verifier(&server);
+  server
+    .inner()
+    .request_name("dev.notashelf.Watt", false, false, true)
+    .await
+    .unwrap();
   let config = daemon.path("/config.toml");
   let config = config.to_str().unwrap();
   let warnings = daemon.cli(&["config", "verify", config]).await;
@@ -51,7 +57,11 @@ async fn daemon_verification_sets_exit_status() {
     .cli(&["config", "verify", config, "--hardware"])
     .await;
   assert!(!errors.status.success());
-  bounded(server.close()).await.unwrap();
+  server
+    .inner()
+    .release_name("dev.notashelf.Watt")
+    .await
+    .unwrap();
 
   daemon.config(&" ".repeat(1024 * 1024 + 1));
   let oversized = daemon.cli(&["config", "verify", config]).await;

@@ -1,5 +1,6 @@
 mod auth;
 pub mod client;
+mod connection;
 pub mod ppd;
 pub mod server;
 pub mod watt;

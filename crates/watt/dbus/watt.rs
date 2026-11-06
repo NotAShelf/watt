@@ -1,8 +1,26 @@
 use std::{
   collections::HashMap,
+  future::Future,
   sync::Arc,
 };
 
+use dbus::{
+  arg::{
+    Append,
+    AppendAll,
+    Arg,
+    ArgAll,
+    PropMap,
+    RefArg,
+  },
+  nonblock::SyncConnection,
+  strings::Member,
+};
+use dbus_crossroads::{
+  Crossroads,
+  IfaceToken,
+  MethodErr,
+};
 use tokio::{
   sync::{
     RwLock,
@@ -12,15 +30,17 @@ use tokio::{
   },
   task::spawn_blocking,
 };
-use zbus::{
-  fdo,
-  interface,
-  message::Header,
-  object_server::SignalEmitter,
-  zvariant::Value,
-};
 
-use super::auth::authorize;
+use super::{
+  auth::{
+    Caller,
+    authorize,
+  },
+  ppd::{
+    boxed,
+    prop_map,
+  },
+};
 use crate::{
   config::{
     DaemonConfig,
@@ -32,18 +52,23 @@ use crate::{
   system::DaemonState,
 };
 
+pub(crate) const PATH: &str = "/dev/notashelf/Watt";
+pub(crate) const INTERFACE: &str = "dev.notashelf.Watt";
 static VERIFICATION_SLOT: Semaphore = Semaphore::const_new(1);
 const MAX_CONFIG_BYTES: usize = 1024 * 1024;
 const MAX_DIAGNOSTICS: usize = 4096;
 const MAX_SNAPSHOT_ROWS: usize = 4096;
 
+type DiagnosticRow = (String, String, u16, String, String);
+type PolicyRow = (String, String, Vec<u32>, String);
+type SettingRow = (String, String, String, String);
+
 fn verify_contents(
   contents: &str,
   hardware: bool,
-) -> fdo::Result<Vec<Diagnostic>> {
-  let config: DaemonConfig = toml::from_str(contents).map_err(|error| {
-    fdo::Error::InvalidArgs(format!("invalid configuration: {error}"))
-  })?;
+) -> Result<Vec<Diagnostic>, MethodErr> {
+  let config: DaemonConfig = toml::from_str(contents)
+    .map_err(|error| invalid_args(format!("invalid configuration: {error}")))?;
   let mut diagnostics = config.verify_static();
   if hardware
     && !diagnostics
@@ -51,17 +76,18 @@ fn verify_contents(
       .any(|diagnostic| diagnostic.severity == Severity::Error)
   {
     diagnostics.extend(config.verify_hardware().map_err(|error| {
-      fdo::Error::Failed(format!("hardware verification failed: {error}"))
+      failed(format!("hardware verification failed: {error}"))
     })?);
   }
   if diagnostics.len() > MAX_DIAGNOSTICS {
-    return Err(fdo::Error::LimitsExceeded(format!(
+    return Err(limits(format!(
       "verification produced more than {MAX_DIAGNOSTICS} diagnostics"
     )));
   }
   Ok(diagnostics)
 }
 
+#[derive(Clone)]
 pub struct WattInterface {
   state:  Arc<RwLock<DaemonState>>,
   reload: Option<mpsc::Sender<ReloadRequest>>,
@@ -88,61 +114,46 @@ impl WattInterface {
       reload: Some(reload),
     }
   }
-}
 
-fn check_snapshot_bound(rows: usize) -> fdo::Result<()> {
-  if rows > MAX_SNAPSHOT_ROWS {
-    return Err(fdo::Error::LimitsExceeded(format!(
-      "snapshot exceeds {MAX_SNAPSHOT_ROWS} rows"
-    )));
-  }
-  Ok(())
-}
-
-#[interface(name = "dev.notashelf.Watt")]
-impl WattInterface {
   async fn reload(
     &self,
-    #[zbus(connection)] connection: &zbus::Connection,
-    #[zbus(header)] header: Header<'_>,
-  ) -> fdo::Result<()> {
+    connection: Arc<SyncConnection>,
+    caller: Caller,
+  ) -> Result<(), MethodErr> {
     let Some(reload) = &self.reload else {
-      return Err(fdo::Error::NotSupported("reload is unavailable".into()));
+      return Err(not_supported("reload is unavailable"));
     };
-    authorize(connection, &header, "dev.notashelf.watt.reload")
+    authorize(connection, caller, "dev.notashelf.watt.reload")
       .await
-      .map_err(|error| fdo::Error::AccessDenied(error.to_string()))?;
+      .map_err(|error| access_denied(error.to_string()))?;
     let (response, result) = oneshot::channel();
     reload
       .try_send(ReloadRequest { response })
-      .map_err(|_| fdo::Error::LimitsExceeded("reload is busy".into()))?;
+      .map_err(|_| limits("reload is busy"))?;
     result
       .await
-      .map_err(|_| fdo::Error::Failed("reload request was cancelled".into()))?
-      .map_err(|error| fdo::Error::Failed(format!("reload failed: {error}")))
+      .map_err(|_| failed("reload request was cancelled"))?
+      .map_err(|error| failed(format!("reload failed: {error}")))
   }
 
   async fn verify_configuration(
     &self,
     contents: String,
     hardware: bool,
-  ) -> fdo::Result<Vec<(String, String, u16, String, String)>> {
+  ) -> Result<Vec<DiagnosticRow>, MethodErr> {
     if contents.len() > MAX_CONFIG_BYTES {
-      return Err(fdo::Error::LimitsExceeded(
-        "configuration exceeds 1 MiB".into(),
-      ));
+      return Err(limits("configuration exceeds 1 MiB"));
     }
-    let permit = VERIFICATION_SLOT.try_acquire().map_err(|_| {
-      fdo::Error::LimitsExceeded("configuration verification is busy".into())
-    })?;
+    let permit = VERIFICATION_SLOT
+      .try_acquire()
+      .map_err(|_| limits("configuration verification is busy"))?;
     let diagnostics = spawn_blocking(move || {
-      // Keep the slot until the work ends, even if the caller disconnects.
       let _permit = permit;
       verify_contents(&contents, hardware)
     })
     .await
     .map_err(|error| {
-      fdo::Error::Failed(format!("verification worker failed: {error}"))
+      failed(format!("verification worker failed: {error}"))
     })??;
     Ok(
       diagnostics
@@ -164,121 +175,38 @@ impl WattInterface {
     )
   }
 
-  #[zbus(property)]
-  async fn version(&self) -> String {
-    env!("CARGO_PKG_VERSION").to_owned()
-  }
-
-  #[zbus(property)]
-  fn interface_version(&self) -> u32 {
-    1
-  }
-
-  #[zbus(property)]
-  async fn rule_count(&self) -> u32 {
+  async fn get_status(&self) -> PropMap {
     let state = self.state.read().await;
-    state.rule_count() as u32
-  }
-
-  #[zbus(property)]
-  async fn cpu_count(&self) -> u32 {
-    let state = self.state.read().await;
-    state.cpu_count() as u32
-  }
-
-  #[zbus(property)]
-  async fn performance_degraded(&self) -> String {
-    self
-      .state
-      .read()
-      .await
-      .performance_degraded()
-      .unwrap_or_default()
-      .to_owned()
-  }
-
-  #[zbus(property)]
-  async fn error_count(&self) -> u32 {
-    self.state.read().await.error_count() as u32
-  }
-
-  #[zbus(property)]
-  async fn degraded_conditions(&self) -> Vec<HashMap<String, Value<'_>>> {
-    self
-      .state
-      .read()
-      .await
-      .degraded_conditions()
-      .iter()
-      .map(|condition| {
-        HashMap::from([
-          ("context".into(), Value::from(condition.context.clone())),
-          ("message".into(), Value::from(condition.message.clone())),
-        ])
-      })
-      .collect()
-  }
-
-  #[zbus(property)]
-  async fn latest_error(&self) -> String {
-    self
-      .state
-      .read()
-      .await
-      .latest_error()
-      .unwrap_or_default()
-      .to_owned()
-  }
-
-  async fn get_status(&self) -> HashMap<String, Value<'_>> {
-    let state = self.state.read().await;
-    let mut status = HashMap::new();
-
+    let mut status = PropMap::new();
     if let Some(log) = state.latest_cpu_log() {
-      status.insert("cpu-usage".to_owned(), Value::from(log.usage * 100.0));
-
+      status.insert("cpu-usage".to_owned(), boxed(log.usage * 100.0));
       if let Some(temperature) = log.temperature {
-        status.insert("cpu-temperature".to_owned(), Value::from(temperature));
+        status.insert("cpu-temperature".to_owned(), boxed(temperature));
       }
     }
-
     status.insert(
       "profile".to_owned(),
-      Value::from(String::from(state.active_profile().as_str())),
+      boxed(state.active_profile().as_str().to_owned()),
     );
-
-    status.insert(
-      "is-discharging".to_owned(),
-      Value::from(state.is_discharging()),
-    );
-
-    status.insert(
-      "error-count".to_owned(),
-      Value::from(state.error_count() as u64),
-    );
-
+    status.insert("is-discharging".to_owned(), boxed(state.is_discharging()));
+    status.insert("error-count".to_owned(), boxed(state.error_count() as u64));
     status.insert(
       "performance-degraded".to_owned(),
-      Value::from(state.performance_degraded().unwrap_or_default().to_owned()),
+      boxed(state.performance_degraded().unwrap_or_default().to_owned()),
     );
-
     if let Some(delay) = state.polling_delay() {
       status.insert(
         "polling-delay-ms".to_owned(),
-        Value::from(delay.as_millis() as u64),
+        boxed(delay.as_millis() as u64),
       );
     }
-
     if let Some(error) = state.latest_error() {
-      status.insert("latest-error".to_owned(), Value::from(error.to_owned()));
+      status.insert("latest-error".to_owned(), boxed(error.to_owned()));
     }
-
     status
   }
 
-  async fn get_cpu_policies(
-    &self,
-  ) -> fdo::Result<Vec<(String, String, Vec<u32>, String)>> {
+  async fn get_cpu_policies(&self) -> Result<Vec<PolicyRow>, MethodErr> {
     let policies = self.state.read().await.cpu_policies();
     check_snapshot_bound(policies.len())?;
     Ok(
@@ -296,43 +224,38 @@ impl WattInterface {
     )
   }
 
-  async fn get_applied_rules(&self) -> fdo::Result<Vec<String>> {
+  async fn get_applied_rules(&self) -> Result<Vec<String>, MethodErr> {
     let rules = self.state.read().await.last_applied_rules();
     check_snapshot_bound(rules.len())?;
     Ok(rules)
   }
 
-  async fn get_rules(&self) -> fdo::Result<Vec<(String, u16)>> {
+  async fn get_rules(&self) -> Result<Vec<(String, u16)>, MethodErr> {
     let state = self.state.read().await;
     check_snapshot_bound(state.rule_metadata().len())?;
     Ok(state.rule_metadata().to_vec())
   }
 
-  async fn get_cpu_capabilities(
-    &self,
-  ) -> fdo::Result<Vec<HashMap<String, Value<'_>>>> {
+  async fn get_cpu_capabilities(&self) -> Result<Vec<PropMap>, MethodErr> {
     let cpus = self.state.read().await.cpu_capabilities();
     check_snapshot_bound(cpus.len())?;
     Ok(
       cpus
         .into_iter()
         .map(|cpu| {
-          let mut values = HashMap::from([
-            ("cpu".into(), Value::from(cpu.number)),
-            ("policy".into(), Value::from(cpu.policy.unwrap_or_default())),
-            (
-              "frequency-control".into(),
-              Value::from(cpu.frequency_control),
-            ),
-            ("governors".into(), Value::from(cpu.governors)),
-            ("epp-values".into(), Value::from(cpu.epps)),
-            ("epb-values".into(), Value::from(cpu.epbs)),
+          let mut values = prop_map([
+            ("cpu", boxed(cpu.number)),
+            ("policy", boxed(cpu.policy.unwrap_or_default())),
+            ("frequency-control", boxed(cpu.frequency_control)),
+            ("governors", boxed(cpu.governors)),
+            ("epp-values", boxed(cpu.epps)),
+            ("epb-values", boxed(cpu.epbs)),
           ]);
           if let Some(minimum) = cpu.minimum_khz {
-            values.insert("min-khz".into(), Value::from(minimum));
+            values.insert("min-khz".into(), boxed(minimum));
           }
           if let Some(maximum) = cpu.maximum_khz {
-            values.insert("max-khz".into(), Value::from(maximum));
+            values.insert("max-khz".into(), boxed(maximum));
           }
           values
         })
@@ -340,23 +263,23 @@ impl WattInterface {
     )
   }
 
-  async fn get_boost_capabilities(&self) -> HashMap<String, Value<'_>> {
+  async fn get_boost_capabilities(&self) -> PropMap {
     let state = self.state.read().await;
     let Some(boost) = state.boost_capabilities() else {
-      return HashMap::new();
+      return PropMap::new();
     };
     let paths: Vec<_> = boost
       .paths
       .iter()
       .map(|path| path.display().to_string())
       .collect();
-    HashMap::from([
+    prop_map([
       (
-        "scope".into(),
-        Value::from(if boost.global { "global" } else { "policy" }),
+        "scope",
+        boxed(if boost.global { "global" } else { "policy" }.to_owned()),
       ),
-      ("control-paths".into(), Value::from(paths)),
-      ("inverted".into(), Value::from(boost.inverted)),
+      ("control-paths", boxed(paths)),
+      ("inverted", boxed(boost.inverted)),
     ])
   }
 
@@ -364,9 +287,7 @@ impl WattInterface {
     self.state.read().await.recent_errors()
   }
 
-  async fn get_applied_settings(
-    &self,
-  ) -> fdo::Result<Vec<(String, String, String, String)>> {
+  async fn get_applied_settings(&self) -> Result<Vec<SettingRow>, MethodErr> {
     let state = self.state.read().await;
     let settings = state.applied_settings();
     check_snapshot_bound(settings.len())?;
@@ -388,7 +309,7 @@ impl WattInterface {
 
   async fn get_applied_setting_details(
     &self,
-  ) -> fdo::Result<Vec<HashMap<String, Value<'_>>>> {
+  ) -> Result<Vec<PropMap>, MethodErr> {
     let state = self.state.read().await;
     let settings = state.applied_settings();
     check_snapshot_bound(settings.len())?;
@@ -397,27 +318,18 @@ impl WattInterface {
         .into_iter()
         .map(|setting| {
           let cpus = state.setting_cpus(&setting.path);
-          let mut detail = HashMap::from([
-            (
-              "path".into(),
-              Value::from(setting.path.display().to_string()),
-            ),
-            (
-              "verification".into(),
-              Value::from(setting.verification().to_owned()),
-            ),
-            ("requested".into(), Value::from(setting.requested)),
-            (
-              "observed".into(),
-              Value::from(setting.observed.unwrap_or_default()),
-            ),
+          let mut detail = prop_map([
+            ("path", boxed(setting.path.display().to_string())),
+            ("verification", boxed(setting.verification().to_owned())),
+            ("requested", boxed(setting.requested)),
+            ("observed", boxed(setting.observed.unwrap_or_default())),
           ]);
           if let Some(rule) = setting.rule {
-            detail.insert("rule".into(), Value::from(rule.name));
-            detail.insert("priority".into(), Value::from(rule.priority));
+            detail.insert("rule".into(), boxed(rule.name));
+            detail.insert("priority".into(), boxed(rule.priority));
           }
           if !cpus.is_empty() {
-            detail.insert("cpus".into(), Value::from(cpus));
+            detail.insert("cpus".into(), boxed(cpus));
           }
           detail
         })
@@ -425,26 +337,21 @@ impl WattInterface {
     )
   }
 
-  async fn get_device_capabilities(
-    &self,
-  ) -> fdo::Result<Vec<HashMap<String, Value<'_>>>> {
+  async fn get_device_capabilities(&self) -> Result<Vec<PropMap>, MethodErr> {
     let devices = self.state.read().await.device_capabilities().to_vec();
     check_snapshot_bound(devices.len())?;
     Ok(
       devices
         .into_iter()
         .map(|device| {
-          HashMap::from([
-            ("subsystem".into(), Value::from(device.subsystem)),
-            ("name".into(), Value::from(device.name)),
+          prop_map([
+            ("subsystem", boxed(device.subsystem)),
+            ("name", boxed(device.name)),
+            ("path", boxed(device.path.display().to_string())),
+            ("controls", boxed(device.controls)),
             (
-              "path".into(),
-              Value::from(device.path.display().to_string()),
-            ),
-            ("controls".into(), Value::from(device.controls)),
-            (
-              "available-values".into(),
-              Value::from(
+              "available-values",
+              boxed(
                 device
                   .available_values
                   .into_iter()
@@ -457,246 +364,328 @@ impl WattInterface {
     )
   }
 
-  async fn get_polling_diagnostics(&self) -> HashMap<String, Value<'_>> {
+  async fn get_polling_diagnostics(&self) -> PropMap {
     let diagnostics = self.state.read().await.polling_diagnostics().clone();
-    let metrics: Vec<HashMap<String, Value<'_>>> = diagnostics
+    let metrics: Vec<PropMap> = diagnostics
       .duration_metrics
       .into_iter()
       .map(|metric| {
-        let mut values = HashMap::from([
-          ("metric".into(), Value::from(metric.metric)),
-          ("rule".into(), Value::from(metric.rule)),
-          ("priority".into(), Value::from(metric.priority)),
-          (
-            "required-samples".into(),
-            Value::from(metric.required_samples as u64),
-          ),
-          (
-            "sample-count".into(),
-            Value::from(metric.sample_count as u64),
-          ),
-          ("available".into(), Value::from(metric.available)),
+        let mut values = prop_map([
+          ("metric", boxed(metric.metric)),
+          ("rule", boxed(metric.rule)),
+          ("priority", boxed(metric.priority)),
+          ("required-samples", boxed(metric.required_samples as u64)),
+          ("sample-count", boxed(metric.sample_count as u64)),
+          ("available", boxed(metric.available)),
         ]);
         if let Some(window) = metric.window_seconds {
-          values.insert("window-seconds".into(), Value::from(window));
+          values.insert("window-seconds".into(), boxed(window));
         }
         values
       })
       .collect();
-    HashMap::from([
+    prop_map([
       (
-        "base-interval-seconds".into(),
-        Value::from(diagnostics.base_interval_seconds),
+        "base-interval-seconds",
+        boxed(diagnostics.base_interval_seconds),
       ),
       (
-        "current-interval-seconds".into(),
-        Value::from(diagnostics.current_interval_seconds),
+        "current-interval-seconds",
+        boxed(diagnostics.current_interval_seconds),
       ),
       (
-        "next-interval-seconds".into(),
-        Value::from(diagnostics.next_interval_seconds),
+        "next-interval-seconds",
+        boxed(diagnostics.next_interval_seconds),
       ),
-      ("idle-factor".into(), Value::from(diagnostics.idle_factor)),
+      ("idle-factor", boxed(diagnostics.idle_factor)),
+      ("volatility-factor", boxed(diagnostics.volatility_factor)),
       (
-        "volatility-factor".into(),
-        Value::from(diagnostics.volatility_factor),
-      ),
-      (
-        "requested-delay-seconds".into(),
-        Value::from(diagnostics.requested_delay_seconds),
+        "requested-delay-seconds",
+        boxed(diagnostics.requested_delay_seconds),
       ),
       (
-        "smoothed-delay-seconds".into(),
-        Value::from(diagnostics.smoothed_delay_seconds),
+        "smoothed-delay-seconds",
+        boxed(diagnostics.smoothed_delay_seconds),
       ),
       (
-        "clamped-delay-seconds".into(),
-        Value::from(diagnostics.clamped_delay_seconds),
+        "clamped-delay-seconds",
+        boxed(diagnostics.clamped_delay_seconds),
       ),
       (
-        "evaluation-elapsed-seconds".into(),
-        Value::from(diagnostics.evaluation_elapsed_seconds),
+        "evaluation-elapsed-seconds",
+        boxed(diagnostics.evaluation_elapsed_seconds),
       ),
       (
-        "cpu-sample-count".into(),
-        Value::from(diagnostics.cpu_sample_count as u64),
+        "cpu-sample-count",
+        boxed(diagnostics.cpu_sample_count as u64),
       ),
       (
-        "temperature-sample-count".into(),
-        Value::from(diagnostics.temperature_sample_count as u64),
+        "temperature-sample-count",
+        boxed(diagnostics.temperature_sample_count as u64),
       ),
       (
-        "power-sample-count".into(),
-        Value::from(diagnostics.power_sample_count as u64),
+        "power-sample-count",
+        boxed(diagnostics.power_sample_count as u64),
       ),
       (
-        "cpu-usage-volatility-available".into(),
-        Value::from(diagnostics.cpu_usage_volatility_available),
+        "cpu-usage-volatility-available",
+        boxed(diagnostics.cpu_usage_volatility_available),
       ),
       (
-        "cpu-temperature-volatility-available".into(),
-        Value::from(diagnostics.cpu_temperature_volatility_available),
+        "cpu-temperature-volatility-available",
+        boxed(diagnostics.cpu_temperature_volatility_available),
       ),
       (
-        "power-discharge-rate-available".into(),
-        Value::from(diagnostics.power_discharge_rate_available),
+        "power-discharge-rate-available",
+        boxed(diagnostics.power_discharge_rate_available),
       ),
       (
-        "volatility-required-samples".into(),
-        Value::from(diagnostics.volatility_required_samples as u64),
+        "volatility-required-samples",
+        boxed(diagnostics.volatility_required_samples as u64),
       ),
       (
-        "power-discharge-required-samples".into(),
-        Value::from(diagnostics.power_discharge_required_samples as u64),
+        "power-discharge-required-samples",
+        boxed(diagnostics.power_discharge_required_samples as u64),
       ),
-      ("duration-metrics".into(), Value::from(metrics)),
+      ("duration-metrics", boxed(metrics)),
       (
-        "duration-metrics-omitted".into(),
-        Value::from(diagnostics.duration_metrics_omitted as u64),
+        "duration-metrics-omitted",
+        boxed(diagnostics.duration_metrics_omitted as u64),
       ),
     ])
   }
 
-  async fn get_config(&self) -> fdo::Result<String> {
+  async fn get_config(&self) -> Result<String, MethodErr> {
     let state = self.state.read().await;
     if state.config().len() > MAX_CONFIG_BYTES {
-      return Err(fdo::Error::LimitsExceeded(
-        "active configuration exceeds 1 MiB".into(),
-      ));
+      return Err(limits("active configuration exceeds 1 MiB"));
     }
     Ok(state.config().to_owned())
   }
-
-  #[zbus(signal)]
-  pub async fn applied_rules_changed(
-    emitter: &SignalEmitter<'_>,
-  ) -> zbus::Result<()>;
-
-  #[zbus(signal)]
-  pub async fn applied_settings_changed(
-    emitter: &SignalEmitter<'_>,
-  ) -> zbus::Result<()>;
-
-  #[zbus(signal)]
-  pub async fn configuration_reloaded(
-    emitter: &SignalEmitter<'_>,
-    success: bool,
-    message: &str,
-  ) -> zbus::Result<()>;
-
-  #[zbus(signal)]
-  pub async fn capabilities_changed(
-    emitter: &SignalEmitter<'_>,
-  ) -> zbus::Result<()>;
 }
 
-#[cfg(test)]
-mod tests {
-  use std::time::Duration;
-
-  use tokio::time::timeout;
-  use zbus::{
-    Proxy,
-    connection,
-  };
-
-  use super::*;
-  use crate::dbus::test_support::TestBus;
-
-  #[tokio::test]
-  async fn configuration_verification_returns_diagnostics_without_reloading() {
-    let bus = TestBus::new();
-    timeout(Duration::from_secs(10), async {
-      let state =
-        Arc::new(RwLock::new(DaemonState::new("active config".into(), 7)));
-      let server = connection::Builder::address(bus.address.as_str())
-        .unwrap()
-        .name("dev.notashelf.Watt")
-        .unwrap()
-        .serve_at("/dev/notashelf/Watt", WattInterface::new(state))
-        .unwrap()
-        .build()
-        .await
-        .unwrap();
-      let client = connection::Builder::address(bus.address.as_str())
-        .unwrap()
-        .build()
-        .await
-        .unwrap();
-      let proxy = Proxy::new(
-        &client,
-        "dev.notashelf.Watt",
-        "/dev/notashelf/Watt",
-        "dev.notashelf.Watt",
-      )
-      .await
-      .unwrap();
-      let invalid =
-        "[[rule]]\nname='invalid'\npriority=9\ncpu.frequency-mhz-minimum=-1\n";
-      for hardware in [false, true] {
-        let diagnostics: Vec<(String, String, u16, String, String)> = proxy
-          .call("VerifyConfiguration", &(invalid, hardware))
-          .await
-          .unwrap();
-        assert_eq!(diagnostics.len(), 1);
-        let (severity, rule, priority, field, message) = &diagnostics[0];
-        assert_eq!(severity, "error");
-        assert_eq!(rule, "invalid");
-        assert_eq!(*priority, 9);
-        assert_eq!(field, "cpu.frequency-mhz-minimum");
-        assert!(!message.is_empty());
+pub(crate) fn register(
+  crossroads: &mut Crossroads,
+  connection: Arc<SyncConnection>,
+) -> IfaceToken<WattInterface> {
+  crossroads.register(INTERFACE, move |builder| {
+    builder.method_with_cr_async("Reload", (), (), {
+      let connection = connection.clone();
+      move |mut context, crossroads, (): ()| {
+        let data = data(crossroads, context.path());
+        let connection = connection.clone();
+        let caller = Caller::from_message(context.message())
+          .map_err(|error| access_denied(error.to_string()));
+        async move {
+          let result = match caller {
+            Ok(caller) => data.reload(connection, caller).await,
+            Err(error) => Err(error),
+          };
+          context.reply(result)
+        }
       }
-      let malformed = proxy
-        .call::<_, _, Vec<(String, String, u16, String, String)>>(
-          "VerifyConfiguration",
-          &("[", false),
-        )
-        .await
-        .unwrap_err();
-      assert!(malformed.to_string().contains("InvalidArgs"));
-      let oversized = proxy
-        .call::<_, _, Vec<(String, String, u16, String, String)>>(
-          "VerifyConfiguration",
-          &(" ".repeat(MAX_CONFIG_BYTES + 1), false),
-        )
-        .await
-        .unwrap_err();
-      assert!(oversized.to_string().contains("LimitsExceeded"));
-      let duplicates = "[[rule]]\nname='duplicate'\npriority=1\n"
-        .repeat(MAX_DIAGNOSTICS / 2 + 2);
-      let excessive = proxy
-        .call::<_, _, Vec<(String, String, u16, String, String)>>(
-          "VerifyConfiguration",
-          &(duplicates, false),
-        )
-        .await
-        .unwrap_err();
-      assert!(excessive.to_string().contains("LimitsExceeded"));
-      let permit = VERIFICATION_SLOT.acquire().await.unwrap();
-      let busy = proxy
-        .call::<_, _, Vec<(String, String, u16, String, String)>>(
-          "VerifyConfiguration",
-          &(invalid, false),
-        )
-        .await
-        .unwrap_err();
-      assert!(busy.to_string().contains("LimitsExceeded"));
-      let active: String = proxy.call("GetConfig", &()).await.unwrap();
-      assert_eq!(active, "active config");
-      assert_eq!(proxy.get_property::<u32>("RuleCount").await.unwrap(), 7);
-      drop(permit);
-      let valid: Vec<(String, String, u16, String, String)> = proxy
-        .call(
-          "VerifyConfiguration",
-          &("[[rule]]\nname='valid'\npriority=1\n", false),
-        )
-        .await
-        .unwrap();
-      assert!(valid.is_empty());
-      client.close().await.unwrap();
-      server.close().await.unwrap();
-    })
-    .await
-    .unwrap();
+    });
+    builder.method_with_cr_async(
+      "VerifyConfiguration",
+      ("contents", "hardware"),
+      ("diagnostics",),
+      move |mut context, crossroads, (contents, hardware): (String, bool)| {
+        let data = data(crossroads, context.path());
+        async move {
+          context.reply(
+            data
+              .verify_configuration(contents, hardware)
+              .await
+              .map(|value| (value,)),
+          )
+        }
+      },
+    );
+
+    property_const(builder, "Version", env!("CARGO_PKG_VERSION").to_owned());
+    property_const(builder, "InterfaceVersion", 1_u32);
+    property_u32(builder, "RuleCount", |state| state.rule_count() as u32);
+    property_u32(builder, "CpuCount", |state| state.cpu_count() as u32);
+    property_u32(builder, "ErrorCount", |state| state.error_count() as u32);
+    property_string(builder, "PerformanceDegraded", |state| {
+      state.performance_degraded().unwrap_or_default().to_owned()
+    });
+    property_string(builder, "LatestError", |state| {
+      state.latest_error().unwrap_or_default().to_owned()
+    });
+    builder
+      .property::<Vec<PropMap>, _>("DegradedConditions")
+      .get_async(|mut context, data: &mut WattInterface| {
+        let state = data.state.clone();
+        async move {
+          let conditions = state
+            .read()
+            .await
+            .degraded_conditions()
+            .iter()
+            .map(|condition| {
+              prop_map([
+                ("context", boxed(condition.context.clone())),
+                ("message", boxed(condition.message.clone())),
+              ])
+            })
+            .collect();
+          context.reply(Ok(conditions))
+        }
+      });
+
+    method0(builder, "GetStatus", ("status",), |data| {
+      async move { Ok((data.get_status().await,)) }
+    });
+    method0(builder, "GetCpuPolicies", ("policies",), |data| {
+      async move { data.get_cpu_policies().await.map(|value| (value,)) }
+    });
+    method0(builder, "GetAppliedRules", ("rules",), |data| {
+      async move { data.get_applied_rules().await.map(|value| (value,)) }
+    });
+    method0(builder, "GetRules", ("rules",), |data| {
+      async move { data.get_rules().await.map(|value| (value,)) }
+    });
+    method0(builder, "GetCpuCapabilities", ("cpus",), |data| {
+      async move { data.get_cpu_capabilities().await.map(|value| (value,)) }
+    });
+    method0(builder, "GetBoostCapabilities", ("boost",), |data| {
+      async move { Ok((data.get_boost_capabilities().await,)) }
+    });
+    method0(builder, "GetRecentErrors", ("errors",), |data| {
+      async move { Ok((data.get_recent_errors().await,)) }
+    });
+    method0(builder, "GetAppliedSettings", ("settings",), |data| {
+      async move { data.get_applied_settings().await.map(|value| (value,)) }
+    });
+    method0(builder, "GetAppliedSettingDetails", ("settings",), |data| {
+      async move {
+        data
+          .get_applied_setting_details()
+          .await
+          .map(|value| (value,))
+      }
+    });
+    method0(builder, "GetDeviceCapabilities", ("devices",), |data| {
+      async move { data.get_device_capabilities().await.map(|value| (value,)) }
+    });
+    method0(builder, "GetPollingDiagnostics", ("diagnostics",), |data| {
+      async move { Ok((data.get_polling_diagnostics().await,)) }
+    });
+    method0(builder, "GetConfig", ("config",), |data| {
+      async move { data.get_config().await.map(|value| (value,)) }
+    });
+
+    builder.signal::<(), _>("AppliedRulesChanged", ());
+    builder.signal::<(), _>("AppliedSettingsChanged", ());
+    builder.signal::<(bool, String), _>(
+      "ConfigurationReloaded",
+      ("success", "message"),
+    );
+    builder.signal::<(), _>("CapabilitiesChanged", ());
+  })
+}
+
+fn data(
+  crossroads: &mut Crossroads,
+  path: &dbus::Path<'static>,
+) -> WattInterface {
+  crossroads.data_mut::<WattInterface>(path).unwrap().clone()
+}
+
+fn method0<OA, N, F, Fut>(
+  builder: &mut dbus_crossroads::IfaceBuilder<WattInterface>,
+  name: N,
+  output_args: OA::strs,
+  mut call: F,
+) where
+  OA: ArgAll + AppendAll + 'static,
+  N: Into<Member<'static>>,
+  F: FnMut(WattInterface) -> Fut + Send + 'static,
+  Fut: Future<Output = Result<OA, MethodErr>> + Send + 'static,
+{
+  builder.method_with_cr_async(
+    name,
+    (),
+    output_args,
+    move |mut context, cr, (): ()| {
+      let data = data(cr, context.path());
+      let future = call(data);
+      async move { context.reply(future.await) }
+    },
+  );
+}
+
+fn property_const<T>(
+  builder: &mut dbus_crossroads::IfaceBuilder<WattInterface>,
+  name: &str,
+  value: T,
+) where
+  T: Arg + Append + RefArg + Clone + Send + 'static,
+{
+  builder
+    .property::<T, _>(name)
+    .get(move |_, _: &mut WattInterface| Ok(value.clone()))
+    .emits_changed_const();
+}
+
+fn property_u32(
+  builder: &mut dbus_crossroads::IfaceBuilder<WattInterface>,
+  name: &str,
+  value: fn(&DaemonState) -> u32,
+) {
+  builder.property::<u32, _>(name).get_async(
+    move |mut context, data: &mut WattInterface| {
+      let state = data.state.clone();
+      async move {
+        let state = state.read().await;
+        let value = value(&state);
+        context.reply(Ok(value))
+      }
+    },
+  );
+}
+
+fn property_string(
+  builder: &mut dbus_crossroads::IfaceBuilder<WattInterface>,
+  name: &str,
+  value: fn(&DaemonState) -> String,
+) {
+  builder.property::<String, _>(name).get_async(
+    move |mut context, data: &mut WattInterface| {
+      let state = data.state.clone();
+      async move {
+        let state = state.read().await;
+        let value = value(&state);
+        context.reply(Ok(value))
+      }
+    },
+  );
+}
+
+fn check_snapshot_bound(rows: usize) -> Result<(), MethodErr> {
+  if rows > MAX_SNAPSHOT_ROWS {
+    return Err(limits(format!("snapshot exceeds {MAX_SNAPSHOT_ROWS} rows")));
   }
+  Ok(())
+}
+
+fn failed(message: impl Into<String>) -> MethodErr {
+  ("org.freedesktop.DBus.Error.Failed", message.into()).into()
+}
+
+fn invalid_args(message: impl Into<String>) -> MethodErr {
+  ("org.freedesktop.DBus.Error.InvalidArgs", message.into()).into()
+}
+
+fn limits(message: impl Into<String>) -> MethodErr {
+  ("org.freedesktop.DBus.Error.LimitsExceeded", message.into()).into()
+}
+
+fn access_denied(message: impl Into<String>) -> MethodErr {
+  ("org.freedesktop.DBus.Error.AccessDenied", message.into()).into()
+}
+
+fn not_supported(message: impl Into<String>) -> MethodErr {
+  ("org.freedesktop.DBus.Error.NotSupported", message.into()).into()
 }
