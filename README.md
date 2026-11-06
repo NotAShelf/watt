@@ -231,8 +231,8 @@ touch sysfs or procfs go through `watt_platform::fs`. `SystemFixture`, in
 `crates/platform/src/test_support.rs`, redirects those accesses into a temporary
 root for the current test thread and can inject read and write failures. A unit
 test that resolves an absolute path without a fixture or `WATT_SYSTEM_ROOT`
-panics instead of touching the host. Process tests under `watt/tests` run the
-real binary against a private D-Bus and `WATT_SYSTEM_ROOT`, and need
+panics instead of touching the host. Process tests under `crates/watt/tests` run
+the real binary against a private D-Bus and `WATT_SYSTEM_ROOT`, and need
 `dbus-daemon` in `PATH`.
 
 ### Formatting & Lints
