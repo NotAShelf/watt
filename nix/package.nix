@@ -20,7 +20,6 @@ rustPlatform.buildRustPackage (finalAttrs: {
         ../.cargo
         ../crates
         ../crates/config/src/config.toml
-        ../watt
         ../xtask
         ../dbus
         ../docs/configuration/administration.md

@@ -1,7 +1,7 @@
 [workspace]
 resolver        = "3"
-members         = [ "crates/*", "watt", "xtask" ]
-default-members = [ "watt" ]
+members         = [ "crates/*", "xtask" ]
+default-members = [ "crates/watt" ]
 
 [workspace.package]
 description  = "Modern CPU frequency and power management utility for Linux"
@@ -14,7 +14,7 @@ version      = "1.4.0"
 
 [workspace.dependencies]
 # Workspace components
-watt          = { path = "./watt", version = "1.4.0" }
+watt          = { path = "./crates/watt", version = "1.4.0" }
 watt-config   = { path = "./crates/config", version = "1.4.0" }
 watt-platform = { path = "./crates/platform", version = "1.4.0" }
 

@@ -358,7 +358,7 @@ mod tests {
       _cancellation_id: &str,
     ) -> AuthorizationResult {
       assert!(
-        include_str!("../../dbus/dev.notashelf.watt.policy")
+        include_str!("../../../dbus/dev.notashelf.watt.policy")
           .contains(&format!("\"{action}\"")),
         "{action} is not declared in the polkit policy"
       );
