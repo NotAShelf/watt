@@ -11,7 +11,7 @@ repository.workspace   = true
 workspace = true
 
 [dependencies]
-anyhow.workspace   = true
+misstep.workspace   = true
 log.workspace      = true
 num_cpus.workspace = true
 tempfile           = { optional = true, workspace = true }

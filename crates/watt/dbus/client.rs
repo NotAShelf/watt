@@ -6,11 +6,12 @@ use std::{
   },
 };
 
-use anyhow::{
-  Context,
+use futures_util::StreamExt;
+use misstep::{
+  ResultExt as _,
+  bail,
   ensure,
 };
-use futures_util::StreamExt;
 use serde::Serialize;
 use serde_json::{
   Value,
@@ -79,22 +80,26 @@ trait PowerProfiles {
   fn set_active_profile(&self, profile: &str) -> zbus::Result<()>;
 }
 
-async fn connect() -> anyhow::Result<Connection> {
-  Connection::system()
-    .await
-    .context("failed to connect to the system D-Bus")
+async fn connect() -> misstep::Result<Connection> {
+  Ok(
+    Connection::system()
+      .await
+      .context("failed to connect to the system D-Bus")?,
+  )
 }
 
-async fn watt() -> anyhow::Result<WattProxy<'static>> {
-  WattProxy::new(&connect().await?)
-    .await
-    .context("failed to connect to the watt daemon")
+async fn watt() -> misstep::Result<WattProxy<'static>> {
+  Ok(
+    WattProxy::new(&connect().await?)
+      .await
+      .context("failed to connect to the watt daemon")?,
+  )
 }
 
 pub async fn verify_configuration(
   contents: &str,
   hardware: bool,
-) -> anyhow::Result<()> {
+) -> misstep::Result<()> {
   let diagnostics = watt()
     .await?
     .verify_configuration(contents, hardware)
@@ -111,7 +116,7 @@ pub async fn verify_configuration(
   Ok(())
 }
 
-pub async fn loaded_config() -> anyhow::Result<String> {
+pub async fn loaded_config() -> misstep::Result<String> {
   let connection = zbus::Connection::system()
     .await
     .context("failed to connect to the system D-Bus")?;
@@ -119,21 +124,25 @@ pub async fn loaded_config() -> anyhow::Result<String> {
     .await
     .context("failed to connect to the watt daemon")?;
 
-  proxy
-    .get_config()
-    .await
-    .context("failed to get the loaded config")
+  Ok(
+    proxy
+      .get_config()
+      .await
+      .context("failed to get the loaded config")?,
+  )
 }
 
-pub async fn reload() -> anyhow::Result<()> {
-  watt()
-    .await?
-    .reload()
-    .await
-    .context("daemon configuration reload failed")
+pub async fn reload() -> misstep::Result<()> {
+  Ok(
+    watt()
+      .await?
+      .reload()
+      .await
+      .context("daemon configuration reload failed")?,
+  )
 }
 
-pub async fn print_errors(format: OutputFormat) -> anyhow::Result<()> {
+pub async fn print_errors(format: OutputFormat) -> misstep::Result<()> {
   let errors = watt()
     .await?
     .get_recent_errors()
@@ -149,7 +158,7 @@ pub async fn print_errors(format: OutputFormat) -> anyhow::Result<()> {
   Ok(())
 }
 
-pub async fn print_status(format: OutputFormat) -> anyhow::Result<()> {
+pub async fn print_status(format: OutputFormat) -> misstep::Result<()> {
   let status = watt()
     .await?
     .get_status()
@@ -160,7 +169,7 @@ pub async fn print_status(format: OutputFormat) -> anyhow::Result<()> {
 
 pub async fn print_configured_rules(
   format: OutputFormat,
-) -> anyhow::Result<()> {
+) -> misstep::Result<()> {
   let rules = watt()
     .await?
     .get_rules()
@@ -180,7 +189,7 @@ pub async fn print_configured_rules(
   Ok(())
 }
 
-pub async fn print_capabilities(format: OutputFormat) -> anyhow::Result<()> {
+pub async fn print_capabilities(format: OutputFormat) -> misstep::Result<()> {
   let proxy = watt().await?;
   let cpus = proxy
     .get_cpu_capabilities()
@@ -193,7 +202,7 @@ pub async fn print_capabilities(format: OutputFormat) -> anyhow::Result<()> {
   print_payload(json!({"cpus": cpus, "devices": devices}), format)
 }
 
-pub async fn print_settings(format: OutputFormat) -> anyhow::Result<()> {
+pub async fn print_settings(format: OutputFormat) -> misstep::Result<()> {
   let settings = watt()
     .await?
     .get_applied_setting_details()
@@ -202,7 +211,7 @@ pub async fn print_settings(format: OutputFormat) -> anyhow::Result<()> {
   print_payload(settings, format)
 }
 
-pub async fn print_polling(format: OutputFormat) -> anyhow::Result<()> {
+pub async fn print_polling(format: OutputFormat) -> misstep::Result<()> {
   let polling = watt()
     .await?
     .get_polling_diagnostics()
@@ -211,7 +220,7 @@ pub async fn print_polling(format: OutputFormat) -> anyhow::Result<()> {
   print_payload(polling, format)
 }
 
-pub async fn get_profile(format: OutputFormat) -> anyhow::Result<()> {
+pub async fn get_profile(format: OutputFormat) -> misstep::Result<()> {
   let profile = PowerProfilesProxy::new(&connect().await?)
     .await?
     .active_profile()
@@ -224,7 +233,7 @@ pub async fn get_profile(format: OutputFormat) -> anyhow::Result<()> {
   Ok(())
 }
 
-pub async fn set_profile(profile: &str) -> anyhow::Result<()> {
+pub async fn set_profile(profile: &str) -> misstep::Result<()> {
   PowerProfilesProxy::new(&connect().await?)
     .await?
     .set_active_profile(profile)
@@ -235,7 +244,7 @@ pub async fn set_profile(profile: &str) -> anyhow::Result<()> {
 fn print_payload(
   payload: impl Serialize,
   format: OutputFormat,
-) -> anyhow::Result<()> {
+) -> misstep::Result<()> {
   let value = plain_variants(serde_json::to_value(payload)?);
   let mut stdout = io::stdout().lock();
   match format {
@@ -274,7 +283,7 @@ fn plain_variants(value: Value) -> Value {
 pub async fn print_active_rules(
   watch: bool,
   format: OutputFormat,
-) -> anyhow::Result<()> {
+) -> misstep::Result<()> {
   let connection = zbus::Connection::system()
     .await
     .context("failed to connect to the system D-Bus")?;
@@ -313,14 +322,14 @@ pub async fn print_active_rules(
     }
   }
 
-  anyhow::bail!("connection to the watt daemon closed")
+  bail!("connection to the watt daemon closed")
 }
 
 fn print_rules(
   rules: &[String],
   separator: bool,
   format: OutputFormat,
-) -> anyhow::Result<()> {
+) -> misstep::Result<()> {
   if format == OutputFormat::Json {
     return print_payload(rules, format);
   }

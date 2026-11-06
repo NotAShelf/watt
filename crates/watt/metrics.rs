@@ -5,7 +5,7 @@ use std::{
   thread,
 };
 
-use anyhow::Context as _;
+use misstep::ResultExt as _;
 use tiny_http::{
   Header,
   Method,
@@ -24,10 +24,10 @@ use crate::{
 pub fn start(
   config: &config::MetricsConfig,
   state: Arc<RwLock<DaemonState>>,
-) -> anyhow::Result<()> {
+) -> misstep::Result<()> {
   let address = SocketAddr::new(config.listen_addr, config.port);
   let server = Server::http(address)
-    .map_err(|err| anyhow::anyhow!(err))
+    .map_err(misstep::Report::from_boxed)
     .with_context(|| {
       format!("failed to bind metrics HTTP server to {address}")
     })?;

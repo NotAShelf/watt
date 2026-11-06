@@ -11,8 +11,8 @@ use std::{
   },
 };
 
-use anyhow::{
-  Context as _,
+use misstep::{
+  ResultExt as _,
   bail,
   ensure,
 };
@@ -125,7 +125,7 @@ enum ConfigCommand {
 }
 
 impl ConfigCommand {
-  fn validate_format(&self, format: OutputFormat) -> anyhow::Result<()> {
+  fn validate_format(&self, format: OutputFormat) -> misstep::Result<()> {
     let json_query = matches!(
       self,
       Self::Query(_)
@@ -164,7 +164,7 @@ enum ProfileCommand {
   Set { profile: String },
 }
 
-pub fn main() -> anyhow::Result<()> {
+pub fn main() -> misstep::Result<()> {
   let cli = Cli::parse();
 
   yansi::whenever(yansi::Condition::TTY_AND_COLOR);
@@ -189,7 +189,7 @@ pub fn main() -> anyhow::Result<()> {
 fn run_daemon_command(
   config_path: Option<PathBuf>,
   verification: Option<VerificationMode>,
-) -> anyhow::Result<()> {
+) -> misstep::Result<()> {
   let config = config::DaemonConfig::load_from(config_path.as_deref())
     .context("failed to load daemon config")?;
 
@@ -213,7 +213,7 @@ fn run_daemon_command(
 fn verify_configuration(
   config: &config::DaemonConfig,
   mode: VerificationMode,
-) -> anyhow::Result<()> {
+) -> misstep::Result<()> {
   if let VerificationMode::Hardware = mode {
     report_verification(config.verify_hardware()?)?;
   }
@@ -223,7 +223,7 @@ fn verify_configuration(
 fn run_config_command(
   command: ConfigCommand,
   format: OutputFormat,
-) -> anyhow::Result<()> {
+) -> misstep::Result<()> {
   command.validate_format(format)?;
   let runtime = RuntimeBuilder::new_current_thread()
     .enable_all()
@@ -252,7 +252,7 @@ fn run_config_command(
 async fn run_query(
   query: ConfigQuery,
   format: OutputFormat,
-) -> anyhow::Result<()> {
+) -> misstep::Result<()> {
   match query {
     ConfigQuery::Errors => dbus::client::print_errors(format).await,
     ConfigQuery::Status => dbus::client::print_status(format).await,
@@ -266,7 +266,7 @@ async fn run_query(
 async fn run_profile(
   command: ProfileCommand,
   format: OutputFormat,
-) -> anyhow::Result<()> {
+) -> misstep::Result<()> {
   match command {
     ProfileCommand::Get => dbus::client::get_profile(format).await,
     ProfileCommand::Set { profile } => {
@@ -275,14 +275,14 @@ async fn run_profile(
   }
 }
 
-fn print_schema() -> anyhow::Result<()> {
+fn print_schema() -> misstep::Result<()> {
   let schema = schemars::schema_for!(config::DaemonConfig);
   let output = serde_json::to_string_pretty(&schema)
     .context("failed to serialize config schema")?;
   print_output(&output)
 }
 
-async fn show_configuration(default: bool) -> anyhow::Result<()> {
+async fn show_configuration(default: bool) -> misstep::Result<()> {
   let output = if default {
     let config = config::DaemonConfig::load_from(None)
       .context("failed to load default config")?;
@@ -293,7 +293,7 @@ async fn show_configuration(default: bool) -> anyhow::Result<()> {
   print_output(&output)
 }
 
-fn read_verification_input(path: &Path) -> anyhow::Result<String> {
+fn read_verification_input(path: &Path) -> misstep::Result<String> {
   const MAX_BYTES: u64 = 1024 * 1024;
 
   let mut contents = String::new();
@@ -309,7 +309,7 @@ fn read_verification_input(path: &Path) -> anyhow::Result<String> {
   Ok(contents)
 }
 
-fn print_output(output: &str) -> anyhow::Result<()> {
+fn print_output(output: &str) -> misstep::Result<()> {
   let stdout = io::stdout();
   let mut stdout = stdout.lock();
   writeln!(stdout, "{output}")?;

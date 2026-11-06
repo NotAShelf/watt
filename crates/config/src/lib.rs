@@ -34,8 +34,9 @@ use std::{
   time::Instant,
 };
 
-use anyhow::{
-  Context,
+use misstep::{
+  OptionExt as _,
+  ResultExt as _,
   bail,
 };
 use serde::{
@@ -43,10 +44,10 @@ use serde::{
   Serialize,
 };
 use watt_platform::{
-  fs,
   audio,
   cpu,
   disk,
+  fs,
   gpu,
   power_supply,
   uncore,
@@ -55,11 +56,11 @@ use watt_platform::{
 };
 
 type CpuDeltas = HashMap<Arc<cpu::Cpu>, cpu::Delta>;
-type CpuEvalResult = anyhow::Result<(CpuDeltas, cpu::GlobalDelta)>;
+type CpuEvalResult = misstep::Result<(CpuDeltas, cpu::GlobalDelta)>;
 type PowerSupplyDeltas =
   HashMap<Arc<power_supply::PowerSupply>, power_supply::Delta>;
 type PowerSupplyEvalResult =
-  anyhow::Result<(PowerSupplyDeltas, Option<String>)>;
+  misstep::Result<(PowerSupplyDeltas, Option<String>)>;
 type UncoreDeltas = HashMap<Arc<uncore::Uncore>, uncore::Delta>;
 type DiskDeltas = HashMap<Arc<disk::Disk>, disk::Delta>;
 type UsbDeltas = HashMap<Arc<usb::UsbDevice>, usb::Delta>;
@@ -203,7 +204,7 @@ impl CpusDelta {
   fn selected_cpus(
     &self,
     state: &EvalState<'_, '_>,
-  ) -> anyhow::Result<Vec<Arc<cpu::Cpu>>> {
+  ) -> misstep::Result<Vec<Arc<cpu::Cpu>>> {
     let mut cpus: Vec<_> = match &self.for_ {
       Some(expression) => {
         let numbers = expression
@@ -213,7 +214,7 @@ impl CpusDelta {
           .context("`cpu.for` was not a list")?
           .into_iter()
           .map(Self::cpu_number)
-          .collect::<anyhow::Result<HashSet<_>>>()?;
+          .collect::<misstep::Result<HashSet<_>>>()?;
         state
           .cpus
           .iter()
@@ -227,7 +228,7 @@ impl CpusDelta {
     Ok(cpus)
   }
 
-  fn cpu_number(expression: Expression) -> anyhow::Result<u32> {
+  fn cpu_number(expression: Expression) -> misstep::Result<u32> {
     let number = expression
       .try_into_number()
       .context("`cpu.for` item was not a number")?;
@@ -237,41 +238,48 @@ impl CpusDelta {
     Ok(number as u32)
   }
 
-  fn eval_cpu(&self, state: &EvalState<'_, '_>) -> anyhow::Result<cpu::Delta> {
+  fn eval_cpu(&self, state: &EvalState<'_, '_>) -> misstep::Result<cpu::Delta> {
     Ok(cpu::Delta {
       governor:                      eval_string(
         &self.governor,
         state,
         "cpu.governor",
-      )?.map(|value| state.setting(value)),
+      )?
+      .map(|value| state.setting(value)),
       energy_performance_preference: eval_epp(
         &self.energy_performance_preference,
         state,
         "cpu.energy-performance-preference",
-      )?.map(|value| state.setting(value)),
+      )?
+      .map(|value| state.setting(value)),
       energy_perf_bias:              eval_string(
         &self.energy_perf_bias,
         state,
         "cpu.energy-perf-bias",
-      )?.map(|value| state.setting(value)),
+      )?
+      .map(|value| state.setting(value)),
       frequency_minimum:             eval_frequency(
         &self.frequency_mhz_minimum,
         state,
         "cpu.frequency-mhz-minimum",
-      )?.map(|value| state.setting(value)),
+      )?
+      .map(|value| state.setting(value)),
       frequency_maximum:             eval_frequency(
         &self.frequency_mhz_maximum,
         state,
         "cpu.frequency-mhz-maximum",
-      )?.map(|value| state.setting(value)),
-      pm_qos_resume_latency_us:      self.eval_resume_latency(state)?.map(|value| state.setting(value)),
+      )?
+      .map(|value| state.setting(value)),
+      pm_qos_resume_latency_us:      self
+        .eval_resume_latency(state)?
+        .map(|value| state.setting(value)),
     })
   }
 
   fn eval_resume_latency(
     &self,
     state: &EvalState<'_, '_>,
-  ) -> anyhow::Result<Option<String>> {
+  ) -> misstep::Result<Option<String>> {
     let Some(expression) = &self.pm_qos_resume_latency_us else {
       return Ok(None);
     };
@@ -294,23 +302,26 @@ impl CpusDelta {
   fn eval_global(
     &self,
     state: &EvalState<'_, '_>,
-  ) -> anyhow::Result<cpu::GlobalDelta> {
+  ) -> misstep::Result<cpu::GlobalDelta> {
     Ok(cpu::GlobalDelta {
       turbo:                          eval_bool(
         &self.turbo,
         state,
         "cpu.turbo",
-      )?.map(|value| state.setting(value)),
+      )?
+      .map(|value| state.setting(value)),
       pstate_min_performance_percent: eval_percent(
         &self.pstate_min_performance_percent,
         state,
         "cpu.pstate-min-performance-percent",
-      )?.map(|value| state.setting(value)),
+      )?
+      .map(|value| state.setting(value)),
       pstate_max_performance_percent: eval_percent(
         &self.pstate_max_performance_percent,
         state,
         "cpu.pstate-max-performance-percent",
-      )?.map(|value| state.setting(value)),
+      )?
+      .map(|value| state.setting(value)),
       dma_latency_us:                 eval_i32(
         &self.dma_latency_us,
         state,
@@ -349,7 +360,7 @@ impl UncoresDelta {
   pub fn eval(
     &self,
     state: &EvalState<'_, '_>,
-  ) -> anyhow::Result<UncoreDeltas> {
+  ) -> misstep::Result<UncoreDeltas> {
     log::debug!("evaluating uncore deltas...");
 
     let uncores = match &self.for_ {
@@ -389,12 +400,14 @@ impl UncoresDelta {
           &self.frequency_khz_minimum,
           state,
           "uncore.frequency-khz-minimum",
-        )?.map(|value| state.setting(value)),
+        )?
+        .map(|value| state.setting(value)),
         frequency_khz_maximum: eval_u64(
           &self.frequency_khz_maximum,
           state,
           "uncore.frequency-khz-maximum",
-        )?.map(|value| state.setting(value)),
+        )?
+        .map(|value| state.setting(value)),
       };
 
       deltas.insert(Arc::clone(&uncore), delta);
@@ -424,38 +437,44 @@ pub struct VmDelta {
 }
 
 impl VmDelta {
-  pub fn eval(&self, state: &EvalState<'_, '_>) -> anyhow::Result<vm::Delta> {
+  pub fn eval(&self, state: &EvalState<'_, '_>) -> misstep::Result<vm::Delta> {
     let delta = vm::Delta {
       dirty_bytes:                 eval_u64(
         &self.dirty_bytes,
         state,
         "vm.dirty-bytes",
-      )?.map(|value| state.setting(value)),
+      )?
+      .map(|value| state.setting(value)),
       dirty_ratio:                 eval_percent(
         &self.dirty_ratio,
         state,
         "vm.dirty-ratio",
-      )?.map(|value| state.setting(value)),
+      )?
+      .map(|value| state.setting(value)),
       dirty_background_bytes:      eval_u64(
         &self.dirty_background_bytes,
         state,
         "vm.dirty-background-bytes",
-      )?.map(|value| state.setting(value)),
+      )?
+      .map(|value| state.setting(value)),
       dirty_background_ratio:      eval_percent(
         &self.dirty_background_ratio,
         state,
         "vm.dirty-background-ratio",
-      )?.map(|value| state.setting(value)),
+      )?
+      .map(|value| state.setting(value)),
       transparent_hugepages:       eval_string(
         &self.transparent_hugepages,
         state,
         "vm.transparent-hugepages",
-      )?.map(|value| state.setting(value)),
+      )?
+      .map(|value| state.setting(value)),
       transparent_hugepage_defrag: eval_string(
         &self.transparent_hugepage_defrag,
         state,
         "vm.transparent-hugepage-defrag",
-      )?.map(|value| state.setting(value)),
+      )?
+      .map(|value| state.setting(value)),
     };
 
     delta.validate()?;
@@ -486,7 +505,7 @@ impl DisksDelta {
   pub fn eval(
     &self,
     state: &EvalState<'_, '_>,
-  ) -> anyhow::Result<(DiskDeltas, disk::GlobalDelta)> {
+  ) -> misstep::Result<(DiskDeltas, disk::GlobalDelta)> {
     let disks = match &self.for_ {
       Some(names) => {
         let names = names
@@ -498,7 +517,7 @@ impl DisksDelta {
         let names = names
           .into_iter()
           .map(|name| name.try_into_string())
-          .collect::<anyhow::Result<Vec<_>>>()?;
+          .collect::<misstep::Result<Vec<_>>>()?;
 
         state
           .disks
@@ -516,19 +535,22 @@ impl DisksDelta {
 
     for disk in disks {
       deltas.insert(Arc::clone(&disk), disk::Delta {
-        scheduler: eval_string(&self.scheduler, state, "disk.scheduler")?.map(|value| state.setting(value)),
+        scheduler:     eval_string(&self.scheduler, state, "disk.scheduler")?
+          .map(|value| state.setting(value)),
         readahead_kib: eval_u64(
           &self.readahead_kib,
           state,
           "disk.readahead-kib",
-        )?.map(|value| state.setting(value)),
-        apm: apm.map(|value| state.setting(value)),
-        spindown: spindown.map(|value| state.setting(value)),
+        )?
+        .map(|value| state.setting(value)),
+        apm:           apm.map(|value| state.setting(value)),
+        spindown:      spindown.map(|value| state.setting(value)),
       });
     }
 
     Ok((deltas, disk::GlobalDelta {
-      alpm: eval_string(&self.alpm, state, "disk.alpm")?.map(|value| state.setting(value)),
+      alpm: eval_string(&self.alpm, state, "disk.alpm")?
+        .map(|value| state.setting(value)),
     }))
   }
 }
@@ -547,7 +569,7 @@ pub struct UsbsDelta {
 }
 
 impl UsbsDelta {
-  pub fn eval(&self, state: &EvalState<'_, '_>) -> anyhow::Result<UsbDeltas> {
+  pub fn eval(&self, state: &EvalState<'_, '_>) -> misstep::Result<UsbDeltas> {
     let devices = match &self.for_ {
       Some(names) => {
         let names = names
@@ -558,7 +580,7 @@ impl UsbsDelta {
         let names = names
           .into_iter()
           .map(|name| name.try_into_string())
-          .collect::<anyhow::Result<Vec<_>>>()?;
+          .collect::<misstep::Result<Vec<_>>>()?;
 
         state
           .usb_devices
@@ -590,7 +612,8 @@ impl UsbsDelta {
           &self.autosuspend,
           state,
           "usb.autosuspend",
-        )?.map(|value| state.setting(value)),
+        )?
+        .map(|value| state.setting(value)),
         autosuspend_delay_ms: delay_ms.map(|value| state.setting(value)),
       });
     }
@@ -614,18 +637,20 @@ impl AudioDelta {
   pub fn eval(
     &self,
     state: &EvalState<'_, '_>,
-  ) -> anyhow::Result<audio::Delta> {
+  ) -> misstep::Result<audio::Delta> {
     Ok(audio::Delta {
       timeout_seconds:  eval_u64(
         &self.timeout_seconds,
         state,
         "audio.timeout-seconds",
-      )?.map(|value| state.setting(value)),
+      )?
+      .map(|value| state.setting(value)),
       reset_controller: eval_bool(
         &self.reset_controller,
         state,
         "audio.reset-controller",
-      )?.map(|value| state.setting(value)),
+      )?
+      .map(|value| state.setting(value)),
     })
   }
 }
@@ -644,7 +669,7 @@ pub struct GpusDelta {
 }
 
 impl GpusDelta {
-  pub fn eval(&self, state: &EvalState<'_, '_>) -> anyhow::Result<GpuDeltas> {
+  pub fn eval(&self, state: &EvalState<'_, '_>) -> misstep::Result<GpuDeltas> {
     let gpus = match &self.for_ {
       Some(names) => {
         let names = names
@@ -655,7 +680,7 @@ impl GpusDelta {
         let names = names
           .into_iter()
           .map(|name| name.try_into_string())
-          .collect::<anyhow::Result<Vec<_>>>()?;
+          .collect::<misstep::Result<Vec<_>>>()?;
 
         state
           .gpus
@@ -682,12 +707,14 @@ impl GpusDelta {
 
     for gpu in gpus {
       deltas.insert(Arc::clone(&gpu), gpu::Delta {
-        panel_power_savings: panel_power_savings.map(|value| state.setting(value)),
-        radeon_powersave: eval_string(
+        panel_power_savings: panel_power_savings
+          .map(|value| state.setting(value)),
+        radeon_powersave:    eval_string(
           &self.radeon_powersave,
           state,
           "gpu.radeon-powersave",
-        )?.map(|value| state.setting(value)),
+        )?
+        .map(|value| state.setting(value)),
       });
     }
 
@@ -699,7 +726,7 @@ fn eval_frequency(
   expression: &Option<Expression>,
   state: &EvalState<'_, '_>,
   name: &str,
-) -> anyhow::Result<Option<cpu::frequency::Frequency>> {
+) -> misstep::Result<Option<cpu::frequency::Frequency>> {
   let Some(expression) = expression else {
     return Ok(None);
   };
@@ -718,7 +745,7 @@ fn eval_i32(
   expression: &Option<Expression>,
   state: &EvalState<'_, '_>,
   name: &str,
-) -> anyhow::Result<Option<i32>> {
+) -> misstep::Result<Option<i32>> {
   let Some(value) = eval_u64(expression, state, name)? else {
     return Ok(None);
   };
@@ -734,7 +761,7 @@ fn eval_u8(
   expression: &Option<Expression>,
   state: &EvalState<'_, '_>,
   name: &str,
-) -> anyhow::Result<Option<u8>> {
+) -> misstep::Result<Option<u8>> {
   let Some(value) = eval_u64(expression, state, name)? else {
     return Ok(None);
   };
@@ -749,7 +776,7 @@ fn eval_u64(
   expression: &Option<Expression>,
   state: &EvalState<'_, '_>,
   name: &str,
-) -> anyhow::Result<Option<u64>> {
+) -> misstep::Result<Option<u64>> {
   let Some(expression) = expression else {
     return Ok(None);
   };
@@ -766,7 +793,7 @@ fn eval_u64(
     .map(Some)
 }
 
-fn unsigned_integer(value: f64) -> anyhow::Result<u64> {
+fn unsigned_integer(value: f64) -> misstep::Result<u64> {
   if value.fract() != 0.0 || !(0.0..u64::MAX as f64).contains(&value) {
     bail!("value is not a representable unsigned integer: {value}");
   }
@@ -777,7 +804,7 @@ fn eval_string(
   expression: &Option<Expression>,
   state: &EvalState<'_, '_>,
   name: &str,
-) -> anyhow::Result<Option<String>> {
+) -> misstep::Result<Option<String>> {
   let Some(expression) = expression else {
     return Ok(None);
   };
@@ -795,7 +822,7 @@ fn eval_epp(
   expression: &Option<Expression>,
   state: &EvalState<'_, '_>,
   name: &str,
-) -> anyhow::Result<Option<String>> {
+) -> misstep::Result<Option<String>> {
   let Some(expression) = expression else {
     return Ok(None);
   };
@@ -818,7 +845,7 @@ fn eval_bool(
   expression: &Option<Expression>,
   state: &EvalState<'_, '_>,
   name: &str,
-) -> anyhow::Result<Option<bool>> {
+) -> misstep::Result<Option<bool>> {
   let Some(expression) = expression else {
     return Ok(None);
   };
@@ -836,7 +863,7 @@ fn eval_percent(
   expression: &Option<Expression>,
   state: &EvalState<'_, '_>,
   name: &str,
-) -> anyhow::Result<Option<u8>> {
+) -> misstep::Result<Option<u8>> {
   let Some(expression) = expression else {
     return Ok(None);
   };
@@ -851,7 +878,7 @@ fn eval_percent(
     .transpose()
 }
 
-fn percentage(value: f64) -> anyhow::Result<u8> {
+fn percentage(value: f64) -> misstep::Result<u8> {
   if value.fract() != 0.0 || !(0.0..=100.0).contains(&value) {
     bail!("percentage must be an integer between 0 and 100, got {value}");
   }
@@ -938,7 +965,8 @@ impl PowersDelta {
           .try_into_number()
           .context("`power.charge-threshold-start` was not a number")?;
 
-        delta.charge_threshold_start = Some(state.setting(threshold_start / 100.0));
+        delta.charge_threshold_start =
+          Some(state.setting(threshold_start / 100.0));
       }
 
       if let Some(threshold_end) = &self.charge_threshold_end
@@ -1313,7 +1341,7 @@ pub enum Expression {
 }
 
 impl Expression {
-  pub fn try_into_number(self) -> anyhow::Result<f64> {
+  pub fn try_into_number(self) -> misstep::Result<f64> {
     let Self::Number(number) = self else {
       bail!("tried to cast '{self:?}' to a number, failed")
     };
@@ -1321,7 +1349,7 @@ impl Expression {
     Ok(number)
   }
 
-  pub fn try_into_boolean(self) -> anyhow::Result<bool> {
+  pub fn try_into_boolean(self) -> misstep::Result<bool> {
     let Self::Boolean(boolean) = self else {
       bail!("tried to cast '{self:?}' to a boolean, failed")
     };
@@ -1329,7 +1357,7 @@ impl Expression {
     Ok(boolean)
   }
 
-  pub fn try_into_string(self) -> anyhow::Result<String> {
+  pub fn try_into_string(self) -> misstep::Result<String> {
     let Self::String(string) = self else {
       bail!("tried to cast '{self:?}' to a string, failed")
     };
@@ -1337,7 +1365,7 @@ impl Expression {
     Ok(string)
   }
 
-  pub fn try_into_list(self) -> anyhow::Result<Vec<Expression>> {
+  pub fn try_into_list(self) -> misstep::Result<Vec<Expression>> {
     let Self::List(list) = self else {
       bail!("tried to cast '{self:?}' to a list, failed")
     };
@@ -1564,7 +1592,7 @@ impl<'de> Deserialize<'de> for DaemonConfig {
 impl DaemonConfig {
   const DEFAULT: &str = include_str!("config.toml");
 
-  pub fn load_from(path: Option<&Path>) -> anyhow::Result<Self> {
+  pub fn load_from(path: Option<&Path>) -> misstep::Result<Self> {
     let contents = if let Some(path) = path {
       log::info!("loading config from '{path}'", path = path.display());
 
@@ -1622,7 +1650,7 @@ mod tests {
     let path = directory.path().join("config.toml");
     stdfs::write(&path, "[[rules]]\nname = 'power'\npriority = 1\n").unwrap();
     let error = DaemonConfig::load_from(Some(&path)).unwrap_err();
-    assert!(format!("{error:#}").contains("unknown field `rules`"));
+    assert!(format!("{error}").contains("unknown field `rules`"));
     stdfs::write(&path, "[[rule]]\nname = 'power'\npriority = 1\n").unwrap();
     let config = DaemonConfig::load_from(Some(&path)).unwrap();
     assert_eq!(config.rules.len(), 1);

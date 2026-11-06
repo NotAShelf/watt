@@ -9,10 +9,11 @@ use std::{
   str,
 };
 
-use anyhow::{
-  Context,
-  anyhow,
+use misstep::{
+  OptionExt as _,
+  ResultExt as _,
   bail,
+  report,
 };
 use yansi::Paint as _;
 
@@ -126,7 +127,7 @@ impl fmt::Display for PowerSupply {
 
 const POWER_SUPPLY_PATH: &str = "/sys/class/power_supply";
 
-fn threshold_percentage(value: f64) -> anyhow::Result<u8> {
+fn threshold_percentage(value: f64) -> misstep::Result<u8> {
   let percent = (value * 100.0).round();
   // Account for binary rounding when percentages are normalized to 0..=1.
   if !(0.0..=1.0).contains(&value)
@@ -148,11 +149,11 @@ pub struct PowerSupplyInventory {
 
 impl PowerSupplyInventory {
   /// Reads power-supply capabilities and telemetry without changing settings.
-  pub fn scan() -> anyhow::Result<Self> {
+  pub fn scan() -> misstep::Result<Self> {
     Self::scan_in(Path::new(POWER_SUPPLY_PATH))
   }
 
-  fn scan_in(root: &Path) -> anyhow::Result<Self> {
+  fn scan_in(root: &Path) -> misstep::Result<Self> {
     log::trace!("detecting power supplies...");
 
     let mut power_supplies = Vec::new();
@@ -201,7 +202,7 @@ impl PowerSupplyInventory {
       };
 
       if let Err(error) = power_supply.scan() {
-        failures.push(format!("failed to scan {power_supply}: {error:#}"));
+        failures.push(format!("failed to scan {power_supply}: {error}"));
         continue;
       }
 
@@ -218,7 +219,7 @@ impl PowerSupplyInventory {
 }
 
 impl PowerSupply {
-  pub fn all() -> anyhow::Result<Vec<PowerSupply>> {
+  pub fn all() -> misstep::Result<Vec<PowerSupply>> {
     let inventory = PowerSupplyInventory::scan()?;
     for failure in &inventory.failures {
       log::warn!("{failure}");
@@ -231,7 +232,7 @@ impl PowerSupply {
   /// Power-supply drivers may omit properties, and buggy firmware can expose
   /// temporarily malformed values. Neither case should prevent Watt from
   /// using the remaining properties of the device.
-  fn read_telemetry_n<N>(&self, property: &str) -> anyhow::Result<Option<N>>
+  fn read_telemetry_n<N>(&self, property: &str) -> misstep::Result<Option<N>>
   where
     N: str::FromStr,
     N::Err: error::Error + Send + Sync + 'static,
@@ -256,7 +257,7 @@ impl PowerSupply {
     &self,
     full_property: &str,
     design_property: &str,
-  ) -> anyhow::Result<Option<f64>> {
+  ) -> misstep::Result<Option<f64>> {
     let full = self.read_telemetry_n::<u64>(full_property)?;
     let design = self.read_telemetry_n::<u64>(design_property)?;
 
@@ -268,7 +269,7 @@ impl PowerSupply {
     )
   }
 
-  fn scan_health(&self) -> anyhow::Result<Option<f64>> {
+  fn scan_health(&self) -> misstep::Result<Option<f64>> {
     if let Some(health) = self.read_telemetry_n::<u64>("state_of_health")? {
       return Ok(Some(health as f64 / 100.0));
     }
@@ -296,7 +297,7 @@ impl PowerSupply {
     .any(|word| name.contains(word))
   }
 
-  fn scan(&mut self) -> anyhow::Result<()> {
+  fn scan(&mut self) -> misstep::Result<()> {
     log::trace!("scanning power supply '{name}'", name = self.name);
 
     if !self.path.exists() {
@@ -461,11 +462,11 @@ impl PowerSupply {
   pub fn set_charge_threshold_start(
     &mut self,
     charge_threshold_start: f64,
-  ) -> anyhow::Result<()> {
+  ) -> misstep::Result<()> {
     let percent = threshold_percentage(charge_threshold_start)?;
     fs::write(
       &self.charge_threshold_path_start().ok_or_else(|| {
-        anyhow!(
+        report!(
           "power supply '{name}' does not support changing charge threshold \
            levels",
           name = self.name,
@@ -487,11 +488,11 @@ impl PowerSupply {
   pub fn set_charge_threshold_end(
     &mut self,
     charge_threshold_end: f64,
-  ) -> anyhow::Result<()> {
+  ) -> misstep::Result<()> {
     let percent = threshold_percentage(charge_threshold_end)?;
     fs::write(
       &self.charge_threshold_path_end().ok_or_else(|| {
-        anyhow!(
+        report!(
           "power supply '{name}' does not support changing charge threshold \
            levels",
           name = self.name,
@@ -510,7 +511,7 @@ impl PowerSupply {
     Ok(())
   }
 
-  pub fn get_available_platform_profiles() -> anyhow::Result<Vec<String>> {
+  pub fn get_available_platform_profiles() -> misstep::Result<Vec<String>> {
     log::trace!("reading available platform profiles");
 
     let path = "/sys/firmware/acpi/platform_profile_choices";
@@ -536,7 +537,7 @@ impl PowerSupply {
   /// Also see [`The Kernel docs`] for this.
   ///
   /// [`The Kernel docs`]: <https://docs.kernel.org/userspace-api/sysfs-platform_profile.html>
-  pub fn set_platform_profile(profile: &str) -> anyhow::Result<()> {
+  pub fn set_platform_profile(profile: &str) -> misstep::Result<()> {
     log::trace!("setting platform profile to '{profile}'");
 
     let profiles = Self::get_available_platform_profiles()?;
@@ -558,7 +559,7 @@ impl PowerSupply {
     )
   }
 
-  pub fn platform_profile() -> anyhow::Result<String> {
+  pub fn platform_profile() -> misstep::Result<String> {
     log::trace!("reading current platform profile");
 
     fs::read("/sys/firmware/acpi/platform_profile")
@@ -592,7 +593,7 @@ impl Delta {
     }
   }
 
-  pub fn apply(&self, power_supply: &mut PowerSupply) -> anyhow::Result<()> {
+  pub fn apply(&self, power_supply: &mut PowerSupply) -> misstep::Result<()> {
     let start = self.charge_threshold_start.as_ref();
     let end = self.charge_threshold_end.as_ref();
     for setting in [start, end].into_iter().flatten() {

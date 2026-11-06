@@ -18,7 +18,7 @@ use std::{
   time::Instant,
 };
 
-use anyhow::ensure;
+use misstep::ensure;
 use serde::{
   Deserialize,
   Serialize,
@@ -92,7 +92,7 @@ impl ProfileState {
     }
   }
 
-  pub fn load_preference(path: &Path) -> anyhow::Result<Option<PowerProfile>> {
+  pub fn load_preference(path: &Path) -> misstep::Result<Option<PowerProfile>> {
     let contents = match fs::read_to_string(path) {
       Ok(contents) => contents,
       Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
@@ -113,7 +113,7 @@ impl ProfileState {
   pub fn save_profile(
     path: &Path,
     profile: PowerProfile,
-  ) -> anyhow::Result<()> {
+  ) -> misstep::Result<()> {
     let contents = toml::to_string(&StoredProfile {
       version: 1,
       profile,
@@ -206,7 +206,7 @@ impl ProfileState {
     cookie
   }
 
-  pub fn release_hold(&mut self, cookie: u32) -> anyhow::Result<()> {
+  pub fn release_hold(&mut self, cookie: u32) -> misstep::Result<()> {
     self.release_hold_for(cookie, Some("")).map_err(Into::into)
   }
 

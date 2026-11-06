@@ -1,4 +1,4 @@
-use anyhow::{
+use misstep::{
   bail,
   ensure,
 };
@@ -36,7 +36,7 @@ impl Constant<'_> {
 
 pub(super) fn analyze(
   expression: &Expression,
-) -> anyhow::Result<Constant<'_>> {
+) -> misstep::Result<Constant<'_>> {
   let mut analyzer = Analyzer {
     remaining: 256,
     depth:     0,
@@ -48,7 +48,7 @@ pub(super) fn analyze(
   })
 }
 
-pub(super) fn number(expression: &Expression) -> anyhow::Result<Option<f64>> {
+pub(super) fn number(expression: &Expression) -> misstep::Result<Option<f64>> {
   match analyze(expression)? {
     Constant::Unknown | Constant::Unset => Ok(None),
     value => Analyzer::into_number(value).map(Some),
@@ -141,14 +141,14 @@ impl<'a> Evaluator<'a> for Analyzer {
     Constant::List(values)
   }
 
-  fn into_boolean(value: Constant<'a>) -> anyhow::Result<bool> {
+  fn into_boolean(value: Constant<'a>) -> misstep::Result<bool> {
     match value {
       Constant::Boolean(value) => Ok(value),
       _ => bail!("expected boolean operand"),
     }
   }
 
-  fn into_number(value: Constant<'a>) -> anyhow::Result<f64> {
+  fn into_number(value: Constant<'a>) -> misstep::Result<f64> {
     match value {
       Constant::Number(value) => Ok(value),
       _ => bail!("expected number operand"),

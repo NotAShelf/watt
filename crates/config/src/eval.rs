@@ -1,9 +1,9 @@
-use anyhow::{
-  Context as _,
-  bail,
-};
 use humantime::parse_duration;
 use jiff::Timestamp;
+use misstep::{
+  ResultExt as _,
+  bail,
+};
 use watt_platform::{
   fs,
   power_supply::PowerSupply,
@@ -23,7 +23,7 @@ pub(super) enum Evaluated<T> {
   Unknown,
 }
 
-pub(super) type Evaluation<T> = anyhow::Result<Evaluated<T>>;
+pub(super) type Evaluation<T> = misstep::Result<Evaluated<T>>;
 
 // Runtime evaluation builds the returned Expression directly; constant
 // analysis borrows strings and stops at host-dependent leaves.
@@ -35,8 +35,8 @@ pub(super) trait Evaluator<'a> {
   fn boolean(value: bool) -> Self::Value;
   fn number(value: f64) -> Self::Value;
   fn list(values: Vec<Self::Value>) -> Self::Value;
-  fn into_boolean(value: Self::Value) -> anyhow::Result<bool>;
-  fn into_number(value: Self::Value) -> anyhow::Result<f64>;
+  fn into_boolean(value: Self::Value) -> misstep::Result<bool>;
+  fn into_number(value: Self::Value) -> misstep::Result<f64>;
   fn empty_extrema(name: &str) -> Evaluation<Self::Value>;
 
   fn list_fits(&self, _len: usize) -> bool {
@@ -140,7 +140,7 @@ pub(super) fn evaluate<'a, E: Evaluator<'a>>(
   Ok(Evaluated::Value(result))
 }
 
-fn finite(result: f64) -> anyhow::Result<f64> {
+fn finite(result: f64) -> misstep::Result<f64> {
   if !result.is_finite() {
     bail!("arithmetic expression produced a non-finite number");
   }
@@ -187,11 +187,11 @@ impl<'a> Evaluator<'a> for &EvalState<'_, '_> {
     Expression::List(values)
   }
 
-  fn into_boolean(value: Expression) -> anyhow::Result<bool> {
+  fn into_boolean(value: Expression) -> misstep::Result<bool> {
     value.try_into_boolean()
   }
 
-  fn into_number(value: Expression) -> anyhow::Result<f64> {
+  fn into_number(value: Expression) -> misstep::Result<f64> {
     value.try_into_number()
   }
 
@@ -204,7 +204,7 @@ impl Expression {
   pub fn eval(
     &self,
     state: &EvalState<'_, '_>,
-  ) -> anyhow::Result<Option<Self>> {
+  ) -> misstep::Result<Option<Self>> {
     let mut evaluator = state;
     match Evaluator::eval(&mut evaluator, self)? {
       Evaluated::Value(value) => Ok(Some(value)),
@@ -216,7 +216,7 @@ impl Expression {
   fn eval_leaf(
     &self,
     state: &EvalState<'_, '_>,
-  ) -> anyhow::Result<Option<Self>> {
+  ) -> misstep::Result<Option<Self>> {
     use Expression::*;
 
     macro_rules! try_ok {
@@ -436,7 +436,7 @@ fn eval_string_list(
   values: &[Expression],
   state: &EvalState<'_, '_>,
   name: &str,
-) -> anyhow::Result<Option<Vec<String>>> {
+) -> misstep::Result<Option<Vec<String>>> {
   let mut strings = Vec::with_capacity(values.len());
 
   for value in values {
@@ -458,7 +458,7 @@ fn average_since(
   state: &EvalState<'_, '_>,
   duration: Expression,
   value: impl Fn(&CpuLog) -> f64,
-) -> anyhow::Result<Option<f64>> {
+) -> misstep::Result<Option<f64>> {
   let duration = duration.try_into_string()?;
   let duration = parse_duration(&duration)
     .with_context(|| format!("failed to parse duration '{duration}'"))?;

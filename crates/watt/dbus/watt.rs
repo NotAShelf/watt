@@ -51,7 +51,7 @@ fn verify_contents(
       .any(|diagnostic| diagnostic.severity == Severity::Error)
   {
     diagnostics.extend(config.verify_hardware().map_err(|error| {
-      fdo::Error::Failed(format!("hardware verification failed: {error:#}"))
+      fdo::Error::Failed(format!("hardware verification failed: {error}"))
     })?);
   }
   if diagnostics.len() > MAX_DIAGNOSTICS {
@@ -68,7 +68,7 @@ pub struct WattInterface {
 }
 
 pub struct ReloadRequest {
-  pub response: oneshot::Sender<anyhow::Result<()>>,
+  pub response: oneshot::Sender<misstep::Result<()>>,
 }
 
 impl WattInterface {
@@ -119,7 +119,7 @@ impl WattInterface {
     result
       .await
       .map_err(|_| fdo::Error::Failed("reload request was cancelled".into()))?
-      .map_err(|error| fdo::Error::Failed(format!("reload failed: {error:#}")))
+      .map_err(|error| fdo::Error::Failed(format!("reload failed: {error}")))
   }
 
   async fn verify_configuration(
