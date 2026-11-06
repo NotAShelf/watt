@@ -67,7 +67,7 @@ fn verify_contents(
   contents: &str,
   hardware: bool,
 ) -> Result<Vec<Diagnostic>, MethodErr> {
-  let config: DaemonConfig = toml::from_str(contents)
+  let config = DaemonConfig::parse(contents)
     .map_err(|error| invalid_args(format!("invalid configuration: {error}")))?;
   let mut diagnostics = config.verify_static();
   if hardware
