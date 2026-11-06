@@ -1,0 +1,287 @@
+use std::{
+  fmt,
+  path::Path,
+};
+
+use log::Level;
+use misstep::{
+  OptionExt as _,
+  ResultExt as _,
+  bail,
+};
+
+use super::Cpu;
+use crate::fs;
+
+const KHZ_PER_MHZ: f64 = 1000.0;
+
+/// A positive CPU frequency stored exactly in kHz.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Frequency(u64);
+
+impl Frequency {
+  /// Constructs a frequency from a positive kHz value.
+  pub fn from_khz(khz: u64) -> misstep::Result<Self> {
+    if khz == 0 {
+      bail!("frequency must be greater than zero");
+    }
+
+    Ok(Self(khz))
+  }
+
+  /// Constructs a frequency from MHz, rounded to the nearest kHz.
+  pub fn from_mhz(mhz: f64) -> misstep::Result<Self> {
+    let khz = (mhz * KHZ_PER_MHZ).round();
+    if !khz.is_finite() || khz < 1.0 || khz >= u64::MAX as f64 {
+      bail!("invalid frequency: {mhz} MHz");
+    }
+
+    Ok(Self(khz as u64))
+  }
+
+  /// Returns the exact frequency in kHz.
+  pub const fn as_khz(self) -> u64 {
+    self.0
+  }
+
+  /// Returns the frequency represented in MHz.
+  pub fn as_mhz(self) -> f64 {
+    self.0 as f64 / KHZ_PER_MHZ
+  }
+}
+
+impl fmt::Display for Frequency {
+  fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(formatter, "{} kHz", self.0)
+  }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Range {
+  minimum: Frequency,
+  maximum: Frequency,
+}
+
+impl Range {
+  fn new(minimum: Frequency, maximum: Frequency) -> misstep::Result<Self> {
+    if minimum > maximum {
+      bail!(
+        "minimum frequency ({minimum}) cannot be higher than maximum \
+         frequency ({maximum})"
+      );
+    }
+
+    Ok(Self { minimum, maximum })
+  }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Transition {
+  minimum: Option<Frequency>,
+  maximum: Option<Frequency>,
+  order:   WriteOrder,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WriteOrder {
+  MinimumFirst,
+  MaximumFirst,
+}
+
+impl Transition {
+  fn new(
+    hardware: Range,
+    current: Range,
+    minimum: Option<Frequency>,
+    maximum: Option<Frequency>,
+  ) -> misstep::Result<Self> {
+    let target = Range::new(
+      minimum.unwrap_or(current.minimum),
+      maximum.unwrap_or(current.maximum),
+    )?;
+
+    if target.minimum < hardware.minimum {
+      bail!(
+        "new software minimum frequency ({minimum}) cannot be lower than the \
+         hardware minimum frequency ({hardware_minimum})",
+        minimum = target.minimum,
+        hardware_minimum = hardware.minimum,
+      );
+    }
+    if target.maximum > hardware.maximum {
+      bail!(
+        "new software maximum frequency ({maximum}) cannot be higher than the \
+         hardware maximum frequency ({hardware_maximum})",
+        maximum = target.maximum,
+        hardware_maximum = hardware.maximum,
+      );
+    }
+
+    Ok(Self {
+      minimum,
+      maximum,
+      order: if target.minimum > current.maximum {
+        WriteOrder::MaximumFirst
+      } else {
+        WriteOrder::MinimumFirst
+      },
+    })
+  }
+}
+
+impl Cpu {
+  pub(super) fn scan_frequency(&mut self) -> misstep::Result<()> {
+    self.frequency = read(self.cpufreq_path("cpuinfo_cur_freq"))
+      .with_context(|| format!("failed to parse {self} frequency"))?;
+    if self.frequency.is_none() {
+      self.frequency = read(self.cpufreq_path("scaling_cur_freq"))
+        .with_context(|| format!("failed to parse {self} frequency"))?;
+    }
+    self.frequency_minimum = read(self.cpufreq_path("cpuinfo_min_freq"))
+      .with_context(|| format!("failed to parse {self} frequency minimum"))?;
+    self.frequency_maximum = read(self.cpufreq_path("cpuinfo_max_freq"))
+      .with_context(|| format!("failed to parse {self} frequency maximum"))?;
+
+    Ok(())
+  }
+
+  pub fn frequency_available(&self) -> bool {
+    self.frequency_control
+      && self.frequency_minimum.is_some()
+      && self.frequency_maximum.is_some()
+  }
+
+  pub(super) fn frequency_transition(
+    &self,
+    minimum: Option<Frequency>,
+    maximum: Option<Frequency>,
+  ) -> misstep::Result<Option<Transition>> {
+    if minimum.is_none() && maximum.is_none() {
+      return Ok(None);
+    }
+
+    let hardware = Range::new(
+      self
+        .frequency_minimum
+        .context("hardware minimum frequency is unavailable")?,
+      self
+        .frequency_maximum
+        .context("hardware maximum frequency is unavailable")?,
+    )
+    .with_context(|| format!("invalid hardware frequency range for {self}"))?;
+    let current = Range::new(
+      self.read_frequency("scaling_min_freq")?,
+      self.read_frequency("scaling_max_freq")?,
+    )
+    .with_context(|| format!("invalid current frequency range for {self}"))?;
+
+    Transition::new(hardware, current, minimum, maximum)
+      .with_context(|| format!("invalid requested frequency range for {self}"))
+      .map(Some)
+  }
+
+  pub(super) fn apply_frequency_transition(
+    &self,
+    transition: Transition,
+  ) -> misstep::Result<()> {
+    let Transition {
+      minimum,
+      maximum,
+      order,
+    } = transition;
+
+    let writes = match order {
+      WriteOrder::MinimumFirst => {
+        [
+          ("scaling_min_freq", minimum, None),
+          ("scaling_max_freq", None, maximum),
+        ]
+      },
+      WriteOrder::MaximumFirst => {
+        [
+          ("scaling_max_freq", None, maximum),
+          ("scaling_min_freq", minimum, None),
+        ]
+      },
+    };
+    for (name, minimum, maximum) in writes {
+      if let Some(frequency) = minimum.or(maximum) {
+        // A clamped first write may invalidate the planned second bound.
+        self.frequency_transition(minimum, maximum)?;
+        self.write_frequency(name, frequency)?;
+      }
+    }
+
+    Ok(())
+  }
+
+  fn read_frequency(&self, name: &str) -> misstep::Result<Frequency> {
+    let path = self.cpufreq_path(name);
+
+    read(path)?.with_context(|| format!("{name} is unavailable for {self}"))
+  }
+
+  fn write_frequency(
+    &self,
+    name: &str,
+    frequency: Frequency,
+  ) -> misstep::Result<()> {
+    let path = self.cpufreq_path(name);
+
+    if self.read_frequency(name)? == frequency {
+      fs::keep_setting(&path, frequency.as_khz().to_string());
+      return Ok(());
+    }
+
+    let requested = frequency.as_khz().to_string();
+    let previous = fs::last_readback(&path);
+    fs::write(&path, &requested)
+      .with_context(|| format!("failed to set {name} for {self}"))?;
+    let observed = self.read_frequency(name)?;
+    let readback = observed.as_khz().to_string();
+    if observed == frequency {
+      log::info!("{self} {name} set to {frequency}");
+    } else {
+      let level = if previous == Some((requested, readback.clone())) {
+        Level::Debug
+      } else {
+        Level::Warn
+      };
+      log::log!(
+        level,
+        "{self} {name} requested {frequency}, kernel applied {observed}",
+      );
+    }
+    fs::observe(path, readback);
+
+    Ok(())
+  }
+}
+
+fn read(path: impl AsRef<Path>) -> misstep::Result<Option<Frequency>> {
+  fs::read_n::<u64>(path)?
+    .map(Frequency::from_khz)
+    .transpose()
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn frequency_rejects_invalid_mhz() {
+    for mhz in [-1.0, 0.0, f64::INFINITY, u64::MAX as f64] {
+      assert!(Frequency::from_mhz(mhz).is_err(), "{mhz} must be rejected");
+    }
+  }
+
+  #[test]
+  fn frequency_preserves_fractional_mhz_as_exact_khz() {
+    assert_eq!(
+      Frequency::from_mhz(702.4)
+        .expect("valid frequency")
+        .as_khz(),
+      702_400
+    );
+  }
+}

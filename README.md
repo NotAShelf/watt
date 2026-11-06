@@ -4,7 +4,6 @@
   <h1 id="header">
     <pre>Watt</pre>
   </h1>
-  <div>
     <a alt="CI" href="https://github.com/NotAShelf/watt/actions">
       <img
         src="https://github.com/NotAShelf/watt/actions/workflows/build.yml/badge.svg"
@@ -79,6 +78,10 @@ tested on a variety of systems to provide better performance out of the box.
 Unless the user wishes to configure Watt from ground up, it's enough to simply
 start the Watt daemon and leave it at that.
 
+NixOS users can enable the module from this flake. Other systems need the D-Bus
+and polkit policy files and a service unit; see
+[Installing Without NixOS](docs/configuration/administration.md#installing-without-nixos).
+
 ### Basic Commands
 
 ```sh
@@ -98,15 +101,22 @@ sudo watt -vv  # Log level: TRACE (will log everything)
 
 # Run with a custom configuration file
 sudo watt --config /path/to/config.toml
+
+# Verify configuration without changing hardware
+watt --config /path/to/config.toml --verify-config=hardware
+
+# Explain managed settings and adaptive polling through the running daemon
+watt config --json settings
+watt config --json polling
 ```
 
 ## Configuration
 
 Watt uses a rule-based TOML configuration system that allows you to define power
-management policies. Each `[[rule]]` has an optional condition, a unique
-priority and one or more action sections. Watt evaluates matching rules from
-highest to lowest priority; higher-priority values fill each setting first, and
-lower-priority rules only fill settings that remain unset.
+management policies. Each `[[rule]]` has an optional condition, a unique name
+and priority, and one or more action sections. Watt evaluates matching rules
+from highest to lowest priority; higher-priority values fill each setting first,
+and lower-priority rules only fill settings that remain unset.
 
 ### Configuration Locations
 
@@ -118,10 +128,10 @@ Configuration sources, in order of precedence:
 
 <!--markdownlint-disable MD059 -->
 
-[watt crate]: ./watt/config.toml
+[default config]: ./crates/config/src/config.toml
 
 If no custom config path is provided, Watt uses a built-in default
-configuration. You can find the default configuration in the [watt crate].
+configuration. You can find it in the [default config].
 
 <!--markdownlint-enable MD059 -->
 
@@ -171,12 +181,19 @@ Not all features are available on all hardware:
 - Disk APM and spindown settings require `hdparm` and compatible drives
 - GPU panel power savings require compatible AMDGPU panel sysfs support
 
+The [support matrix](docs/configuration/hardware.md#support-matrix) lists the
+CPU drivers and controls covered by tests.
+
 ### Common Problems
 
 1. **Settings not applying**: Check for conflicts with other power management
-   tools
+   tools, and run `watt config errors` and `watt config settings` to see which
+   writes failed or were changed back
 2. **CPU frequencies fluctuating**: May be due to thermal throttling
 3. **Missing CPU information**: Verify kernel module support for your CPU
+
+See [Troubleshooting](docs/configuration/administration.md#troubleshooting) for
+the daemon diagnostics and what degraded states mean.
 
 While reporting issues, please include your system information and any relevant
 logs.
@@ -207,10 +224,21 @@ $ nix develop
 Non-Nix users may get the appropriate Cargo and Rust versions from their package
 manager, or using something like Rustup.
 
+### Tests
+
+Run `cargo test --workspace --all-features` as an unprivileged user. Tests that
+touch sysfs or procfs go through `watt_platform::fs`. `SystemFixture`, in
+`crates/platform/src/test_support.rs`, redirects those accesses into a temporary
+root for the current test thread and can inject read and write failures. A unit
+test that resolves an absolute path without a fixture or `WATT_SYSTEM_ROOT`
+panics instead of touching the host. Process tests under `crates/watt/tests` run
+the real binary against a private D-Bus and `WATT_SYSTEM_ROOT`, and need
+`dbus-daemon` in `PATH`.
+
 ### Formatting & Lints
 
 Please make sure to run _at least_ `cargo fmt` (and `taplo format` if you have
-modified any TOML) inside the repository to make sure all of your code is
+modified any TOML files) inside the repository to make sure all of your code is
 properly formatted. For Nix code, use Alejandra.
 
 Clippy lints are not _required_ as of now, but a good rule of thumb to run them

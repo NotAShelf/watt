@@ -4,7 +4,7 @@ inputs: {
   lib,
   ...
 }: let
-  inherit (lib.modules) mkIf;
+  inherit (lib.modules) mkIf mkDefault;
   inherit (lib.options) mkOption mkEnableOption mkPackageOption;
   inherit (lib.types) submodule;
   inherit (lib.meta) getExe;
@@ -39,22 +39,28 @@ in {
   config = mkIf cfg.enable {
     environment.systemPackages = [cfg.package];
     services.dbus.packages = [cfg.package];
+    security.polkit.enable = mkDefault true;
 
-    # This is necessary for the Watt CLI. The environment variable
-    # passed to the systemd service will take priority in read order.
     environment.etc."watt.toml".source = cfgFile;
 
     systemd.services.watt = {
       wantedBy = ["multi-user.target"];
       conflicts = map (service: "${service}.service") conflictingServices;
       environment.WATT_CONFIG = cfgFile;
+      reloadTriggers = [cfgFile];
       serviceConfig = {
         WorkingDirectory = "";
         ExecStart = getExe cfg.package;
+        ExecReload = "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
         Restart = "on-failure";
 
         RuntimeDirectory = "watt";
         RuntimeDirectoryMode = "0755";
+        StateDirectory = "watt";
+        Environment = [
+          "WATT_CONFIG=/etc/watt.toml"
+          "WATT_STATE_PATH=%S/watt/profile.toml"
+        ];
       };
     };
 
