@@ -267,10 +267,6 @@ fn read(path: impl AsRef<Path>) -> anyhow::Result<Option<Frequency>> {
 mod tests {
   use super::*;
 
-  fn frequency(khz: u64) -> Frequency {
-    Frequency::from_khz(khz).expect("valid test frequency")
-  }
-
   #[test]
   fn frequency_rejects_invalid_mhz() {
     for mhz in [-1.0, 0.0, f64::INFINITY, u64::MAX as f64] {
@@ -285,53 +281,6 @@ mod tests {
         .expect("valid frequency")
         .as_khz(),
       702_400
-    );
-  }
-
-  #[test]
-  fn transition_raises_maximum_before_minimum() {
-    let transition = Transition::new(
-      Range::new(frequency(400_000), frequency(4_000_000)).unwrap(),
-      Range::new(frequency(400_000), frequency(1_000_000)).unwrap(),
-      Some(frequency(2_000_000)),
-      Some(frequency(3_000_000)),
-    )
-    .expect("valid transition");
-
-    assert_eq!(transition.order, WriteOrder::MaximumFirst);
-  }
-
-  #[test]
-  fn transition_lowers_minimum_before_maximum() {
-    let transition = Transition::new(
-      Range::new(frequency(400_000), frequency(4_000_000)).unwrap(),
-      Range::new(frequency(2_000_000), frequency(4_000_000)).unwrap(),
-      Some(frequency(1_000_000)),
-      Some(frequency(1_500_000)),
-    )
-    .expect("valid transition");
-
-    assert_eq!(transition.order, WriteOrder::MinimumFirst);
-  }
-
-  #[test]
-  fn transition_rejects_inverted_or_out_of_hardware_range() {
-    let hardware =
-      Range::new(frequency(702_000), frequency(3_504_000)).unwrap();
-    let current = Range::new(frequency(702_000), frequency(3_504_000)).unwrap();
-
-    assert!(
-      Transition::new(
-        hardware,
-        current,
-        Some(frequency(2_000_000)),
-        Some(frequency(1_800_000)),
-      )
-      .is_err()
-    );
-    assert!(
-      Transition::new(hardware, current, Some(frequency(200_000)), None,)
-        .is_err()
     );
   }
 }

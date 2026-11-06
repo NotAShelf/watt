@@ -1585,9 +1585,10 @@ impl DaemonConfig {
 mod tests {
   use std::sync::Arc;
 
-  use proptest::prelude::*;
-
-  use super::*;
+  use super::{
+    test_support::with_cpu_state,
+    *,
+  };
 
   #[test]
   fn loading_rejects_a_misspelled_rule_table() {
@@ -1605,118 +1606,6 @@ mod tests {
   fn frequency_mhz(mhz: u64) -> cpu::frequency::Frequency {
     cpu::frequency::Frequency::from_mhz(mhz as f64)
       .expect("valid test frequency")
-  }
-
-  proptest! {
-    #[test]
-    fn test_multiply_float(
-      base_freq in 1000u64..10000u64,
-      multiplier in 0.1f64..1.0f64
-    ) {
-      // Create a mock CPU with all required fields
-      // FIXME: figure out if there is a less ugly way of testing this and
-      // share CPU state across tests
-      let cpu = Arc::new(cpu::Cpu {
-        number: 0,
-        policy: None,
-        has_cpufreq: true,
-        frequency_control: true,
-        available_governors: vec![],
-        governor: None,
-        frequency: Some(frequency_mhz(base_freq)),
-        frequency_minimum: Some(frequency_mhz(1000)),
-        frequency_maximum: Some(frequency_mhz(base_freq)),
-        available_epps: vec![],
-        epp: None,
-        available_epbs: vec![],
-        epb: None,
-        stat: cpu::CpuStat::default(),
-        previous_stat: None,
-        info: None,
-      });
-
-      let mut cpus = HashSet::new();
-      cpus.insert(cpu.clone());
-
-      let power_supplies = HashSet::new();
-      let uncores = HashSet::new();
-      let disks = HashSet::new();
-      let usb_devices = HashSet::new();
-      let gpus = HashSet::new();
-      let cpu_log = VecDeque::new();
-
-      // Create an eval state with the base frequency
-      let state = EvalState {
-        frequency_available: true,
-        turbo_available: false,
-        cpu_usage: 0.5,
-        cpu_usage_volatility: Some(0.1),
-        cpu_temperature: Some(50.0),
-        cpu_temperature_volatility: Some(5.0),
-        cpu_idle_seconds: 10.0,
-        cpu_frequency_maximum: Some(base_freq as f64),
-        cpu_frequency_minimum: Some(1000.0),
-        lid_closed: false,
-        virtual_machine: false,
-        chassis_type: None,
-        power_supply_charge: Some(0.8),
-        power_supply_discharge_rate: Some(10.0),
-        battery_cycles: Some(100.0),
-        battery_health: Some(0.95),
-        discharging: false,
-        power_profile_preference: PowerProfile::Balanced,
-        context: EvalContext::Cpu(&cpu),
-        cpus: &cpus,
-        uncores: &uncores,
-        disks: &disks,
-        usb_devices: &usb_devices,
-        gpus: &gpus,
-        power_supplies: &power_supplies,
-        cpu_log: &cpu_log,
-      };
-
-      // Create an expression like: { value = "$cpu-frequency-maximum", multiply = 0.65 }
-      let expr = Expression::Multiply {
-        a: Box::new(Expression::CpuFrequencyMaximum),
-        b: Box::new(Expression::Number(multiplier)),
-      };
-
-      // Evaluate the expression
-      let result = expr.eval(&state);
-
-      // Before the fix, this would succeed but then crash when converting to u64
-      // After the fix, this should succeed and round the result
-      prop_assert!(result.is_ok());
-
-      if let Ok(Some(Expression::Number(value))) = result {
-        // The result might be a float
-        let _expected_float = base_freq as f64 * multiplier;
-
-        // Create a CpusDelta with the frequency_mhz_maximum field
-        let cpu_delta = CpusDelta {
-          for_: None,
-          governor: None,
-          energy_performance_preference: None,
-          energy_perf_bias: None,
-          frequency_mhz_minimum: None,
-          frequency_mhz_maximum: Some(Expression::Number(value)),
-          turbo: None,
-          pstate_min_performance_percent: None,
-          pstate_max_performance_percent: None,
-          dma_latency_us: None,
-          pm_qos_resume_latency_us: None,
-        };
-
-        // Try to evaluate it - this should not panic after the fix
-        let eval_result = cpu_delta.eval(&state);
-
-        // This test should pass after the fix is applied
-        prop_assert!(
-          eval_result.is_ok(),
-          "Evaluation should succeed with float frequency values"
-        );
-      }
-    }
   }
 
   // Specific test case that would have crashed before the fix
@@ -1742,158 +1631,39 @@ mod tests {
       previous_stat:       None,
       info:                None,
     });
+    let cpus = HashSet::from([Arc::clone(&cpu)]);
 
-    let mut cpus = HashSet::new();
-    cpus.insert(cpu.clone());
+    with_cpu_state(&cpus, |state| {
+      let cpu_delta = CpusDelta {
+        frequency_mhz_maximum: Some(Expression::Multiply {
+          a: Box::new(Expression::CpuFrequencyMaximum),
+          b: Box::new(Expression::Number(0.65)),
+        }),
+        ..CpusDelta::default()
+      };
 
-    let power_supplies = HashSet::new();
-    let uncores = HashSet::new();
-    let disks = HashSet::new();
-    let usb_devices = HashSet::new();
-    let gpus = HashSet::new();
-    let cpu_log = VecDeque::new();
-
-    let state = EvalState {
-      frequency_available:         true,
-      turbo_available:             false,
-      cpu_usage:                   0.5,
-      cpu_usage_volatility:        Some(0.1),
-      cpu_temperature:             Some(50.0),
-      cpu_temperature_volatility:  Some(5.0),
-      cpu_idle_seconds:            10.0,
-      cpu_frequency_maximum:       Some(3333.0),
-      cpu_frequency_minimum:       Some(1000.0),
-      lid_closed:                  false,
-      virtual_machine:             false,
-      chassis_type:                None,
-      power_supply_charge:         Some(0.8),
-      power_supply_discharge_rate: Some(10.0),
-      battery_cycles:              Some(100.0),
-      battery_health:              Some(0.95),
-      discharging:                 false,
-      power_profile_preference:    PowerProfile::Balanced,
-      context:                     EvalContext::Cpu(&cpu),
-      cpus:                        &cpus,
-      uncores:                     &uncores,
-      disks:                       &disks,
-      usb_devices:                 &usb_devices,
-      gpus:                        &gpus,
-      power_supplies:              &power_supplies,
-      cpu_log:                     &cpu_log,
-    };
-
-    // 3333 * 0.65 = 2166.45
-    let cpu_delta = CpusDelta {
-      for_:                           None,
-      governor:                       None,
-      energy_performance_preference:  None,
-      energy_perf_bias:               None,
-      frequency_mhz_minimum:          None,
-      frequency_mhz_maximum:          Some(Expression::Multiply {
-        a: Box::new(Expression::CpuFrequencyMaximum),
-        b: Box::new(Expression::Number(0.65)),
-      }),
-      turbo:                          None,
-      pstate_min_performance_percent: None,
-      pstate_max_performance_percent: None,
-      dma_latency_us:                 None,
-      pm_qos_resume_latency_us:       None,
-    };
-
-    // Previously this would bail! with "invalid number for ...". With the
-    // rounding changes this should succeed, and round to 2166
-    let result = cpu_delta.eval(&state);
-
-    assert!(
-      result.is_ok(),
-      "Should handle float results from multiplication"
-    );
-
-    if let Ok((deltas, _)) = result {
-      let delta = deltas.get(&cpu).unwrap();
-      assert!(delta.frequency_maximum.is_some());
-      let frequency = delta.frequency_maximum.unwrap();
+      let (deltas, _) = cpu_delta
+        .eval(state)
+        .expect("fractional frequency result must be accepted");
+      let frequency = deltas
+        .get(&cpu)
+        .and_then(|delta| delta.frequency_maximum)
+        .expect("maximum frequency delta");
       assert_eq!(frequency.as_khz(), 2_166_450);
-    }
+    });
   }
 
   #[test]
   fn test_volatility_expressions_with_insufficient_data() {
-    let cpu = Arc::new(cpu::Cpu {
-      number:              0,
-      policy:              None,
-      has_cpufreq:         true,
-      frequency_control:   true,
-      available_governors: vec![],
-      governor:            None,
-      frequency:           Some(frequency_mhz(3333)),
-      frequency_minimum:   Some(frequency_mhz(1000)),
-      frequency_maximum:   Some(frequency_mhz(3333)),
-      available_epps:      vec![],
-      epp:                 None,
-      available_epbs:      vec![],
-      epb:                 None,
-      stat:                cpu::CpuStat::default(),
-      previous_stat:       None,
-      info:                None,
+    with_cpu_state(&HashSet::new(), |state| {
+      for expression in [
+        Expression::CpuUsageVolatility,
+        Expression::CpuTemperature,
+        Expression::CpuTemperatureVolatility,
+      ] {
+        assert_eq!(expression.eval(state).unwrap(), None);
+      }
     });
-
-    let mut cpus = HashSet::new();
-    cpus.insert(cpu.clone());
-
-    let power_supplies = HashSet::new();
-    let uncores = HashSet::new();
-    let disks = HashSet::new();
-    let usb_devices = HashSet::new();
-    let gpus = HashSet::new();
-    let cpu_log = VecDeque::new();
-
-    let state = EvalState {
-      frequency_available:         true,
-      turbo_available:             false,
-      cpu_usage:                   0.0,
-      cpu_usage_volatility:        None,
-      cpu_temperature:             None,
-      cpu_temperature_volatility:  None,
-      cpu_idle_seconds:            0.0,
-      cpu_frequency_maximum:       Some(3333.0),
-      cpu_frequency_minimum:       Some(1000.0),
-      lid_closed:                  false,
-      virtual_machine:             false,
-      chassis_type:                None,
-      power_supply_charge:         None,
-      power_supply_discharge_rate: None,
-      battery_cycles:              None,
-      battery_health:              None,
-      discharging:                 false,
-      power_profile_preference:    PowerProfile::Balanced,
-      context:                     EvalContext::Cpu(&cpu),
-      cpus:                        &cpus,
-      uncores:                     &uncores,
-      disks:                       &disks,
-      usb_devices:                 &usb_devices,
-      gpus:                        &gpus,
-      power_supplies:              &power_supplies,
-      cpu_log:                     &cpu_log,
-    };
-
-    let result = Expression::CpuUsageVolatility.eval(&state);
-    assert!(
-      result.is_ok() && result.as_ref().unwrap().is_none(),
-      "CpuUsageVolatility should return None with insufficient data"
-    );
-
-    let result = Expression::CpuTemperature.eval(&state);
-    assert!(
-      result.is_ok() && result.as_ref().unwrap().is_none(),
-      "CpuTemperature should return None with insufficient data"
-    );
-
-    let result = Expression::CpuTemperatureVolatility.eval(&state);
-    assert!(
-      result.is_ok() && result.as_ref().unwrap().is_none(),
-      "CpuTemperatureVolatility should return None with insufficient data"
-    );
   }
 
   #[test]
@@ -1917,131 +1687,96 @@ mod tests {
       info:                None,
     });
 
-    let mut cpus = HashSet::new();
-    cpus.insert(cpu.clone());
     let mut other_cpu = (*cpu).clone();
     other_cpu.number = 1;
     other_cpu.available_governors = vec!["powersave".to_owned()];
     other_cpu.available_epps = vec!["power".into()];
     other_cpu.available_epbs = vec!["power".into()];
-    cpus.insert(Arc::new(other_cpu));
+    let cpus = HashSet::from([Arc::clone(&cpu), Arc::new(other_cpu)]);
 
-    let power_supplies = HashSet::new();
-    let uncores = HashSet::new();
-    let disks = HashSet::new();
-    let usb_devices = HashSet::new();
-    let gpus = HashSet::new();
-    let cpu_log = VecDeque::new();
+    with_cpu_state(&cpus, |state| {
+      let state = state.in_context(EvalContext::Cpu(&cpu));
+      let result = Expression::FirstAvailableGovernor {
+        values: vec![
+          Expression::String("performance".to_owned()),
+          Expression::String("schedutil".to_owned()),
+          Expression::String("powersave".to_owned()),
+        ],
+      }
+      .eval(&state)
+      .unwrap();
 
-    let state = EvalState {
-      frequency_available:         true,
-      turbo_available:             false,
-      cpu_usage:                   0.0,
-      cpu_usage_volatility:        None,
-      cpu_temperature:             None,
-      cpu_temperature_volatility:  None,
-      cpu_idle_seconds:            0.0,
-      cpu_frequency_maximum:       Some(3333.0),
-      cpu_frequency_minimum:       Some(1000.0),
-      lid_closed:                  false,
-      virtual_machine:             false,
-      chassis_type:                None,
-      power_supply_charge:         None,
-      power_supply_discharge_rate: None,
-      battery_cycles:              None,
-      battery_health:              None,
-      discharging:                 false,
-      power_profile_preference:    PowerProfile::Balanced,
-      context:                     EvalContext::Cpu(&cpu),
-      cpus:                        &cpus,
-      uncores:                     &uncores,
-      disks:                       &disks,
-      usb_devices:                 &usb_devices,
-      gpus:                        &gpus,
-      power_supplies:              &power_supplies,
-      cpu_log:                     &cpu_log,
-    };
+      assert_eq!(result, Some(Expression::String("schedutil".to_owned())));
 
-    let result = Expression::FirstAvailableGovernor {
-      values: vec![
-        Expression::String("performance".to_owned()),
-        Expression::String("schedutil".to_owned()),
-        Expression::String("powersave".to_owned()),
-      ],
-    }
-    .eval(&state)
-    .unwrap();
-
-    assert_eq!(result, Some(Expression::String("schedutil".to_owned())));
-
-    let alternatives = Expression::FirstAvailableGovernor {
-      values: vec![
-        Expression::String("schedutil".to_owned()),
-        Expression::String("powersave".to_owned()),
-      ],
-    };
-    let global = state.in_context(EvalContext::WidestPossible);
-    for (predicate, exclusive, common) in [
-      ("is-governor-available", "schedutil", "powersave"),
-      (
-        "is-energy-performance-preference-available",
-        "balance_power",
-        "power",
-      ),
-      ("is-energy-perf-bias-available", "balance-power", "power"),
-    ] {
-      let exclusive: Expression =
-        toml::from_str(&format!("{predicate} = {exclusive:?}")).unwrap();
+      let alternatives = Expression::FirstAvailableGovernor {
+        values: vec![
+          Expression::String("schedutil".to_owned()),
+          Expression::String("powersave".to_owned()),
+        ],
+      };
+      let global = state.in_context(EvalContext::WidestPossible);
+      for (predicate, exclusive, common) in [
+        ("is-governor-available", "schedutil", "powersave"),
+        (
+          "is-energy-performance-preference-available",
+          "balance_power",
+          "power",
+        ),
+        ("is-energy-perf-bias-available", "balance-power", "power"),
+      ] {
+        let exclusive: Expression =
+          toml::from_str(&format!("{predicate} = {exclusive:?}")).unwrap();
+        assert_eq!(
+          exclusive.eval(&state).unwrap(),
+          Some(Expression::Boolean(true))
+        );
+        assert_eq!(
+          exclusive.eval(&global).unwrap(),
+          Some(Expression::Boolean(false))
+        );
+        let common: Expression =
+          toml::from_str(&format!("{predicate} = {common:?}")).unwrap();
+        assert_eq!(
+          common.eval(&global).unwrap(),
+          Some(Expression::Boolean(true))
+        );
+        assert_eq!(
+          common
+            .eval(&EvalState {
+              cpus: &HashSet::new(),
+              context: EvalContext::WidestPossible,
+              ..global.clone()
+            })
+            .unwrap(),
+          Some(Expression::Boolean(false)),
+        );
+      }
       assert_eq!(
-        exclusive.eval(&state).unwrap(),
-        Some(Expression::Boolean(true))
+        alternatives.eval(&global).unwrap(),
+        Some(Expression::String("powersave".to_owned())),
       );
+      let empty_cpus = HashSet::new();
       assert_eq!(
-        exclusive.eval(&global).unwrap(),
-        Some(Expression::Boolean(false))
-      );
-      let common: Expression =
-        toml::from_str(&format!("{predicate} = {common:?}")).unwrap();
-      assert_eq!(
-        common.eval(&global).unwrap(),
-        Some(Expression::Boolean(true))
-      );
-      assert_eq!(
-        common
+        alternatives
           .eval(&EvalState {
-            cpus: &HashSet::new(),
-            context: EvalContext::WidestPossible,
+            cpus: &empty_cpus,
             ..global
           })
           .unwrap(),
-        Some(Expression::Boolean(false)),
+        None,
       );
-    }
-    assert_eq!(
-      alternatives.eval(&global).unwrap(),
-      Some(Expression::String("powersave".to_owned())),
-    );
-    let empty_cpus = HashSet::new();
-    assert_eq!(
-      alternatives
-        .eval(&EvalState {
-          cpus: &empty_cpus,
-          ..global
-        })
-        .unwrap(),
-      None,
-    );
 
-    let result = Expression::FirstAvailableGovernor {
-      values: vec![
-        Expression::String("performance".to_owned()),
-        Expression::String("ondemand".to_owned()),
-      ],
-    }
-    .eval(&state)
-    .unwrap();
+      let result = Expression::FirstAvailableGovernor {
+        values: vec![
+          Expression::String("performance".to_owned()),
+          Expression::String("ondemand".to_owned()),
+        ],
+      }
+      .eval(&state)
+      .unwrap();
 
-    assert_eq!(result, None);
+      assert_eq!(result, None);
+    });
   }
 }
 

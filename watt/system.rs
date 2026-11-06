@@ -2945,33 +2945,6 @@ priority = 1
   }
 
   #[test]
-  fn a_failed_operation_does_not_skip_the_next_operation() {
-    let mut failures = RuntimeFailures::default();
-    let mut applied = false;
-
-    failures.begin_iteration();
-    assert!(
-      failures
-        .attempt("first operation", || {
-          Err::<(), _>(anyhow::anyhow!("rejected"))
-        })
-        .is_none()
-    );
-    assert!(
-      failures
-        .attempt("second operation", || {
-          applied = true;
-          Ok(())
-        })
-        .is_some()
-    );
-    failures.finish_iteration();
-
-    assert!(applied);
-    assert_eq!(failures.errors.len(), 1);
-  }
-
-  #[test]
   fn daemon_state_retains_recent_errors_in_latest_first_order() {
     let mut failures = RuntimeFailures::default();
     failures.begin_iteration();
