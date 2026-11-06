@@ -43,6 +43,7 @@ use serde::{
   Deserialize,
   Serialize,
 };
+use toml::de::Error as TomlError;
 use watt_platform::{
   audio,
   cpu,
@@ -1591,6 +1592,9 @@ impl<'de> Deserialize<'de> for DaemonConfig {
 
 impl DaemonConfig {
   const DEFAULT: &str = include_str!("config.toml");
+  pub fn parse(contents: &str) -> Result<Self, TomlError> {
+    toml::from_str(contents)
+  }
 
   pub fn load_from(path: Option<&Path>) -> misstep::Result<Self> {
     let contents = if let Some(path) = path {
@@ -1605,7 +1609,7 @@ impl DaemonConfig {
       Self::DEFAULT
     };
 
-    let mut config: Self = toml::from_str(contents).with_context(|| {
+    let mut config = Self::parse(contents).with_context(|| {
       path.map_or(
         "failed to parse builtin default config, this is a bug".to_owned(),
         |p| format!("failed to parse file at '{path}'", path = p.display()),

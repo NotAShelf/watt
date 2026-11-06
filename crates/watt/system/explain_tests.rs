@@ -276,7 +276,7 @@ fn duration_diagnostics_report_availability_and_bound_requirements() {
     ]),
     ..System::default()
   };
-  let config = toml::from_str::<config::DaemonConfig>(
+  let config = config::DaemonConfig::parse(
     r#"
 [[rule]]
 name='samples'
@@ -321,7 +321,7 @@ if={{value={{cpu-usage-since='{number}sec'}},is-more-than=0}}
       )
     })
     .collect();
-  let config = toml::from_str::<config::DaemonConfig>(&rules).unwrap();
+  let config = config::DaemonConfig::parse(&rules).unwrap();
   let bounded = diagnostics::duration_requirements(&config.rules);
   diagnostics.update_requirements(&bounded, &system, now);
   assert_eq!(diagnostics.duration_metrics.len(), 32);
@@ -501,7 +501,7 @@ fn maximum_valid_duration_uses_exact_window_for_all_retained_samples() {
       .collect(),
     ..System::default()
   };
-  let config = toml::from_str::<config::DaemonConfig>(
+  let config = config::DaemonConfig::parse(
     r#"
 [[rule]]
 name='huge-window'
@@ -530,7 +530,7 @@ fn constant_duration_branches_resolve_but_dynamic_windows_are_explicit() {
     }]),
     ..System::default()
   };
-  let config = toml::from_str::<config::DaemonConfig>(
+  let config = config::DaemonConfig::parse(
     r#"
 [[rule]]
 name='constant'
