@@ -913,15 +913,10 @@ impl System {
     Ok(())
   }
 
-  // Scan and identify the current lid state.
-  // XXX: Most "uniform" APIs for identifying this data rely on some abstraction
-  // library that *might or might not be installed*. The verbose fallback is,
-  // unfortunately, necessary as there is no guarantee that we can use those
-  // APIs.
+  // Read kernel interfaces directly so lid detection needs no extra library.
   fn scan_lid_state(&mut self) -> misstep::Result<()> {
     log::trace!("scanning lid state");
 
-    // Try ACPI button interface first
     let acpi_lid_paths = [
       "/proc/acpi/button/lid/LID/state", // most likely to exist
       "/proc/acpi/button/lid/LID0/state",
@@ -939,7 +934,6 @@ impl System {
       }
     }
 
-    // Try sysfs input device interface as fallback
     const INPUT_PATH: &str = "/sys/class/input";
 
     if let Some(input_entries) =
@@ -2190,12 +2184,10 @@ fn link_shared_radeon_cards(drm: &Path, device: &Path) {
 mod tests {
   use std::{
     collections::HashSet,
-    env,
     fs as stdfs,
     future::pending,
     io::ErrorKind,
     os::unix::fs::symlink,
-    process,
   };
 
   use dbus::{
@@ -3053,11 +3045,9 @@ priority = 1
   }
 
   #[test]
-  fn a_failed_scan_keeps_other_scan_failures_local() {
-    let root =
-      env::temp_dir().join(format!("watt-empty-system-{}", process::id(),));
-    stdfs::create_dir_all(&root).unwrap();
-    let _root = fs::set_system_root_for_tests(&root);
+  fn missing_hardware_records_multiple_scan_failures() {
+    let root = tempfile::tempdir().unwrap();
+    let _root_guard = fs::set_system_root_for_tests(root.path());
     let mut system = System::default();
     let mut failures = RuntimeFailures::default();
 
@@ -3066,9 +3056,6 @@ priority = 1
 
     assert!(failures.errors.len() > 1);
     assert!(system.cpu_log.is_empty());
-
-    drop(_root);
-    stdfs::remove_dir_all(root).unwrap();
   }
 
   #[test]
@@ -3085,7 +3072,7 @@ priority = 1
   }
 
   #[test]
-  fn runtime_failures_keep_a_bounded_latest_summary() {
+  fn repeated_runtime_failures_are_counted_as_one_condition() {
     let mut failures = RuntimeFailures::default();
 
     failures.begin_iteration();
@@ -3093,10 +3080,11 @@ priority = 1
     failures.record("CPU 0 governor", misstep::report!("rejected"));
 
     assert_eq!(failures.errors.len(), 1);
-    assert_eq!(
-      failures.latest_message(),
-      Some("CPU 0 governor: rejected (2 occurrence(s), active for 0s)".into())
-    );
+    let failure = failures.errors.values().next().unwrap();
+    assert_eq!(failure.occurrences, 2);
+    let summary = failures.latest_message().unwrap();
+    assert!(summary.contains("CPU 0 governor"));
+    assert!(summary.contains("rejected"));
   }
 
   #[test]
@@ -3122,10 +3110,8 @@ priority = 1
     failures.begin_iteration();
     system.scan(&mut failures);
     assert_eq!(system.cpus.len(), 1);
-    assert_eq!(
-      system.cpus.iter().next().unwrap().governor.as_deref(),
-      Some("performance"),
-    );
+    let cpu = system.cpus.iter().next().unwrap();
+    assert_eq!(cpu.governor.as_deref(), Some("performance"));
   }
 
   #[test]

@@ -19,7 +19,7 @@ pub struct CpuLog {
   /// CPU temperature in celsius, if available.
   pub temperature: Option<f64>,
 
-  /// Load average.
+  /// The kernel's one-minute system load average.
   pub load_average: f64,
 }
 
