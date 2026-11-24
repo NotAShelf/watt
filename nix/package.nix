@@ -2,6 +2,7 @@
   lib,
   stdenv,
   rustPlatform,
+  dbus,
   versionCheckHook,
 }:
 rustPlatform.buildRustPackage (finalAttrs: {
@@ -17,9 +18,11 @@ rustPlatform.buildRustPackage (finalAttrs: {
       root = s;
       fileset = fs.unions [
         ../.cargo
-        ../watt
+        ../crates
+        ../crates/config/src/config.toml
         ../xtask
         ../dbus
+        ../docs/configuration/administration.md
         ../Cargo.lock
         ../Cargo.toml
       ];
@@ -29,6 +32,8 @@ rustPlatform.buildRustPackage (finalAttrs: {
   cargoLock.lockFile = "${finalAttrs.src}/Cargo.lock";
   enableParallelBuilding = true;
   useNextest = true;
+
+  nativeCheckInputs = [dbus];
 
   # xtask doesn't support passing --target
   # but nix hooks expect the folder structure from when it's set
@@ -51,6 +56,8 @@ rustPlatform.buildRustPackage (finalAttrs: {
       # Install Watt's dbus
       install -Dm644 dbus/net.hadess.PowerProfiles.conf \
         $out/share/dbus-1/system.d/net.hadess.PowerProfiles.conf
+      install -Dm644 dbus/dev.notashelf.watt.policy \
+        $out/share/polkit-1/actions/dev.notashelf.watt.policy
     '';
 
   meta = {

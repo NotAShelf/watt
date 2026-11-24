@@ -10,6 +10,7 @@
   rust-analyzer-unwrapped,
   rustfmt,
   cargo-nextest,
+  dbus,
 }: let
   inherit (rustc) llvmPackages;
 in
@@ -32,6 +33,7 @@ in
 
       # Additional Cargo utils
       cargo-nextest
+      dbus
     ];
 
     env = {
