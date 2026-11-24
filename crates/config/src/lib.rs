@@ -332,6 +332,39 @@ impl CpusDelta {
   }
 }
 
+fn select_devices<'a, D>(
+  selector: Option<&Expression>,
+  state: &EvalState<'_, '_>,
+  field: &str,
+  devices: &'a HashSet<Arc<D>>,
+  name: fn(&D) -> &str,
+) -> misstep::Result<impl Iterator<Item = &'a Arc<D>> + use<'a, D>> {
+  let names = if let Some(selector) = selector {
+    let names = selector
+      .eval(state)?
+      .with_context(|| format!("`{field}` resolved to undefined"))?
+      .try_into_list()
+      .with_context(|| format!("`{field}` was not a list"))?;
+    Some(
+      names
+        .into_iter()
+        .map(|name| {
+          name
+            .try_into_string()
+            .with_context(|| format!("`{field}` item was not a string"))
+        })
+        .collect::<misstep::Result<HashSet<_>>>()?,
+    )
+  } else {
+    None
+  };
+  Ok(devices.iter().filter(move |device| {
+    names
+      .as_ref()
+      .is_none_or(|names| names.contains(name(device)))
+  }))
+}
+
 #[derive(
   Serialize, Deserialize, schemars::JsonSchema, Default, Debug, Clone, PartialEq,
 )]
@@ -364,36 +397,14 @@ impl UncoresDelta {
   ) -> misstep::Result<UncoreDeltas> {
     log::debug!("evaluating uncore deltas...");
 
-    let uncores = match &self.for_ {
-      Some(names) => {
-        let names = names
-          .eval(state)?
-          .context("`uncore.for` resolved to undefined")?;
-        let names = names
-          .try_into_list()
-          .context("`uncore.for` was not a list")?;
-
-        let mut uncores = Vec::with_capacity(names.len());
-
-        for name in names {
-          let name = name
-            .try_into_string()
-            .context("`uncore.for` item was not a string")?;
-
-          uncores.push(name);
-        }
-
-        state
-          .uncores
-          .iter()
-          .filter(|uncore| uncores.contains(&uncore.name))
-          .cloned()
-          .collect()
-      },
-      None => state.uncores.clone(),
-    };
-
-    let mut deltas = HashMap::with_capacity(uncores.len());
+    let uncores = select_devices(
+      self.for_.as_ref(),
+      state,
+      "uncore.for",
+      state.uncores,
+      |uncore| &uncore.name,
+    )?;
+    let mut deltas = HashMap::new();
 
     for uncore in uncores {
       let delta = uncore::Delta {
@@ -411,7 +422,7 @@ impl UncoresDelta {
         .map(|value| state.setting(value)),
       };
 
-      deltas.insert(Arc::clone(&uncore), delta);
+      deltas.insert(Arc::clone(uncore), delta);
     }
 
     Ok(deltas)
@@ -507,35 +518,20 @@ impl DisksDelta {
     &self,
     state: &EvalState<'_, '_>,
   ) -> misstep::Result<(DiskDeltas, disk::GlobalDelta)> {
-    let disks = match &self.for_ {
-      Some(names) => {
-        let names = names
-          .eval(state)?
-          .context("`disk.for` resolved to undefined")?;
-        let names =
-          names.try_into_list().context("`disk.for` was not a list")?;
-
-        let names = names
-          .into_iter()
-          .map(|name| name.try_into_string())
-          .collect::<misstep::Result<Vec<_>>>()?;
-
-        state
-          .disks
-          .iter()
-          .filter(|disk| names.contains(&disk.name))
-          .cloned()
-          .collect()
-      },
-      None => state.disks.clone(),
-    };
+    let disks = select_devices(
+      self.for_.as_ref(),
+      state,
+      "disk.for",
+      state.disks,
+      |disk| &disk.name,
+    )?;
 
     let apm = eval_u8(&self.apm, state, "disk.apm")?;
     let spindown = eval_u8(&self.spindown, state, "disk.spindown")?;
-    let mut deltas = HashMap::with_capacity(disks.len());
+    let mut deltas = HashMap::new();
 
     for disk in disks {
-      deltas.insert(Arc::clone(&disk), disk::Delta {
+      deltas.insert(Arc::clone(disk), disk::Delta {
         scheduler:     eval_string(&self.scheduler, state, "disk.scheduler")?
           .map(|value| state.setting(value)),
         readahead_kib: eval_u64(
@@ -571,27 +567,13 @@ pub struct UsbsDelta {
 
 impl UsbsDelta {
   pub fn eval(&self, state: &EvalState<'_, '_>) -> misstep::Result<UsbDeltas> {
-    let devices = match &self.for_ {
-      Some(names) => {
-        let names = names
-          .eval(state)?
-          .context("`usb.for` resolved to undefined")?
-          .try_into_list()
-          .context("`usb.for` was not a list")?;
-        let names = names
-          .into_iter()
-          .map(|name| name.try_into_string())
-          .collect::<misstep::Result<Vec<_>>>()?;
-
-        state
-          .usb_devices
-          .iter()
-          .filter(|device| names.contains(&device.name))
-          .cloned()
-          .collect()
-      },
-      None => state.usb_devices.clone(),
-    };
+    let devices = select_devices(
+      self.for_.as_ref(),
+      state,
+      "usb.for",
+      state.usb_devices,
+      |device| &device.name,
+    )?;
 
     let delay_ms = eval_u64(
       &self.autosuspend_delay_seconds,
@@ -599,16 +581,16 @@ impl UsbsDelta {
       "usb.autosuspend-delay-seconds",
     )?
     .map(|seconds| {
-      seconds.checked_mul(1000).with_context(|| {
+      usb_autosuspend_delay_ms(seconds).context(
         "`usb.autosuspend-delay-seconds` is too large to convert to \
-         milliseconds"
-      })
+         milliseconds",
+      )
     })
     .transpose()?;
-    let mut deltas = HashMap::with_capacity(devices.len());
+    let mut deltas = HashMap::new();
 
     for device in devices {
-      deltas.insert(Arc::clone(&device), usb::Delta {
+      deltas.insert(Arc::clone(device), usb::Delta {
         autosuspend:          eval_bool(
           &self.autosuspend,
           state,
@@ -621,6 +603,12 @@ impl UsbsDelta {
 
     Ok(deltas)
   }
+}
+
+const MILLIS_PER_SECOND: u64 = 1_000;
+
+fn usb_autosuspend_delay_ms(seconds: u64) -> Option<u64> {
+  seconds.checked_mul(MILLIS_PER_SECOND)
 }
 
 #[derive(
@@ -671,43 +659,33 @@ pub struct GpusDelta {
 
 impl GpusDelta {
   pub fn eval(&self, state: &EvalState<'_, '_>) -> misstep::Result<GpuDeltas> {
-    let gpus = match &self.for_ {
-      Some(names) => {
-        let names = names
-          .eval(state)?
-          .context("`gpu.for` resolved to undefined")?
-          .try_into_list()
-          .context("`gpu.for` was not a list")?;
-        let names = names
-          .into_iter()
-          .map(|name| name.try_into_string())
-          .collect::<misstep::Result<Vec<_>>>()?;
-
-        state
-          .gpus
-          .iter()
-          .filter(|gpu| names.contains(&gpu.name))
-          .cloned()
-          .collect()
-      },
-      None => state.gpus.clone(),
-    };
+    let gpus = select_devices(
+      self.for_.as_ref(),
+      state,
+      "gpu.for",
+      state.gpus,
+      |gpu| &gpu.name,
+    )?;
 
     let panel_power_savings = eval_percent(
       &self.panel_power_savings,
       state,
       "gpu.panel-power-savings",
-    )?;
-    if let Some(value) = panel_power_savings
-      && value > 4
-    {
-      bail!("`gpu.panel-power-savings` must be between 0 and 4, got {value}");
-    }
+    )?
+    .map(|value| {
+      panel_power_savings(u64::from(value)).with_context(|| {
+        format!(
+          "`gpu.panel-power-savings` must be between 0 and \
+           {MAX_PANEL_POWER_SAVINGS}, got {value}"
+        )
+      })
+    })
+    .transpose()?;
 
-    let mut deltas = HashMap::with_capacity(gpus.len());
+    let mut deltas = HashMap::new();
 
     for gpu in gpus {
-      deltas.insert(Arc::clone(&gpu), gpu::Delta {
+      deltas.insert(Arc::clone(gpu), gpu::Delta {
         panel_power_savings: panel_power_savings
           .map(|value| state.setting(value)),
         radeon_powersave:    eval_string(
@@ -723,20 +701,20 @@ impl GpusDelta {
   }
 }
 
+const MAX_PANEL_POWER_SAVINGS: u8 = 4;
+
+fn panel_power_savings(value: u64) -> Option<u8> {
+  (value <= u64::from(MAX_PANEL_POWER_SAVINGS)).then_some(value as u8)
+}
+
 fn eval_frequency(
   expression: &Option<Expression>,
   state: &EvalState<'_, '_>,
   name: &str,
 ) -> misstep::Result<Option<cpu::frequency::Frequency>> {
-  let Some(expression) = expression else {
+  let Some(value) = eval_number(expression, state, name)? else {
     return Ok(None);
   };
-  let Some(value) = expression.eval(state)? else {
-    return Ok(None);
-  };
-  let value = value
-    .try_into_number()
-    .with_context(|| format!("`{name}` was not a number"))?;
   cpu::frequency::Frequency::from_mhz(value)
     .with_context(|| format!("invalid `{name}`"))
     .map(Some)
@@ -751,11 +729,12 @@ fn eval_i32(
     return Ok(None);
   };
 
-  if value > i32::MAX as u64 {
-    bail!("invalid `{name}`: {value}; maximum is {}", i32::MAX);
-  }
-
-  Ok(Some(value as i32))
+  i32::try_from(value)
+    .ok()
+    .with_context(|| {
+      format!("invalid `{name}`: {value}; maximum is {}", i32::MAX)
+    })
+    .map(Some)
 }
 
 fn eval_u8(
@@ -767,17 +746,30 @@ fn eval_u8(
     return Ok(None);
   };
 
-  if value > u8::MAX as u64 {
-    bail!("invalid `{name}`: {value}");
-  }
-
-  Ok(Some(value as u8))
+  u8::try_from(value)
+    .ok()
+    .with_context(|| format!("invalid `{name}`: {value}"))
+    .map(Some)
 }
+
 fn eval_u64(
   expression: &Option<Expression>,
   state: &EvalState<'_, '_>,
   name: &str,
 ) -> misstep::Result<Option<u64>> {
+  let Some(value) = eval_number(expression, state, name)? else {
+    return Ok(None);
+  };
+  unsigned_integer(value)
+    .with_context(|| format!("invalid `{name}`"))
+    .map(Some)
+}
+
+fn eval_number(
+  expression: &Option<Expression>,
+  state: &EvalState<'_, '_>,
+  name: &str,
+) -> misstep::Result<Option<f64>> {
   let Some(expression) = expression else {
     return Ok(None);
   };
@@ -785,12 +777,9 @@ fn eval_u64(
     return Ok(None);
   };
 
-  let value = value
+  value
     .try_into_number()
-    .with_context(|| format!("`{name}` was not a number"))?;
-
-  unsigned_integer(value)
-    .with_context(|| format!("invalid `{name}`"))
+    .with_context(|| format!("`{name}` was not a number"))
     .map(Some)
 }
 
@@ -833,13 +822,19 @@ fn eval_epp(
   match value {
     Expression::String(value) => Ok(Some(value)),
     Expression::Number(value) => {
-      if value.fract() != 0.0 || !(0.0..=255.0).contains(&value) {
-        bail!("invalid `{name}`: numeric EPP must be an integer from 0 to 255");
-      }
-      Ok(Some((value as u8).to_string()))
+      numeric_epp(value)
+        .with_context(|| format!("invalid `{name}`: {NUMERIC_EPP_ERROR}"))
+        .map(|value| Some(value.to_string()))
     },
     _ => bail!("`{name}` was not a string or numeric EPP value"),
   }
+}
+
+const NUMERIC_EPP_ERROR: &str = "numeric EPP must be an integer from 0 to 255";
+
+fn numeric_epp(value: f64) -> Option<u8> {
+  (value.fract() == 0.0 && (0.0..=f64::from(u8::MAX)).contains(&value))
+    .then_some(value as u8)
 }
 
 fn eval_bool(
@@ -922,79 +917,37 @@ impl PowersDelta {
   pub fn eval(&self, state: &EvalState<'_, '_>) -> PowerSupplyEvalResult {
     log::debug!("evaluating power supply deltas...");
 
-    let power_supplies = match &self.for_ {
-      Some(names) => {
-        let names = names
-          .eval(state)?
-          .context("`power.for` resolved to undefined")?;
-        let names = names
-          .try_into_list()
-          .context("`power.for` was not a list")?;
-
-        let mut power_supplies = Vec::with_capacity(names.len());
-
-        for name in names {
-          let name = name
-            .try_into_string()
-            .context("`power.for` item was not a string")?;
-
-          power_supplies.push(name);
-        }
-
-        state
-          .power_supplies
-          .iter()
-          .filter(|power_supply| power_supplies.contains(&power_supply.name))
-          .cloned()
-          .collect()
-      },
-      None => state.power_supplies.clone(),
-    };
-
-    let mut deltas = HashMap::with_capacity(power_supplies.len());
-
-    log::trace!("filtering power supplies by name: {power_supplies:?}");
+    let power_supplies = select_devices(
+      self.for_.as_ref(),
+      state,
+      "power.for",
+      state.power_supplies,
+      |supply| &supply.name,
+    )?;
+    let mut deltas = HashMap::new();
 
     for power_supply in power_supplies {
-      let state = state.in_context(EvalContext::PowerSupply(&power_supply));
-      let mut delta = power_supply::Delta::default();
-
-      if let Some(threshold_start) = &self.charge_threshold_start
-        && let Some(threshold_start) = threshold_start.eval(&state)?
-      {
-        let threshold_start = threshold_start
-          .try_into_number()
-          .context("`power.charge-threshold-start` was not a number")?;
-
-        delta.charge_threshold_start =
-          Some(state.setting(threshold_start / 100.0));
-      }
-
-      if let Some(threshold_end) = &self.charge_threshold_end
-        && let Some(threshold_end) = threshold_end.eval(&state)?
-      {
-        let threshold_end = threshold_end
-          .try_into_number()
-          .context("`power.charge-threshold-end` was not a number")?;
-
-        delta.charge_threshold_end = Some(state.setting(threshold_end / 100.0));
-      }
-
-      deltas.insert(Arc::clone(&power_supply), delta);
+      let state = state.in_context(EvalContext::PowerSupply(power_supply));
+      let charge_threshold_start = eval_number(
+        &self.charge_threshold_start,
+        &state,
+        "power.charge-threshold-start",
+      )?
+      .map(|value| state.setting(value / 100.0));
+      let charge_threshold_end = eval_number(
+        &self.charge_threshold_end,
+        &state,
+        "power.charge-threshold-end",
+      )?
+      .map(|value| state.setting(value / 100.0));
+      deltas.insert(Arc::clone(power_supply), power_supply::Delta {
+        charge_threshold_start,
+        charge_threshold_end,
+      });
     }
 
-    let platform_profile = if let Some(platform_profile) =
-      &self.platform_profile
-      && let Some(platform_profile) = platform_profile.eval(state)?
-    {
-      let platform_profile = platform_profile
-        .try_into_string()
-        .context("`power.platform-profile` was not a string")?;
-
-      Some(platform_profile)
-    } else {
-      None
-    };
+    let platform_profile =
+      eval_string(&self.platform_profile, state, "power.platform-profile")?;
 
     Ok((deltas, platform_profile))
   }

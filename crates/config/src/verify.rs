@@ -249,43 +249,49 @@ fn verify_device_numbers(rule: &Rule, diagnostics: &mut Vec<Diagnostic>) {
           Ok(constants::Constant::String("n/a"))
         )
       });
-  for (field, expression, maximum) in [
+  type Limit = (u64, fn(u64) -> bool);
+  let fields: [(&str, Option<&Expression>, Option<Limit>); 8] = [
     (
       "cpu.dma-latency-us",
       rule.cpu.dma_latency_us.as_ref(),
-      i32::MAX as u64,
+      Some((i32::MAX as u64, |value| i32::try_from(value).is_ok())),
     ),
-    ("cpu.pm-qos-resume-latency-us", resume_latency, u64::MAX),
+    ("cpu.pm-qos-resume-latency-us", resume_latency, None),
+    ("disk.readahead-kib", rule.disk.readahead_kib.as_ref(), None),
     (
-      "disk.readahead-kib",
-      rule.disk.readahead_kib.as_ref(),
-      u64::MAX,
+      "disk.apm",
+      rule.disk.apm.as_ref(),
+      Some((u64::from(u8::MAX), |value| u8::try_from(value).is_ok())),
     ),
-    ("disk.apm", rule.disk.apm.as_ref(), u64::from(u8::MAX)),
     (
       "disk.spindown",
       rule.disk.spindown.as_ref(),
-      u64::from(u8::MAX),
+      Some((u64::from(u8::MAX), |value| u8::try_from(value).is_ok())),
     ),
     (
       "audio.timeout-seconds",
       rule.audio.timeout_seconds.as_ref(),
-      u64::MAX,
+      None,
     ),
     (
       "usb.autosuspend-delay-seconds",
       rule.usb.autosuspend_delay_seconds.as_ref(),
-      u64::MAX / 1000,
+      Some((u64::MAX / super::MILLIS_PER_SECOND, |value| {
+        super::usb_autosuspend_delay_ms(value).is_some()
+      })),
     ),
     (
       "gpu.panel-power-savings",
       rule.gpu.panel_power_savings.as_ref(),
-      4,
+      Some((u64::from(super::MAX_PANEL_POWER_SAVINGS), |value| {
+        super::panel_power_savings(value).is_some()
+      })),
     ),
-  ] {
+  ];
+  for (field, expression, limit) in fields {
     let result = constant_unsigned_integer(expression).and_then(|value| {
-      if let Some(value) = value {
-        ensure!(value <= maximum, "value {value} exceeds maximum {maximum}");
+      if let Some((value, (maximum, check))) = value.zip(limit) {
+        ensure!(check(value), "value {value} exceeds maximum {maximum}");
       }
       Ok(())
     });
@@ -601,13 +607,10 @@ fn literal_epp_error(expression: Option<&Expression>) -> Option<String> {
     constants::Constant::String(value) => {
       value.parse::<f64>().is_ok() && value.parse::<u8>().is_err()
     },
-    constants::Constant::Number(value) => {
-      !super::unsigned_integer(value)
-        .is_ok_and(|value| value <= u64::from(u8::MAX))
-    },
+    constants::Constant::Number(value) => super::numeric_epp(value).is_none(),
     _ => false,
   };
-  invalid.then(|| "numeric EPP must be an integer from 0 to 255".into())
+  invalid.then(|| super::NUMERIC_EPP_ERROR.into())
 }
 
 fn verify_bounds<T: Copy + PartialOrd + fmt::Display>(
